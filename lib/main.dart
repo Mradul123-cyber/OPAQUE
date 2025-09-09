@@ -19,6 +19,8 @@ import 'services/conversation_service.dart';
 import 'services/database_service.dart';
 import 'services/websocket_service.dart';
 import 'theme_notifier.dart';
+import 'package:flutter/foundation.dart';
+
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -58,7 +60,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Zarq Messenger',
       theme: zarqDarkTheme,
-      home: const AuthGate(),
+      home: const Scaffold(body: Center(child: PingButton())),
     );
   }
 }
@@ -232,6 +234,10 @@ class _PingButtonState extends State<PingButton> {
   String _response = "No response yet";
 
   Future<void> _sendPing() async {
+    if (kIsWeb) {
+    setState(() => _response = 'Web: native channel not available');
+    return;
+  }
     try {
       final String result = await platform.invokeMethod("ping");
       setState(() {
