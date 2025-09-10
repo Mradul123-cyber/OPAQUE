@@ -6,8 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:zarq_messenger/app_theme.dart';
-
-
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'firebase_options.dart';
 import 'home_screen.dart';
@@ -19,7 +18,7 @@ import 'services/conversation_service.dart';
 import 'services/database_service.dart';
 import 'services/websocket_service.dart';
 import 'theme_notifier.dart';
-import 'package:flutter/foundation.dart';
+import 'services/device_service.dart';
 
 
 void main() async {
@@ -60,7 +59,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Zarq Messenger',
       theme: zarqDarkTheme,
-      home: const Scaffold(body: Center(child: PingButton())),
+      home: const AuthGate(),
     );
   }
 }
@@ -114,18 +113,28 @@ class _AuthWrapperState extends State<AuthWrapper> {
 
   // --- THIS IS THE CORRECTED INITIALIZATION FUNCTION ---
 Future<bool> _initializeUserServices() async {
+    // If running on Web, skip sqflite/sqlcipher native init (plugin not available on web)
+  final bool runningOnWeb = kIsWeb;
+  if (runningOnWeb) {
+    print('⚠️ Running on Web: will skip native sqflite/sqlcipher initialization and continue.');
+  }
+
   try {
     final dbService = Provider.of<DatabaseService>(context, listen: false);
     final websocketService = Provider.of<WebSocketService>(context, listen: false);
 
     // Step 1: Initialize the database service
     print("=== [AuthWrapper] STEP 1: Initializing database service ===");
-    try {
-      await dbService.init();
-      print("✅ Database initialized successfully.");
-    } catch (dbErr, st) {
-      print("❌ Database init failed: $dbErr\n$st");
-      rethrow;
+    if (!runningOnWeb) {
+      try {
+        await dbService.init();
+        print("✅ Database initialized successfully.");
+      } catch (dbErr, st) {
+        print("❌ Database init failed: $dbErr\n$st");
+        rethrow;
+      }
+    } else {
+      print("⚠️ Skipping DB init on web (no sqflite).");
     }
 
     // Step 2: Check if the user has a profile on the server
@@ -141,6 +150,32 @@ Future<bool> _initializeUserServices() async {
     if (!profileExists) {
       print("⚠️ No server profile found, redirecting to RegisterScreen.");
       return false;
+    }
+
+    // Step 3: Register this device with backend (upload keys)
+    // NOTE: replace placeholder base64 keys with real client-generated keys.
+    try {
+      print("=== [AuthWrapper] STEP 3: Registering device with backend ===");
+      // Example values for testing. Replace with real keygen output in production.
+      final deviceResp = await DeviceService.registerDevice(
+        deviceId: 1,
+        deviceName: 'Flutter Device',
+        platform: 'flutter',
+        pushToken: 'placeholder_push_token',
+        identityKeyB64: 'AAECAwQFBgcICQ==',
+        registrationId: 123456,
+        signedPreKeyId: 1,
+        signedPreKeyB64: 'AQIDBAUGBwgJCgs=',
+        signedPreKeySignatureB64: 'MTIzNDU2Nzg5MDEyMzQ1Ng==',
+        oneTimePreKeys: [
+          {'key_id': 1, 'public_key_b64': 'BQYHCAkKCwwNDg=='},
+          {'key_id': 2, 'public_key_b64': 'Dg8QERITFBU='},
+        ],
+      );
+      print("✅ Device registration successful: $deviceResp");
+    } catch (regErr) {
+      // Non-fatal: log and continue (but consider failing if you must have keys uploaded)
+      print("⚠️ Device registration failed (continuing): $regErr");
     }
 
     // Step 4: Connect to the WebSocket
@@ -217,51 +252,6 @@ Future<bool> _initializeUserServices() async {
           );
         }
       },
-    );
-  }
-}
-
-class PingButton extends StatefulWidget {
-  const PingButton({super.key});
-
-  @override
-  State<PingButton> createState() => _PingButtonState();
-}
-
-class _PingButtonState extends State<PingButton> {
-  static const platform = MethodChannel("com.zarq/signal");
-
-  String _response = "No response yet";
-
-  Future<void> _sendPing() async {
-    if (kIsWeb) {
-    setState(() => _response = 'Web: native channel not available');
-    return;
-  }
-    try {
-      final String result = await platform.invokeMethod("ping");
-      setState(() {
-        _response = "Response from Kotlin: $result";
-      });
-    } on PlatformException catch (e) {
-      setState(() {
-        _response = "Error: ${e.message}";
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        ElevatedButton(
-          onPressed: _sendPing,
-          child: const Text("Send Ping to Kotlin"),
-        ),
-        const SizedBox(height: 20),
-        Text(_response),
-      ],
     );
   }
 }

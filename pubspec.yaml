@@ -57,6 +57,7 @@ dependencies:
   sqflite_sqlcipher: ^2.1.2 
   path: ^1.9.1
   libsignal_protocol_dart: ^0.7.4
+  flutter_secure_storage: ^9.2.4
 
 
 dev_dependencies:
@@ -70,7 +71,6 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^5.0.0
   cryptography: ^2.5.0 
-  flutter_secure_storage: ^9.0.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
