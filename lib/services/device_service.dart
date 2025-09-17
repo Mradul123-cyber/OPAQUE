@@ -61,4 +61,74 @@ class DeviceService {
     final data = jsonDecode(resp.body) as Map<String, dynamic>;
     return data;
   }
+
+  static Future<Map<String, dynamic>?> fetchPrekeyBundle({
+    required String targetUid,
+    required int deviceId,
+    String baseUrl = baseUrl, // uses your DeviceService.baseUrl constant
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) throw Exception('Not authenticated');
+
+    final idToken = await user.getIdToken(true);
+
+    final uri = Uri.parse('$baseUrl/v1/prekey_bundle?uid=$targetUid&device_id=$deviceId');
+
+    final resp = await http.get(
+      uri,
+      headers: {
+        'Authorization': 'Bearer $idToken',
+        'Accept': 'application/json',
+      },
+    );
+
+    if (resp.statusCode == 200) {
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      return data;
+    } else if (resp.statusCode == 404) {
+      // no bundle / user not found
+      return null;
+    } else {
+      // propagate other errors with helpful message
+      throw Exception('fetchPrekeyBundle failed: ${resp.statusCode} ${resp.body}');
+    }
+  }
+
+  /// Send an encrypted message to a conversation.
+  /// For testing we send a dummy base64 ciphertext. Replace contentB64 with real ciphertext later.
+  static Future<Map<String, dynamic>> sendMessage({
+    required int conversationId,
+    required String contentB64, // base64 encoded ciphertext
+    String messageType = 'chat',
+    String baseUrl = baseUrl,
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) throw Exception('Not authenticated');
+
+    final idToken = await user.getIdToken(true);
+
+    final uri = Uri.parse('$baseUrl/v1/messages/send');
+
+    final body = {
+      'conversation_id': conversationId,
+      'content_b64': contentB64,
+      'message_type': messageType,
+    };
+
+    final resp = await http.post(
+      uri,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $idToken',
+      },
+      body: jsonEncode(body),
+    );
+
+    if (resp.statusCode >= 200 && resp.statusCode < 300) {
+      return jsonDecode(resp.body) as Map<String, dynamic>;
+    } else {
+      throw Exception('sendMessage failed: ${resp.statusCode} ${resp.body}');
+    }
+  }
+
 }
