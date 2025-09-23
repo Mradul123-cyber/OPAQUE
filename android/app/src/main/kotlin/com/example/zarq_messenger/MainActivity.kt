@@ -24,6 +24,9 @@ import org.json.JSONObject
 import okhttp3.*
 import kotlinx.coroutines.tasks.await
 import java.util.concurrent.ConcurrentHashMap
+import android.util.Base64
+import okhttp3.MediaType.Companion.toMediaType
+import java.net.URLEncoder
 
 class MainActivity : FlutterActivity() {
 
@@ -79,10 +82,6 @@ class MainActivity : FlutterActivity() {
                         Log.d("MainActivity", "clearSession called")
                         clearSessionForUser(call, result)
                     }
-                    "rotateKeys" -> {
-                        Log.d("MainActivity", "rotateKeys called")
-                        rotateKeysForUser(call, result)
-                    }
                     "hasSession" -> {
                         Log.d("MainActivity", "hasSession called")
                         hasSessionForUser(call, result)
@@ -115,19 +114,6 @@ class MainActivity : FlutterActivity() {
                         getStoredSentMessages(call, result)
                     }
 
-                    // ===== FORWARD SECRECY TESTING METHODS =====
-                    "testForwardSecrecy" -> {
-                        Log.d("MainActivity", "testForwardSecrecy called")
-                        testForwardSecrecy(call, result)
-                    }
-                    "auditSessionState" -> {
-                        Log.d("MainActivity", "auditSessionState called")
-                        auditSessionState(call, result)
-                    }
-                    "clearSessionWithTest" -> {
-                        Log.d("MainActivity", "clearSessionWithTest called")
-                        clearSessionWithTest(call, result)
-                    }
                     "getSessionStats" -> {
                         Log.d("MainActivity", "getSessionStats called")
                         getSessionStatsForUser(call, result)
@@ -137,6 +123,46 @@ class MainActivity : FlutterActivity() {
                         currentUserUid = uid
                         Log.d("MainActivity", "Set current user for testing: $uid")
                         result.success(true)
+                    }
+
+                    "captureSessionContext" -> {
+                        Log.d("MainActivity", "captureSessionContext called")
+                        captureSessionContext(call, result)
+                    }
+                    "applySessionContext" -> {
+                        Log.d("MainActivity", "applySessionContext called")
+                        applySessionContext(call, result)
+                    }
+
+                    "checkUserSetup" -> {
+                        val uid = call.argument<String>("uid")
+                        if (uid != null) {
+                            runBlocking {
+                                try {
+                                    val hasSetup = protocolManager.checkUserSetup(uid)
+                                    result.success(hasSetup)
+                                } catch (e: Exception) {
+                                    result.error("SETUP_CHECK_ERROR", e.message, null)
+                                }
+                            }
+                        } else {
+                            result.error("INVALID_ARGS", "Missing UID", null)
+                        }
+                    }
+                    "setupUser" -> {
+                        val uid = call.argument<String>("uid")
+                        if (uid != null) {
+                            runBlocking {
+                                try {
+                                    val success = protocolManager.setupUser(uid)
+                                    result.success(success)
+                                } catch (e: Exception) {
+                                    result.error("SETUP_ERROR", e.message, null)
+                                }
+                            }
+                        } else {
+                            result.error("INVALID_ARGS", "Missing UID", null)
+                        }
                     }
 
                     else -> result.notImplemented()
@@ -169,100 +195,6 @@ class MainActivity : FlutterActivity() {
         setupNavigationChannel()
     }
 
-    // ===== FORWARD SECRECY TESTING METHODS =====
-
-    /**
-     * Test forward secrecy for a specific recipient
-     */
-    private fun testForwardSecrecy(call: MethodCall, result: MethodChannel.Result) {
-        try {
-            val recipientUid = call.argument<String>("recipientUid") ?: ""
-            val deviceId = call.argument<Int>("deviceId") ?: 1
-            val myUid = call.argument<String>("myUid") ?: currentUserUid ?: ""
-
-            if (myUid.isEmpty()) {
-                result.error("NO_USER", "No current user set for testing", null)
-                return
-            }
-
-            Log.d("MainActivity", "=== FORWARD SECRECY TEST START ===")
-            Log.d("MainActivity", "Testing: $myUid -> $recipientUid:$deviceId")
-
-            val testResult = testForwardSecrecyHelper(myUid, recipientUid, deviceId)
-
-            Log.d("MainActivity", "=== FORWARD SECRECY TEST RESULT: ${testResult["forwardSecrecyVerified"]} ===")
-            result.success(testResult)
-
-        } catch (e: Exception) {
-            Log.e("MainActivity", "testForwardSecrecy error: ${e.message}", e)
-            result.error("TEST_FAILED", e.message ?: "Unknown error", null)
-        }
-    }
-
-    /**
-     * Audit session state for a specific recipient
-     */
-    private fun auditSessionState(call: MethodCall, result: MethodChannel.Result) {
-        val recipientUid = call.argument<String>("recipientUid") ?: ""
-        val deviceId = call.argument<Int>("deviceId") ?: 1
-        val myUid = call.argument<String>("myUid") ?: currentUserUid ?: ""
-
-        if (myUid.isEmpty()) {
-            result.error("NO_USER", "No current user set for testing", null)
-            return
-        }
-
-        GlobalScope.launch {
-            try {
-                val sessionManager = getSessionManager(myUid)
-                val audit = sessionManager.auditSessionClearing(recipientUid, deviceId)
-
-                withContext(Dispatchers.Main) {
-                    Log.d("MainActivity", "Session audit for $recipientUid:$deviceId: $audit")
-                    result.success(audit)
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    Log.e("MainActivity", "auditSessionState error: ${e.message}", e)
-                    result.error("AUDIT_FAILED", e.message ?: "Unknown error", null)
-                }
-            }
-        }
-    }
-
-    /**
-     * Clear session with verification
-     */
-    private fun clearSessionWithTest(call: MethodCall, result: MethodChannel.Result) {
-        val recipientUid = call.argument<String>("recipientUid") ?: ""
-        val deviceId = call.argument<Int>("deviceId") ?: 1
-        val myUid = call.argument<String>("myUid") ?: currentUserUid ?: ""
-
-        if (myUid.isEmpty()) {
-            result.error("NO_USER", "No current user set for testing", null)
-            return
-        }
-
-        GlobalScope.launch {
-            try {
-                Log.d("MainActivity", "=== ENHANCED CLEAR SESSION TEST START ===")
-                Log.d("MainActivity", "Clearing session: $myUid -> $recipientUid:$deviceId")
-
-                val sessionManager = getSessionManager(myUid)
-                val success = sessionManager.clearSessionWithVerification(recipientUid, deviceId)
-
-                withContext(Dispatchers.Main) {
-                    Log.d("MainActivity", "=== ENHANCED CLEAR SESSION RESULT: $success ===")
-                    result.success(success)
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    Log.e("MainActivity", "clearSessionWithTest error: ${e.message}", e)
-                    result.error("CLEAR_FAILED", e.message ?: "Unknown error", null)
-                }
-            }
-        }
-    }
 
     /**
      * Get session statistics for debugging
@@ -295,54 +227,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /**
-     * Helper method to test forward secrecy
-     */
-    private fun testForwardSecrecyHelper(myUid: String, recipientUid: String, deviceId: Int): Map<String, Any> {
-        return try {
-            val libStore = LibsignalStore(this, signalStore, myUid)
-            val verified = libStore.verifyForwardSecrecy(recipientUid, deviceId)
-
-            // Also check if session exists
-            val address = org.whispersystems.libsignal.SignalProtocolAddress(recipientUid, deviceId)
-            val sessionExists = libStore.containsSession(address)
-
-            // Count related files
-            val relatedFilesCount = try {
-                val userDirMethod = signalStore.javaClass.getDeclaredMethod("userDir", String::class.java)
-                userDirMethod.isAccessible = true
-                val userDir = userDirMethod.invoke(signalStore, myUid) as java.io.File
-
-                userDir.listFiles()?.filter { file ->
-                    file.name.contains("_${deviceId}_") ||
-                            file.name.endsWith("_${deviceId}") ||
-                            file.name == "session_${deviceId}"
-                }?.size ?: 0
-            } catch (e: Exception) {
-                -1
-            }
-
-            mapOf(
-                "forwardSecrecyVerified" to verified,
-                "sessionExists" to sessionExists,
-                "relatedFilesCount" to relatedFilesCount,
-                "recipientUid" to recipientUid,
-                "deviceId" to deviceId,
-                "myUid" to myUid,
-                "timestamp" to System.currentTimeMillis()
-            )
-        } catch (e: Exception) {
-            mapOf(
-                "error" to (e.message ?: "Unknown error"),
-                "forwardSecrecyVerified" to false,
-                "sessionExists" to false,
-                "recipientUid" to recipientUid,
-                "deviceId" to deviceId,
-                "myUid" to myUid,
-                "timestamp" to System.currentTimeMillis()
-            )
-        }
-    }
 
     // ===== EXISTING METHODS (unchanged) =====
 
@@ -392,8 +276,16 @@ class MainActivity : FlutterActivity() {
      */
     private fun getSessionManager(uid: String): SessionManager {
         return sessionManagers.getOrPut(uid) {
-            val preKeyManager = PreKeyManager(this, uid, signalStore, protocolManager)
-            SessionManager(this, uid, signalStore, protocolManager, preKeyManager)
+            try {
+                Log.d("MainActivity", "Creating SessionManager for: $uid")
+                val preKeyManager = PreKeyManager(this, uid, signalStore, protocolManager)
+                val sessionManager = SessionManager(this, uid, signalStore, protocolManager, preKeyManager)
+                Log.d("MainActivity", "SessionManager created successfully for: $uid")
+                sessionManager
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to create SessionManager for $uid: ${e.message}", e)
+                throw e  // Re-throw so getOrPut doesn't cache null
+            }
         }
     }
 
@@ -568,7 +460,7 @@ class MainActivity : FlutterActivity() {
                     // Get registration ID (stored as base64 in SignalStore)
                     val regIdB64 = signalStore.loadPublicKeyBase64(uid, "regid")
                     val registrationId = if (regIdB64 != null) {
-                        val regBytes = android.util.Base64.decode(regIdB64, android.util.Base64.NO_WRAP)
+                        val regBytes = Base64.decode(regIdB64, Base64.NO_WRAP)
                         byteArrayToInt(regBytes)
                     } else {
                         Log.w("MainActivity", "No registration ID found, using default")
@@ -585,32 +477,36 @@ class MainActivity : FlutterActivity() {
                     }
 
                     // Get the FULL SERIALIZED one-time prekey record
-                    val oneTimePreKeyId = bundle.getInt("oneTimePreKeyId")
-                    val fullOneTimePreKeyB64 = signalStore.loadPreKeyBase64(uid, oneTimePreKeyId)
+                    val oneTimePreKeysList = mutableListOf<Map<String, Any>>()
+                    val preKeyIds = signalStore.listPreKeyIds(uid)
+                    val preKeysToSend = preKeyIds.take(100) // Send up to 100 prekeys
 
-                    if (fullOneTimePreKeyB64 == null) {
-                        result.error("ONETIME_PREKEY_MISSING", "Full one-time prekey record not found", null)
-                        return@runBlocking
+                    for (keyId in preKeysToSend) {
+                        val fullPreKeyB64 = signalStore.loadPreKeyBase64(uid, keyId)
+                        if (fullPreKeyB64 != null) {
+                            oneTimePreKeysList.add(mapOf(
+                                "key_id" to keyId,
+                                "public_key_b64" to fullPreKeyB64
+                            ))
+                        }
                     }
+
+                    Log.d("MainActivity", "Sending ${oneTimePreKeysList.size} one-time prekeys to server")
+
 
                     // Format response to send FULL SERIALIZED RECORDS (not just public keys)
                     val response = mapOf(
                         "identity_key_b64" to bundle.getString("identity"),
                         "registration_id" to registrationId,
                         "signed_prekey_id" to signedPreKeyId,
-                        "signed_prekey_b64" to fullSignedPreKeyB64, // FULL SERIALIZED RECORD
+                        "signed_prekey_b64" to fullSignedPreKeyB64,
                         "signed_prekey_signature_b64" to bundle.getString("signedPreKeySignature"),
-                        "one_time_prekeys" to listOf(
-                            mapOf(
-                                "key_id" to oneTimePreKeyId,
-                                "public_key_b64" to fullOneTimePreKeyB64 // FULL SERIALIZED RECORD
-                            )
-                        )
+                        "one_time_prekeys" to oneTimePreKeysList // Send multiple prekeys
                     )
 
                     Log.d("MainActivity", "Successfully generated real key bundle with ${response.size} fields")
                     Log.d("MainActivity", "Signed prekey record size: ${fullSignedPreKeyB64.length} chars")
-                    Log.d("MainActivity", "One-time prekey record size: ${fullOneTimePreKeyB64.length} chars")
+
                     result.success(response)
 
                 } catch (e: Exception) {
@@ -625,45 +521,27 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /**
-     * Initialize session using SessionManager with proper retry and recovery
-     */
     private fun initSessionWithSessionManager(call: MethodCall, result: MethodChannel.Result) {
         try {
             val myUid = call.argument<String>("myUid")
             val recipientUid = call.argument<String>("recipientUid")
-            val bundleJson = call.argument<String>("bundleJson")
 
             if (myUid == null || recipientUid == null) {
                 result.error("INVALID_ARGS", "Missing required arguments", null)
                 return
             }
 
-            currentUserUid = myUid // Set for testing
-            Log.d("MainActivity", "Initializing session with SessionManager: $myUid -> $recipientUid")
+            currentUserUid = myUid
+            Log.d("MainActivity", "Initializing session: $myUid -> $recipientUid")
 
             runBlocking {
                 try {
                     val sessionManager = getSessionManager(myUid)
-
-                    // If bundle provided, use traditional init
-                    if (!bundleJson.isNullOrEmpty()) {
-                        val success = protocolManager.initSessionWithBundle(myUid, recipientUid, bundleJson)
-                        result.success(success)
-                        return@runBlocking
-                    }
-
-                    // Otherwise use SessionManager for smart session handling
                     val success = sessionManager.ensureSession(recipientUid)
-                    if (success) {
-                        Log.d("MainActivity", "Session established/recovered successfully")
-                        result.success(true)
-                    } else {
-                        // Try recovery
-                        Log.d("MainActivity", "Session establishment failed, attempting recovery...")
-                        val recovered = sessionManager.recoverSession(recipientUid)
-                        result.success(recovered)
-                    }
+
+                    Log.d("MainActivity", "Session establishment result: $success")
+                    result.success(success)
+
                 } catch (e: Exception) {
                     Log.e("MainActivity", "Session initialization error: ${e.message}", e)
                     result.error("SESSION_INIT_ERROR", e.message, null)
@@ -675,9 +553,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /**
-     * Encrypt message with automatic session management
-     */
     private fun encryptMessageWithSessionManager(call: MethodCall, result: MethodChannel.Result) {
         try {
             val myUid = call.argument<String>("myUid")
@@ -690,23 +565,20 @@ class MainActivity : FlutterActivity() {
                 return
             }
 
-            currentUserUid = myUid // Set for testing
-            Log.d("MainActivity", "Encrypting message with SessionManager: $myUid -> $recipientUid")
+            currentUserUid = myUid
+            Log.d("MainActivity", "Encrypting message: $myUid -> $recipientUid")
 
             runBlocking {
                 try {
                     val sessionManager = getSessionManager(myUid)
 
-                    // Ensure session is ready
+                    // Ensure session exists
                     val sessionReady = sessionManager.ensureSession(recipientUid, recipientDeviceId)
                     if (!sessionReady) {
                         Log.e("MainActivity", "Failed to establish session for encryption")
-                        result.error("SESSION_NOT_READY", "Unable to establish secure session", null)
+                        result.error("SESSION_NOT_READY", "Unable to establish session", null)
                         return@runBlocking
                     }
-
-                    // Rotate keys if needed (background maintenance)
-                    sessionManager.rotatePreKeysIfNeeded()
 
                     // Encrypt the message
                     val ciphertextB64 = protocolManager.encrypt(
@@ -720,23 +592,10 @@ class MainActivity : FlutterActivity() {
                         Log.d("MainActivity", "Message encrypted successfully (${ciphertextB64.length} chars)")
                         result.success(ciphertextB64)
                     } else {
-                        Log.e("MainActivity", "Encryption returned null - attempting session recovery")
-
-                        // Try session recovery
-                        val recovered = sessionManager.recoverSession(recipientUid, recipientDeviceId)
-                        if (recovered) {
-                            // Retry encryption after recovery
-                            val retryResult = protocolManager.encrypt(myUid, recipientUid, recipientDeviceId, plaintext.toByteArray())
-                            if (retryResult != null) {
-                                Log.d("MainActivity", "Message encrypted after session recovery")
-                                result.success(retryResult)
-                            } else {
-                                result.error("ENCRYPTION_FAILED", "Failed to encrypt message even after recovery", null)
-                            }
-                        } else {
-                            result.error("ENCRYPTION_FAILED", "Failed to encrypt message and session recovery failed", null)
-                        }
+                        Log.e("MainActivity", "Encryption failed")
+                        result.error("ENCRYPTION_FAILED", "Failed to encrypt message", null)
                     }
+
                 } catch (e: Exception) {
                     Log.e("MainActivity", "Encryption error: ${e.message}", e)
                     result.error("ENCRYPTION_ERROR", e.message, null)
@@ -835,41 +694,7 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /**
-     * Manually rotate keys for a user
-     */
-    private fun rotateKeysForUser(call: MethodCall, result: MethodChannel.Result) {
-        try {
-            val myUid = call.argument<String>("myUid")
-            if (myUid == null) {
-                result.error("INVALID_ARGS", "Missing myUid", null)
-                return
-            }
 
-            currentUserUid = myUid // Set for testing
-
-            runBlocking {
-                try {
-                    val sessionManager = getSessionManager(myUid)
-                    val success = sessionManager.rotatePreKeysIfNeeded()
-
-                    val stats = sessionManager.getSessionStats()
-                    Log.d("MainActivity", "Key rotation completed. Stats: $stats")
-
-                    result.success(mapOf(
-                        "success" to success,
-                        "stats" to stats
-                    ))
-                } catch (e: Exception) {
-                    Log.e("MainActivity", "Error rotating keys: ${e.message}", e)
-                    result.error("KEY_ROTATION_ERROR", e.message, null)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "rotateKeysForUser error: ${e.message}", e)
-            result.error("UNEXPECTED_ERROR", e.message, null)
-        }
-    }
 
     /**
      * Convert byte array to int (big-endian)
@@ -1014,7 +839,10 @@ class MainActivity : FlutterActivity() {
                 return@withContext null
             }
 
-            val token = currentUser.getIdToken(false).await()
+            Log.d("MainActivity", "fetchPrekeyBundle: Current user UID = ${currentUser.uid}")
+            Log.d("MainActivity", "fetchPrekeyBundle: Getting fresh token...")
+
+            val token = currentUser.getIdToken(true).await()
             val url = "http://192.168.29.81:8080/v1/prekey_bundle?uid=$targetUid&device_id=$deviceId"
 
             Log.d("MainActivity", "Fetching prekey bundle: $url")
@@ -1067,5 +895,148 @@ class MainActivity : FlutterActivity() {
         }
 
         return@withContext null
+    }
+
+    suspend fun storeSharedSession(sessionKey: String, sessionData: ByteArray): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val currentUser = FirebaseAuth.getInstance().currentUser
+            if (currentUser == null) {
+                Log.e("MainActivity", "No authenticated user for session storage")
+                return@withContext false
+            }
+
+            val token = currentUser.getIdToken(false).await()
+            val sessionDataB64 = Base64.encodeToString(sessionData, Base64.NO_WRAP)
+
+            val requestBody = JSONObject().apply {
+                put("session_key", sessionKey)
+                put("session_data", sessionDataB64)
+            }
+
+            val request = Request.Builder()
+                .url("http://192.168.29.81:8080/v1/sessions")
+                .addHeader("Authorization", "Bearer $token")
+                .addHeader("Content-Type", "application/json")
+                .post(RequestBody.create("application/json".toMediaType(), requestBody.toString()))
+                .build()
+
+            val response = okHttpClient.newCall(request).execute()
+
+            Log.d("MainActivity", "storeSharedSession result: ${response.code}")
+            return@withContext response.isSuccessful
+
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error storing shared session: ${e.message}", e)
+            return@withContext false
+        }
+    }
+
+    suspend fun loadSharedSession(sessionKey: String): ByteArray? = withContext(Dispatchers.IO) {
+        try {
+            val currentUser = FirebaseAuth.getInstance().currentUser
+            if (currentUser == null) {
+                Log.e("MainActivity", "No authenticated user for session loading")
+                return@withContext null
+            }
+
+            val token = currentUser.getIdToken(false).await()
+            val url = "http://192.168.29.81:8080/v1/sessions?session_key=${URLEncoder.encode(sessionKey, "UTF-8")}"
+
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("Authorization", "Bearer $token")
+                .get()
+                .build()
+
+            val response = okHttpClient.newCall(request).execute()
+
+            if (response.isSuccessful) {
+                val responseBody = response.body?.string()
+                if (responseBody != null) {
+                    val jsonObject = JSONObject(responseBody)
+                    val sessionDataB64 = jsonObject.getString("session_data")
+                    return@withContext Base64.decode(sessionDataB64, Base64.NO_WRAP)
+                }
+            } else if (response.code == 404) {
+                Log.d("MainActivity", "Session not found: $sessionKey")
+                return@withContext null
+            } else {
+                Log.e("MainActivity", "loadSharedSession failed: ${response.code}")
+            }
+
+            return@withContext null
+
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error loading shared session: ${e.message}", e)
+            return@withContext null
+        }
+    }
+
+    private fun captureSessionContext(call: MethodCall, result: MethodChannel.Result) {
+        try {
+            val myUid = call.argument<String>("myUid")
+            val recipientUid = call.argument<String>("recipientUid")
+            val recipientDeviceId = call.argument<Int>("recipientDeviceId") ?: 1
+
+            if (myUid == null || recipientUid == null) {
+                result.error("INVALID_ARGS", "Missing required arguments", null)
+                return
+            }
+
+            Log.d("MainActivity", "captureSessionContext: $myUid -> $recipientUid")
+
+            runBlocking {
+                try {
+                    val sessionManager = getSessionManager(myUid)
+                    val sessionContextB64 = protocolManager.captureSessionContext(myUid, recipientUid, recipientDeviceId)
+
+                    if (sessionContextB64 != null) {
+                        Log.d("MainActivity", "Session context captured successfully")
+                        result.success(sessionContextB64)
+                    } else {
+                        Log.e("MainActivity", "Failed to capture session context")
+                        result.success(null)
+                    }
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "captureSessionContext error: ${e.message}", e)
+                    result.error("CAPTURE_ERROR", e.message, null)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "captureSessionContext outer error: ${e.message}", e)
+            result.error("UNEXPECTED_ERROR", e.message, null)
+        }
+    }
+
+    private fun applySessionContext(call: MethodCall, result: MethodChannel.Result) {
+        try {
+            val myUid = call.argument<String>("myUid")
+            val senderUid = call.argument<String>("senderUid")
+            val sessionContextB64 = call.argument<String>("sessionContextB64")
+            val senderDeviceId = call.argument<Int>("senderDeviceId") ?: 1
+
+            if (myUid == null || senderUid == null || sessionContextB64 == null) {
+                result.error("INVALID_ARGS", "Missing required arguments", null)
+                return
+            }
+
+            Log.d("MainActivity", "applySessionContext: $myUid <- $senderUid")
+
+            runBlocking {
+                try {
+                    val sessionManager = getSessionManager(myUid)
+                    val success = protocolManager.applySessionContext(myUid, senderUid, senderDeviceId, sessionContextB64)
+
+                    Log.d("MainActivity", "Session context applied: $success")
+                    result.success(success)
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "applySessionContext error: ${e.message}", e)
+                    result.error("APPLY_ERROR", e.message, null)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "applySessionContext outer error: ${e.message}", e)
+            result.error("UNEXPECTED_ERROR", e.message, null)
+        }
     }
 }

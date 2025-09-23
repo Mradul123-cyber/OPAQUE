@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import 'package:zarq_messenger/services/database_service.dart';
 import 'package:zarq_messenger/services/navigation_handler.dart';
 import 'dart:ui';
 import 'dart:convert';
@@ -212,8 +213,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _logout(BuildContext context) async {
     print("[HomeScreen] _logout() triggered at ${DateTime.now()} — stacktrace:\n${StackTrace.current}");
+
     final websocketService = Provider.of<WebSocketService>(context, listen: false);
     websocketService.disconnect();
+
+    // Add database reset using the public method
+    final dbService = Provider.of<DatabaseService>(context, listen: false);
+    await dbService.resetDatabase();
+
     await FirebaseAuth.instance.signOut();
 
     if (context.mounted) {

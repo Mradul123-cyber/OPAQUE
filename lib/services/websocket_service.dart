@@ -1,4 +1,3 @@
-// lib/services/websocket_service.dart
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
@@ -10,6 +9,42 @@ import 'database_service.dart';
 import 'package:zarq_messenger/message_model.dart';
 import 'sent_message_service.dart';
 
+// Message queue item for reliable delivery
+class QueuedMessage {
+  final String id;
+  final Map<String, dynamic> data;
+  final DateTime timestamp;
+  final int attemptCount;
+  final int maxAttempts;
+  final Duration timeout;
+
+  QueuedMessage({
+    required this.id,
+    required this.data,
+    required this.timestamp,
+    this.attemptCount = 0,
+    this.maxAttempts = 3,
+    this.timeout = const Duration(seconds: 30),
+  });
+
+  QueuedMessage copyWith({
+    int? attemptCount,
+    DateTime? timestamp,
+  }) {
+    return QueuedMessage(
+      id: id,
+      data: data,
+      timestamp: timestamp ?? this.timestamp,
+      attemptCount: attemptCount ?? this.attemptCount,
+      maxAttempts: maxAttempts,
+      timeout: timeout,
+    );
+  }
+
+  bool get isExpired => DateTime.now().difference(timestamp) > timeout;
+  bool get hasRetriesLeft => attemptCount < maxAttempts;
+}
+
 class WebSocketService with ChangeNotifier {
   WebSocketChannel? _channel;
   bool _isConnected = false;
@@ -20,13 +55,25 @@ class WebSocketService with ChangeNotifier {
   static const int _maxReconnectAttempts = 5;
   bool _isReconnecting = false;
 
+  // Heartbeat system
+  Timer? _heartbeatTimer;
+  Timer? _heartbeatTimeoutTimer;
+  static const Duration _heartbeatInterval = Duration(seconds: 30);
+  static const Duration _heartbeatTimeout = Duration(seconds: 10);
+  DateTime? _lastPongReceived;
+  bool _waitingForPong = false;
+
+  // Message delivery queue
+  final Map<String, QueuedMessage> _messageQueue = {};
+  final Map<String, Completer<bool>> _messageCompleters = {};
+  Timer? _queueProcessTimer;
+  static const Duration _queueProcessInterval = Duration(seconds: 5);
+
   final StreamController<dynamic> _streamController = StreamController<dynamic>.broadcast();
-  // MethodChannel to call native Signal methods
   static const MethodChannel _signalChannel = MethodChannel('com.zarq/signal');
 
   StreamSubscription? _sentMessageSubscription;
   final Set<int> _localSentMessageIds = {};
-
 
   Stream<dynamic> get stream => _streamController.stream;
   WebSocketChannel? get channel => _channel;
@@ -38,19 +85,16 @@ class WebSocketService with ChangeNotifier {
       return;
     }
 
-    // If already connected with same token, nothing to do
     if (_isConnected && _channel != null && token == _lastToken) {
       print("[WebSocketService] Already connected. No action needed.");
       return;
     }
 
-    // Avoid overlapping reconnection attempts
     if (_isReconnecting) {
       print("[WebSocketService] Reconnection already in progress, skipping");
       return;
     }
 
-    // Close any existing connection first
     if (_channel != null) {
       print("[WebSocketService] A new connection was requested. Disconnecting the old one first...");
       await disconnect();
@@ -60,7 +104,6 @@ class WebSocketService with ChangeNotifier {
     _isReconnecting = true;
     print("[WebSocketService] Attempting to connect... (Attempt: ${_reconnectAttempts + 1})");
 
-    // Initialize sent message listener when connecting
     _initializeSentMessageListener();
 
     final completer = Completer<void>();
@@ -70,18 +113,20 @@ class WebSocketService with ChangeNotifier {
       final uri = Uri.parse('$host?token=$token');
       _channel = WebSocketChannel.connect(uri);
 
-      // Mark connected immediately once the channel is created
       _isConnected = true;
       _isReconnecting = false;
       _reconnectAttempts = 0;
       notifyListeners();
       print("[WebSocketService] Connection established successfully (channel opened).");
+
+      // Start heartbeat and queue processing
+      _startHeartbeat();
+      _startQueueProcessor();
+
       if (!completer.isCompleted) completer.complete();
 
-      // Set up listener
       final subscription = _channel!.stream.listen(
             (message) {
-          // Handle incoming message (ignoring own messages as before)
           _handleIncomingMessage(message);
           _streamController.add(message);
         },
@@ -114,11 +159,242 @@ class WebSocketService with ChangeNotifier {
     return completer.future;
   }
 
-  // ADD: Method to get sent messages for a conversation
+  // HEARTBEAT SYSTEM
+  void _startHeartbeat() {
+    _stopHeartbeat();
+    print("[WebSocketService] Starting heartbeat system");
+
+    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (timer) {
+      _sendPing();
+    });
+  }
+
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    _heartbeatTimeoutTimer?.cancel();
+    _heartbeatTimeoutTimer = null;
+    _waitingForPong = false;
+  }
+
+  void _sendPing() {
+    if (!_isConnected || _channel == null) {
+      print("[WebSocketService] Cannot send ping - not connected");
+      return;
+    }
+
+    if (_waitingForPong) {
+      print("[WebSocketService] Previous ping still waiting for pong - connection may be dead");
+      _handleSilentDisconnection();
+      return;
+    }
+
+    try {
+      final pingMessage = {
+        'type': 'ping',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
+
+      _channel!.sink.add(jsonEncode(pingMessage));
+      _waitingForPong = true;
+
+      print("[WebSocketService] Ping sent, waiting for pong...");
+
+      // Set timeout for pong response
+      _heartbeatTimeoutTimer = Timer(_heartbeatTimeout, () {
+        if (_waitingForPong) {
+          print("[WebSocketService] Pong timeout - connection appears dead");
+          _handleSilentDisconnection();
+        }
+      });
+    } catch (e) {
+      print("[WebSocketService] Error sending ping: $e");
+      _handleSilentDisconnection();
+    }
+  }
+
+  void _handlePong() {
+    print("[WebSocketService] Pong received - connection alive");
+    _waitingForPong = false;
+    _lastPongReceived = DateTime.now();
+    _heartbeatTimeoutTimer?.cancel();
+  }
+
+  void _handleSilentDisconnection() {
+    print("[WebSocketService] Silent disconnection detected via heartbeat");
+    _waitingForPong = false;
+    _heartbeatTimeoutTimer?.cancel();
+
+    // Force reconnection
+    _handleDisconnection();
+  }
+
+  // MESSAGE QUEUE SYSTEM
+  void _startQueueProcessor() {
+    _stopQueueProcessor();
+    print("[WebSocketService] Starting message queue processor");
+
+    _queueProcessTimer = Timer.periodic(_queueProcessInterval, (timer) {
+      _processMessageQueue();
+    });
+  }
+
+  void _stopQueueProcessor() {
+    _queueProcessTimer?.cancel();
+    _queueProcessTimer = null;
+  }
+
+  Future<void> _processMessageQueue() async {
+    if (_messageQueue.isEmpty || !_isConnected) return;
+
+    print("[WebSocketService] Processing message queue (${_messageQueue.length} items)");
+
+    final expiredMessages = <String>[];
+    final retryMessages = <String>[];
+
+    for (final entry in _messageQueue.entries) {
+      final messageId = entry.key;
+      final queuedMsg = entry.value;
+
+      if (queuedMsg.isExpired) {
+        print("[WebSocketService] Message $messageId expired after ${queuedMsg.attemptCount} attempts");
+        expiredMessages.add(messageId);
+
+        // Complete with failure
+        final completer = _messageCompleters.remove(messageId);
+        completer?.complete(false);
+
+        // Update message status to failed
+        await _updateMessageStatusToFailed(queuedMsg);
+
+      } else if (queuedMsg.hasRetriesLeft) {
+        retryMessages.add(messageId);
+      }
+    }
+
+    // Remove expired messages
+    for (final id in expiredMessages) {
+      _messageQueue.remove(id);
+    }
+
+    // Retry pending messages
+    for (final id in retryMessages) {
+      await _retryQueuedMessage(id);
+    }
+  }
+
+  Future<void> _retryQueuedMessage(String messageId) async {
+    final queuedMsg = _messageQueue[messageId];
+    if (queuedMsg == null || !_isConnected || _channel == null) return;
+
+    try {
+      print("[WebSocketService] Retrying message $messageId (attempt ${queuedMsg.attemptCount + 1})");
+
+      _channel!.sink.add(jsonEncode(queuedMsg.data));
+
+      // Update attempt count
+      _messageQueue[messageId] = queuedMsg.copyWith(
+        attemptCount: queuedMsg.attemptCount + 1,
+        timestamp: DateTime.now(),
+      );
+
+    } catch (e) {
+      print("[WebSocketService] Error retrying message $messageId: $e");
+    }
+  }
+
+  Future<void> _updateMessageStatusToFailed(QueuedMessage queuedMsg) async {
+    try {
+      // Extract message info from queued data
+      final messageData = queuedMsg.data;
+      if (messageData['type'] == 'new_message') {
+        final messageId = messageData['message_id'] as int?;
+        if (messageId != null) {
+          final dbService = DatabaseService.instance;
+          await dbService.updateMessageStatus(messageId, MessageStatus.failed);
+
+          // Notify UI
+          _streamController.add({
+            'type': 'message_status_update',
+            'message_id': messageId,
+            'status': 'failed',
+            'conversation_id': messageData['conversation_id'],
+          });
+
+          print("[WebSocketService] Message $messageId marked as failed");
+        }
+      }
+    } catch (e) {
+      print("[WebSocketService] Error updating failed message status: $e");
+    }
+  }
+
+  // RELIABLE MESSAGE SENDING
+  Future<bool> sendMessageReliably(Map<String, dynamic> messageData) async {
+    if (!_isConnected || _channel == null) {
+      print("[WebSocketService] Cannot send message reliably - not connected");
+      return false;
+    }
+
+    final messageId = messageData['message_id']?.toString() ??
+        'msg_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(1000)}';
+
+    print("[WebSocketService] Sending message reliably: $messageId");
+
+    // Add to queue immediately
+    final queuedMessage = QueuedMessage(
+      id: messageId,
+      data: messageData,
+      timestamp: DateTime.now(),
+    );
+
+    _messageQueue[messageId] = queuedMessage;
+
+    // Create completer for delivery confirmation
+    final completer = Completer<bool>();
+    _messageCompleters[messageId] = completer;
+
+    try {
+      // Send immediately
+      _channel!.sink.add(jsonEncode(messageData));
+      print("[WebSocketService] Message sent to WebSocket: $messageId");
+
+      // Wait for confirmation or timeout
+      final delivered = await completer.future.timeout(
+        queuedMessage.timeout,
+        onTimeout: () {
+          print("[WebSocketService] Message delivery timeout: $messageId");
+          return false;
+        },
+      );
+
+      return delivered;
+
+    } catch (e) {
+      print("[WebSocketService] Error sending message reliably: $e");
+      _messageCompleters.remove(messageId);
+      return false;
+    } finally {
+      // Clean up queue and completer
+      _messageQueue.remove(messageId);
+      _messageCompleters.remove(messageId);
+    }
+  }
+
+  void _confirmMessageDelivery(String messageId) {
+    print("[WebSocketService] Confirming delivery for message: $messageId");
+
+    // Remove from queue
+    _messageQueue.remove(messageId);
+
+    // Complete the delivery promise
+    final completer = _messageCompleters.remove(messageId);
+    completer?.complete(true);
+  }
+
+  // UPDATE EXISTING METHODS
   Future<List<Message>> getLocalSentMessages(int conversationId) async {
     try {
-      // This would typically load from SharedPreferences or local storage
-      // For now, return empty list - the real implementation would load from Android SharedPreferences
       return [];
     } catch (e) {
       print("[WebSocketService] Error loading sent messages: $e");
@@ -126,7 +402,6 @@ class WebSocketService with ChangeNotifier {
     }
   }
 
-  /// Sync message statuses for recent sent messages
   Future<void> syncMessageStatuses(int conversationId) async {
     print("[WebSocketService] 🔍 syncMessageStatuses CALLED for conversation $conversationId");
     try {
@@ -139,7 +414,6 @@ class WebSocketService with ChangeNotifier {
       print("[WebSocketService] ✅ User authenticated: ${currentUser.uid}");
       print("[WebSocketService] Syncing message statuses for conversation $conversationId");
 
-      // Get recent sent messages that might need status updates
       final dbService = DatabaseService.instance;
       final messages = await dbService.getMessages(conversationId);
 
@@ -149,7 +423,6 @@ class WebSocketService with ChangeNotifier {
         print("[WebSocketService]   Message ID: ${msg.id}, Status: ${msg.status}, Content: '${msg.content}'");
       }
 
-      // Find messages sent by current user with 'sent' status
       final sentMessages = messages.where((msg) =>
       msg.senderUid == currentUser.uid &&
           msg.status == MessageStatus.sent
@@ -162,7 +435,7 @@ class WebSocketService with ChangeNotifier {
         return;
       }
 
-      // Request status updates from server
+      // Use reliable sending for status requests
       for (final message in sentMessages) {
         final statusMessage = {
           'type': 'status_request',
@@ -170,10 +443,8 @@ class WebSocketService with ChangeNotifier {
           'conversation_id': conversationId,
         };
 
-        if (_isConnected && _channel != null) {
-          _channel!.sink.add(jsonEncode(statusMessage));
-          print("[WebSocketService] Requested status for message ${message.id}");
-        }
+        await sendMessageReliably(statusMessage);
+        print("[WebSocketService] Requested status for message ${message.id}");
       }
 
       print("[WebSocketService] Requested status updates for ${sentMessages.length} messages");
@@ -183,7 +454,6 @@ class WebSocketService with ChangeNotifier {
     }
   }
 
-
   void _initializeSentMessageListener() {
     _sentMessageSubscription?.cancel();
     _sentMessageSubscription = SentMessageService.sentMessageStream.listen((message) {
@@ -192,13 +462,10 @@ class WebSocketService with ChangeNotifier {
     });
   }
 
-
   void _handleLocalSentMessage(Message sentMessage) {
     try {
-      // Add to cache to avoid duplicates
       _localSentMessageIds.add(sentMessage.id);
 
-      // Notify UI about the sent message
       _streamController.add({
         'type': 'local_sent_message',
         'message': sentMessage.toJson(),
@@ -212,7 +479,6 @@ class WebSocketService with ChangeNotifier {
     }
   }
 
-  /// Handle incoming WebSocket messages
   void _handleIncomingMessage(dynamic rawMessage) {
     try {
       print("[WebSocketService] === RAW INCOMING MESSAGE ===");
@@ -226,6 +492,7 @@ class WebSocketService with ChangeNotifier {
 
       switch (messageType) {
         case 'pong':
+          _handlePong();
           break;
         case 'new_message':
           print("[WebSocketService] *** PROCESSING NEW MESSAGE ***");
@@ -234,6 +501,17 @@ class WebSocketService with ChangeNotifier {
         case 'message_status':
           print("[WebSocketService] Message status update: $messageData");
           _handleMessageStatus(messageData);
+          break;
+        case 'message_deleted':  // ADD THIS CASE
+          print("[WebSocketService] Message deletion: $messageData");
+          _handleMessageDeletion(messageData);
+          break;    
+        case 'message_ack':
+        // Server acknowledges message receipt
+          final ackMessageId = messageData['message_id']?.toString();
+          if (ackMessageId != null) {
+            _confirmMessageDelivery(ackMessageId);
+          }
           break;
         case 'typing':
           _handleTypingIndicator(messageData);
@@ -247,7 +525,15 @@ class WebSocketService with ChangeNotifier {
     }
   }
 
-  /// Handle new message from WebSocket (process own messages too)
+  void _handleMessageDeletion(Map<String, dynamic> deletionData) {
+  _streamController.add({
+    'type': 'message_deleted',
+    'message_id': deletionData['message_id'],
+    'deletion_type': deletionData['deletion_type'],
+    'conversation_id': deletionData['conversation_id'],
+  });
+}
+
   Future<void> _handleNewMessage(Map<String, dynamic> messageData) async {
     try {
       print("[WebSocketService] Processing new message...");
@@ -258,7 +544,6 @@ class WebSocketService with ChangeNotifier {
         return;
       }
 
-      // Extract message details
       final messageId = messageData['message_id'] is int
           ? messageData['message_id'] as int
           : int.tryParse(messageData['message_id']?.toString() ?? '') ?? -1;
@@ -276,7 +561,6 @@ class WebSocketService with ChangeNotifier {
         return;
       }
 
-      // ORIGINAL BEHAVIOR: Ignore own messages
       if (senderUid == currentUser.uid) {
         print("[WebSocketService] Ignoring own message");
         return;
@@ -284,7 +568,6 @@ class WebSocketService with ChangeNotifier {
 
       print("[WebSocketService] Decrypting message from $senderUid...");
 
-      // Decrypt if possible, else fallback to base64 decode
       String decryptedContent;
       try {
         print("[WebSocketService] Attempting Signal Protocol decryption...");
@@ -305,12 +588,9 @@ class WebSocketService with ChangeNotifier {
       } catch (e) {
         print("[WebSocketService] ❌ Signal decryption failed: $e");
 
-        // Check if it's already plain text (for debugging)
         try {
           final base64Decoded = utf8.decode(base64Decode(contentB64));
           print("[WebSocketService] Base64 decode result: '$base64Decoded'");
-
-          // If base64 decode gives readable text, use it
           decryptedContent = base64Decoded;
           print("[WebSocketService] ✅ Using base64 decoded content");
         } catch (e2) {
@@ -320,7 +600,6 @@ class WebSocketService with ChangeNotifier {
         }
       }
 
-      // Save message to database
       await _saveMessageToDatabase(
         messageId: messageId,
         conversationId: conversationId,
@@ -346,7 +625,6 @@ class WebSocketService with ChangeNotifier {
     }
   }
 
-  /// Save message to local database
   Future<void> _saveMessageToDatabase({
     required int messageId,
     required int conversationId,
@@ -357,6 +635,14 @@ class WebSocketService with ChangeNotifier {
   }) async {
     try {
       final dbService = DatabaseService.instance;
+
+      // Check if current user has deleted this message
+      final isDeleted = await dbService.isMessageDeletedForMe(messageId);
+      if (isDeleted) {
+        print("[WebSocketService] Skipping save - message $messageId was deleted by current user");
+        return;
+      }
+
       final message = Message(
         id: messageId,
         conversationId: conversationId,
@@ -369,7 +655,6 @@ class WebSocketService with ChangeNotifier {
       await dbService.insertMessage(message);
       print("[WebSocketService] Message saved to database: ${message.content}");
 
-      // Notify UI about new message
       _notifyUIAboutNewMessage(message, conversationId);
     } catch (e, st) {
       print("[WebSocketService] Error saving message to database: $e\n$st");
@@ -384,10 +669,6 @@ class WebSocketService with ChangeNotifier {
     });
   }
 
-  /// Handle message status updates (delivered, read, etc.)
-  // Replace your existing _handleMessageStatus method and add these new methods to websocket_service.dart
-
-  /// Handle message status updates (delivered, read, etc.)
   void _handleMessageStatus(Map<String, dynamic> statusData) {
     print("[WebSocketService] Message status update: $statusData");
 
@@ -397,7 +678,6 @@ class WebSocketService with ChangeNotifier {
       final conversationId = statusData['conversation_id'] as int?;
 
       if (messageId != null && newStatus != null) {
-        // Parse status string to enum
         MessageStatus? status;
         try {
           status = MessageStatus.values.firstWhere(
@@ -408,10 +688,8 @@ class WebSocketService with ChangeNotifier {
           return;
         }
 
-        // Update database
         _updateMessageStatusInDatabase(messageId, status);
 
-        // Notify UI about status change
         _streamController.add({
           'type': 'message_status_update',
           'message_id': messageId,
@@ -425,7 +703,6 @@ class WebSocketService with ChangeNotifier {
     }
   }
 
-  /// Update message status in database
   Future<void> _updateMessageStatusInDatabase(int messageId, MessageStatus status) async {
     try {
       final dbService = DatabaseService.instance;
@@ -436,7 +713,6 @@ class WebSocketService with ChangeNotifier {
     }
   }
 
-  /// Send status update to server via WebSocket
   Future<void> sendStatusUpdate({
     required int messageId,
     required String status,
@@ -455,14 +731,13 @@ class WebSocketService with ChangeNotifier {
         'conversation_id': conversationId,
       };
 
-      _channel!.sink.add(jsonEncode(statusMessage));
+      await sendMessageReliably(statusMessage);
       print("[WebSocketService] Sent status update: $statusMessage");
     } catch (e) {
       print("[WebSocketService] Error sending status update: $e");
     }
   }
 
-  /// Mark messages as delivered when received
   Future<void> _markMessageAsDelivered(int messageId, int conversationId) async {
     await sendStatusUpdate(
       messageId: messageId,
@@ -471,12 +746,10 @@ class WebSocketService with ChangeNotifier {
     );
   }
 
-  /// Mark messages as read when chat is opened
   Future<void> markMessagesAsRead(int conversationId) async {
     try {
       final dbService = DatabaseService.instance;
 
-      // Get all unread messages in this conversation from other users
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return;
 
@@ -486,11 +759,9 @@ class WebSocketService with ChangeNotifier {
           (msg.status == MessageStatus.sent || msg.status == MessageStatus.delivered)
       ).toList();
 
-      // Mark as read in database and send to server
       for (final message in unreadMessages) {
         await dbService.updateMessageStatus(message.id, MessageStatus.read);
 
-        // Send read status to server
         await sendStatusUpdate(
           messageId: message.id,
           status: 'read',
@@ -506,10 +777,8 @@ class WebSocketService with ChangeNotifier {
     }
   }
 
-  /// Handle typing indicators
   void _handleTypingIndicator(Map<String, dynamic> typingData) {
     print("[WebSocketService] Typing indicator: $typingData");
-    // TODO: Update UI to show typing indicator
   }
 
   void _handleDisconnection() {
@@ -519,12 +788,15 @@ class WebSocketService with ChangeNotifier {
     _isConnected = false;
     _isReconnecting = false;
 
+    // Stop heartbeat and queue processing
+    _stopHeartbeat();
+    _stopQueueProcessor();
+
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
 
     notifyListeners();
 
-    // Attempt automatic reconnection with exponential backoff
     if (_lastToken != null && _reconnectAttempts < _maxReconnectAttempts) {
       _reconnectAttempts++;
       final delays = [1, 2, 5, 10, 30];
@@ -544,7 +816,6 @@ class WebSocketService with ChangeNotifier {
     }
   }
 
-  /// Manually trigger reconnection
   Future<void> reconnect() async {
     _reconnectAttempts = 0;
     if (_lastToken != null) {
@@ -556,16 +827,17 @@ class WebSocketService with ChangeNotifier {
     print("[WebSocketService] Disconnect() called at ${DateTime.now()} — stacktrace:\n${StackTrace.current}");
 
     _lastToken = null;
-    _reconnectAttempts = 0;
     _isReconnecting = false;
 
+    // Stop all timers
+    _stopHeartbeat();
+    _stopQueueProcessor();
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
 
     await _streamSubscription?.cancel();
     _streamSubscription = null;
 
-    // Close WebSocket connection
     try {
       await _channel?.sink.close(1000, 'Normal closure');
     } catch (e) {
@@ -581,8 +853,10 @@ class WebSocketService with ChangeNotifier {
 
   @override
   void dispose() {
+    _stopHeartbeat();
+    _stopQueueProcessor();
     _reconnectTimer?.cancel();
-    _sentMessageSubscription?.cancel(); // ADD: Cancel sent message subscription
+    _sentMessageSubscription?.cancel();
     disconnect();
     _streamController.close();
     super.dispose();

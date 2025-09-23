@@ -130,28 +130,7 @@ class SignalQuickReplyService : IntentService("SignalQuickReplyService") {
 
                 // Try session recovery
                 Log.d(TAG, "Attempting session recovery...")
-                val recovered = sessionManager.recoverSession(recipientUid, 1)
 
-                if (recovered) {
-                    // Retry encryption after recovery
-                    val retryResult = protocolManager.encrypt(myUid, recipientUid, 1, text.toByteArray())
-                    if (retryResult != null) {
-                        Log.d(TAG, "Message encrypted after session recovery")
-                        val (retrySuccess, retryRealMessageId) = sendToGoBackend(conversationId, retryResult)
-
-                        if (retrySuccess && retryRealMessageId != null) {
-                            updateLocalMessageId(localMessageId, retryRealMessageId, conversationId)
-                            notifyMainAppOfSentMessage(conversationId, localMessageId, text, retryRealMessageId)
-                            showSuccessNotification("Message sent")
-                        } else {
-                            showErrorNotification("Failed to send message")
-                        }
-                    } else {
-                        showErrorNotification("Encryption failed")
-                    }
-                } else {
-                    showErrorNotification("Cannot send: Connection error")
-                }
             }
 
         } catch (e: Exception) {

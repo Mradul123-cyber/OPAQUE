@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.whispersystems.libsignal.IdentityKey
 import org.whispersystems.libsignal.IdentityKeyPair
@@ -34,6 +35,10 @@ class SignalProtocolManager(
     private val TAG = "SignalProtocolManager"
     private val deviceId: Int = 1
 
+    fun normalizeSessionKey(user1: String, user2: String, deviceId: Int): String {
+        val users = listOf(user1, user2).sorted()
+        return "${users[0]}_${users[1]}_$deviceId"
+    }
     // -------------------------
     // Identity & Key generation
     // -------------------------
@@ -293,6 +298,13 @@ class SignalProtocolManager(
             val sessionBuilder = SessionBuilder(libStore, address)
             sessionBuilder.process(preKeyBundle)
 
+            val sessionExists = libStore.containsSession(address)
+            Log.d(TAG, "initSessionWithBundle: Session created and stored = $sessionExists")
+
+// Also check what gets saved to SignalStore
+            val sessionIds = store.listSessionDeviceIds(recipientUid)
+            Log.d(TAG, "initSessionWithBundle: Session device IDs for $recipientUid: $sessionIds")
+
             Log.d(TAG, "X3DH session initialized: $myUid -> $recipientUid (device $remoteDeviceId)")
             true
         } catch (e: Exception) {
@@ -323,22 +335,153 @@ class SignalProtocolManager(
      */
     suspend fun decrypt(myUid: String, senderUid: String, senderDeviceId: Int = 1, wireBase64: String): ByteArray? = withContext(Dispatchers.IO) {
         try {
+            Log.d(TAG, "decrypt: Starting $myUid <- $senderUid:$senderDeviceId")
+
             val libStore = LibsignalStore(context, store, myUid)
             val address = SignalProtocolAddress(senderUid, senderDeviceId)
+
+            // Check if session exists
+            val sessionExists = libStore.containsSession(address)
+            Log.d(TAG, "decrypt: Session exists = $sessionExists")
+
+            if (!sessionExists) {
+                Log.e(TAG, "decrypt: No session found for $senderUid:$senderDeviceId")
+                return@withContext null
+            }
+
             val cipher = SessionCipher(libStore, address)
             val wire = Base64.decode(wireBase64, Base64.NO_WRAP)
 
+            Log.d(TAG, "decrypt: Wire data length = ${wire.size}")
+
             // Decide message type: PreKeySignalMessage vs SignalMessage
             return@withContext try {
+                Log.d(TAG, "decrypt: Trying PreKeySignalMessage")
                 val preKeyMsg = PreKeySignalMessage(wire)
-                cipher.decrypt(preKeyMsg)
-            } catch (_: Exception) {
+                val result = cipher.decrypt(preKeyMsg)
+                Log.d(TAG, "decrypt: PreKeySignalMessage SUCCESS")
+                result
+            } catch (e: Exception) {
+                Log.d(TAG, "decrypt: PreKeySignalMessage failed: ${e.message}")
+                Log.d(TAG, "decrypt: Trying SignalMessage")
                 val sigMsg = SignalMessage(wire)
-                cipher.decrypt(sigMsg)
+                val result = cipher.decrypt(sigMsg)
+                Log.d(TAG, "decrypt: SignalMessage SUCCESS")
+                result
             }
         } catch (e: Exception) {
             Log.e(TAG, "decrypt error: ${e.message}", e)
             null
+        }
+    }
+
+    /**
+     * Capture current session context for preservation with message
+     */
+    suspend fun captureSessionContext(myUid: String, recipientUid: String, recipientDeviceId: Int = 1): String? = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "=== CAPTURE SESSION CONTEXT DEBUG ===")
+            Log.d(TAG, "captureSessionContext: $myUid -> $recipientUid")
+
+            val libStore = LibsignalStore(context, store, myUid)
+            val address = SignalProtocolAddress(recipientUid, recipientDeviceId)
+
+            // Debug session existence
+            val sessionExists = libStore.containsSession(address)
+            Log.d(TAG, "Session exists in libStore: $sessionExists")
+
+            if (!sessionExists) {
+                Log.e(TAG, "captureSessionContext: No session exists for $recipientUid")
+                return@withContext null
+            }
+
+            // Load and verify session record
+            val sessionRecord = libStore.loadSession(address)
+            val sessionBytes = sessionRecord.serialize()
+            Log.d(TAG, "Session record loaded, size: ${sessionBytes.size} bytes")
+
+            if (sessionBytes.isEmpty()) {
+                Log.e(TAG, "Session record is empty!")
+                return@withContext null
+            }
+
+            val sessionContextB64 = Base64.encodeToString(sessionBytes, Base64.NO_WRAP)
+            Log.d(TAG, "Session context encoded to base64: ${sessionContextB64.length} characters")
+            Log.d(TAG, "=== END CAPTURE DEBUG ===")
+
+            return@withContext sessionContextB64
+
+        } catch (e: Exception) {
+            Log.e(TAG, "captureSessionContext error: ${e.message}", e)
+            return@withContext null
+        }
+    }
+
+    /**
+     * Apply captured session context for decryption
+     */
+    suspend fun applySessionContext(myUid: String, senderUid: String, senderDeviceId: Int = 1, sessionContextB64: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "applySessionContext: Applying session context for $myUid <- $senderUid")
+
+            val sessionBytes = Base64.decode(sessionContextB64, Base64.NO_WRAP)
+            val sessionRecord = SessionRecord(sessionBytes)
+
+            val libStore = LibsignalStore(context, store, myUid)
+            val address = SignalProtocolAddress(senderUid, senderDeviceId)
+
+            // Store the session context temporarily for decryption
+            libStore.storeSession(address, sessionRecord)
+
+            Log.d(TAG, "applySessionContext: Successfully applied session context (${sessionBytes.size} bytes)")
+            return@withContext true
+
+        } catch (e: Exception) {
+            Log.e(TAG, "applySessionContext error: ${e.message}", e)
+            return@withContext false
+        }
+    }
+
+    suspend fun checkUserSetup(uid: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            // Check if user has identity key
+            val identityExists = store.loadPublicKeyBase64(uid, "identity") != null
+            Log.d(TAG, "checkUserSetup for $uid: $identityExists")
+            return@withContext identityExists
+        } catch (e: Exception) {
+            Log.e(TAG, "checkUserSetup error: ${e.message}", e)
+            return@withContext false
+        }
+    }
+
+    suspend fun setupUser(uid: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Setting up Signal Protocol for user: $uid")
+
+            // Generate identity
+            if (!generateIdentity(uid)) {
+                Log.e(TAG, "Failed to generate identity for $uid")
+                return@withContext false
+            }
+
+            // Generate signed prekey
+            if (!generateSignedPreKey(uid, 1)) {
+                Log.e(TAG, "Failed to generate signed prekey for $uid")
+                return@withContext false
+            }
+
+            // Generate prekeys
+            if (!generatePreKeys(uid, 1, 50)) {
+                Log.e(TAG, "Failed to generate prekeys for $uid")
+                return@withContext false
+            }
+
+            Log.d(TAG, "Signal Protocol setup completed for $uid")
+            return@withContext true
+
+        } catch (e: Exception) {
+            Log.e(TAG, "setupUser error: ${e.message}", e)
+            return@withContext false
         }
     }
 
@@ -363,16 +506,19 @@ class SignalProtocolManager(
     }
 }
 
-/**
- * LibsignalStore - ENHANCED implementation with forward secrecy support
- * Implements the required libsignal interfaces for key and session storage.
- */
 class LibsignalStore(
     private val context: Context,
     private val signalStore: SignalStore,
     private val myUid: String
 ) : SignalProtocolStore {
     private val TAG = "LibsignalStore"
+
+    companion object {
+        fun normalizeSessionKey(user1: String, user2: String, deviceId: Int): String {
+            val users = listOf(user1, user2).sorted()
+            return "${users[0]}_${users[1]}_$deviceId"
+        }
+    }
 
     // IdentityKeyStore
     override fun getIdentityKeyPair(): IdentityKeyPair {
@@ -461,12 +607,14 @@ class LibsignalStore(
     }
 
     // SessionStore
+
     override fun loadSession(recipient: SignalProtocolAddress): SessionRecord {
         val b64 = signalStore.loadSessionBlobBase64(recipient.name, recipient.deviceId.toLong())
             ?: return SessionRecord()
         val bytes = Base64.decode(b64, Base64.NO_WRAP)
         return SessionRecord(bytes)
     }
+
 
     override fun getSubDeviceSessions(name: String): MutableList<Int> {
         val ids = signalStore.listSessionDeviceIds(name)
@@ -476,6 +624,7 @@ class LibsignalStore(
     override fun storeSession(recipient: SignalProtocolAddress, record: SessionRecord) {
         val b64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
         signalStore.saveSessionBlob(recipient.name, recipient.deviceId.toLong(), b64)
+        Log.d(TAG, "storeSession: Stored session for ${recipient.name}:${recipient.deviceId}")
     }
 
     override fun containsSession(recipient: SignalProtocolAddress): Boolean {
@@ -483,138 +632,24 @@ class LibsignalStore(
         return ids.contains(recipient.deviceId.toLong())
     }
 
-    // -------------------------
-    // PHASE 1.2: ENHANCED SESSION DELETION WITH FORWARD SECRECY
-    // -------------------------
-
-    /**
-     * ENHANCED: Delete session with comprehensive cryptographic state cleanup
-     * This ensures perfect forward secrecy by removing all decryption capabilities
-     */
     override fun deleteSession(recipient: SignalProtocolAddress) {
         try {
-            Log.d(TAG, "deleteSession: Starting enhanced deletion for ${recipient.name}:${recipient.deviceId}")
-
-            // 1. Use the enhanced SignalStore method for comprehensive deletion
-            signalStore.deleteAllSessionRelatedData(recipient.name, recipient.deviceId.toLong())
-
-            // 2. Verify deletion was successful
-            val verificationPassed = signalStore.verifySessionDeletion(recipient.name, recipient.deviceId.toLong())
-            if (verificationPassed) {
-                Log.d(TAG, "deleteSession: Successfully deleted all session data for ${recipient.name}:${recipient.deviceId}")
-            } else {
-                Log.w(TAG, "deleteSession: Verification failed - some data may remain for ${recipient.name}:${recipient.deviceId}")
-            }
-
+            signalStore.removeSession(recipient.name, recipient.deviceId.toLong())
+            Log.d(TAG, "deleteSession: Deleted session for ${recipient.name}:${recipient.deviceId}")
         } catch (e: Exception) {
             Log.e(TAG, "deleteSession failed for ${recipient.name}:${recipient.deviceId}: ${e.message}", e)
-            throw e
         }
     }
 
-    /**
-     * ENHANCED: Delete all sessions for a recipient with comprehensive cleanup
-     */
     override fun deleteAllSessions(name: String) {
         try {
-            Log.d(TAG, "deleteAllSessions: Starting comprehensive deletion for $name")
-
             val deviceIds = signalStore.listSessionDeviceIds(name)
-            var deletedCount = 0
-            var verificationFailures = 0
-
             for (deviceId in deviceIds) {
-                try {
-                    // Use comprehensive deletion for each device
-                    signalStore.deleteAllSessionRelatedData(name, deviceId)
-
-                    // Verify each deletion
-                    val verificationPassed = signalStore.verifySessionDeletion(name, deviceId)
-                    if (verificationPassed) {
-                        deletedCount++
-                    } else {
-                        verificationFailures++
-                        Log.w(TAG, "deleteAllSessions: Verification failed for $name:$deviceId")
-                    }
-
-                } catch (e: Exception) {
-                    Log.e(TAG, "deleteAllSessions: Failed to delete session for $name:$deviceId: ${e.message}", e)
-                    verificationFailures++
-                }
+                signalStore.removeSession(name, deviceId)
             }
-
-            Log.d(TAG, "deleteAllSessions: Completed for $name - deleted: $deletedCount, failures: $verificationFailures")
-
+            Log.d(TAG, "deleteAllSessions: Deleted all sessions for $name")
         } catch (e: Exception) {
             Log.e(TAG, "deleteAllSessions failed for $name: ${e.message}", e)
-        }
-    }
-
-    /**
-     * NEW: Force delete all cryptographic state for a recipient
-     * This is a nuclear option that removes everything related to the recipient
-     */
-    fun forceDeleteAllCryptoState(recipientUid: String) {
-        try {
-            Log.d(TAG, "forceDeleteAllCryptoState: Nuclear deletion for $recipientUid")
-
-            // Get all device IDs for this recipient
-            val deviceIds = signalStore.listSessionDeviceIds(recipientUid)
-
-            // Delete everything for each device
-            for (deviceId in deviceIds) {
-                signalStore.deleteAllSessionRelatedData(recipientUid, deviceId)
-            }
-
-            // Also delete any remaining files that contain the recipient UID
-            deleteAnyRemainingRecipientFiles(recipientUid)
-
-            Log.d(TAG, "forceDeleteAllCryptoState: Completed nuclear deletion for $recipientUid")
-
-        } catch (e: Exception) {
-            Log.e(TAG, "forceDeleteAllCryptoState failed for $recipientUid: ${e.message}", e)
-            throw e
-        }
-    }
-
-    /**
-     * NEW: Verify that forward secrecy is working correctly
-     * Returns true if no session-related data remains
-     */
-    fun verifyForwardSecrecy(recipientUid: String, deviceId: Int): Boolean {
-        return try {
-            signalStore.verifySessionDeletion(recipientUid, deviceId.toLong())
-        } catch (e: Exception) {
-            Log.e(TAG, "verifyForwardSecrecy failed for $recipientUid:$deviceId: ${e.message}", e)
-            false
-        }
-    }
-
-    /**
-     * Delete any remaining files that might contain recipient-specific data
-     */
-    private fun deleteAnyRemainingRecipientFiles(recipientUid: String) {
-        try {
-            val userDir = signalStore.javaClass.getDeclaredMethod("userDir", String::class.java)
-            userDir.isAccessible = true
-            val dir = userDir.invoke(signalStore, myUid) as java.io.File
-
-            var deletedCount = 0
-            dir.listFiles()?.forEach { file ->
-                if (file.name.contains(recipientUid)) {
-                    if (file.delete()) {
-                        deletedCount++
-                        Log.d(TAG, "deleteAnyRemainingRecipientFiles: Deleted ${file.name}")
-                    }
-                }
-            }
-
-            if (deletedCount > 0) {
-                Log.d(TAG, "deleteAnyRemainingRecipientFiles: Deleted $deletedCount additional files for $recipientUid")
-            }
-
-        } catch (e: Exception) {
-            Log.e(TAG, "deleteAnyRemainingRecipientFiles failed for $recipientUid: ${e.message}", e)
         }
     }
 

@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zarq_messenger/app_theme.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:zarq_messenger/services/SignalService.dart';
 
 import 'firebase_options.dart';
 import 'home_screen.dart';
@@ -262,6 +263,8 @@ class _AuthWrapperState extends State<AuthWrapper> {
         print("User already initialized - doing fast startup");
 
         // Only do essential steps for fast startup
+        await Future.delayed(Duration(milliseconds: 100));
+        print("[AuthWrapper] Current user before DB init: ${widget.user.uid}");
         await dbService.init();
 
         // Check server profile quickly
@@ -279,7 +282,7 @@ class _AuthWrapperState extends State<AuthWrapper> {
         await _markUndeliveredMessagesAsDelivered(websocketService, dbService);
 
         // Quick sync of recent messages only
-        await _syncRecentMessages();
+        await _fetchOfflineMessages();
 
         print("[AuthWrapper] Fast initialization completed");
         return true;
@@ -290,6 +293,8 @@ class _AuthWrapperState extends State<AuthWrapper> {
 
       // Step 1: Initialize the database service
       print("=== [AuthWrapper] STEP 1: Initializing database service ===");
+      await Future.delayed(Duration(milliseconds: 100));
+      print("[AuthWrapper] Current user before DB init: ${widget.user.uid}");
       await dbService.init();
 
       // Step 2: Check if the user has a profile on the server FIRST
@@ -334,7 +339,7 @@ class _AuthWrapperState extends State<AuthWrapper> {
 
       // Step 7: Full sync of missed messages
       print("=== [AuthWrapper] STEP 7: Syncing missed messages ===");
-      await _syncMissedMessages();
+      await _fetchOfflineMessages();
 
       // Mark user as fully initialized
       await _markUserAsInitialized();
@@ -388,118 +393,44 @@ class _AuthWrapperState extends State<AuthWrapper> {
     }
   }
 
-  // Quick sync for fast startup (last 2 hours only)
-  Future<void> _syncRecentMessages() async {
-    try {
-      // Only sync messages from last 2 hours for fast startup
-      final since = DateTime.now().subtract(Duration(hours: 2));
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
 
-      final token = await user.getIdToken();
-      final url = Uri.parse('http://192.168.29.81:8080/v1/messages/missed?since=${since.toUtc().toIso8601String()}');
+
+  Future<void> _fetchOfflineMessages() async {
+    try {
+      print("[OFFLINE] Fetching offline messages...");
+
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null || user.uid != widget.user.uid) {
+        print("[OFFLINE] User context mismatch, aborting");
+        return;
+      }
+
+      final token = await user.getIdToken(true);
+      final url = Uri.parse('http://192.168.29.81:8080/v1/messages/offline');
 
       final response = await http.get(url, headers: {'Authorization': 'Bearer $token'});
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        final messages = data['messages'] as List;
-
-        for (var msgData in messages) {
-          await _processMissedMessage(msgData);
-        }
-      }
-    } catch (e) {
-      print('Quick sync failed: $e');
-    }
-  }
-
-  Future<void> _syncMissedMessages() async {
-    try {
-      print("[SYNC] Starting missed message sync...");
-
-      final lastSync = await _getLastSyncTimestamp();
-      print("[SYNC] Last sync timestamp: $lastSync");
-
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) {
-        print("[SYNC] No authenticated user, skipping sync");
-        return;
-      }
-
-      final token = await user.getIdToken();
-      if (token == null) {
-        print("[SYNC] Failed to get ID token, skipping sync");
-        return;
-      }
-
-      final url = Uri.parse('http://192.168.29.81:8080/v1/messages/missed?since=${lastSync.toUtc().toIso8601String()}');
-
-      print("[SYNC] Making request to: $url");
-      print("[SYNC] Request headers: Authorization: Bearer ${token.substring(0, token.length > 50 ? 50 : token.length)}...");
-
-      final response = await http.get(url, headers: {'Authorization': 'Bearer $token'});
-
-      print("[SYNC] Server response status: ${response.statusCode}");
-      print("[SYNC] Server response body: ${response.body}");
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        print("[SYNC] Parsed response data: $data");
-
         final messages = data['messages'] as List?;
-        print("[SYNC] Number of missed messages found: ${messages?.length ?? 0}");
+
+        print("[OFFLINE] Found ${messages?.length ?? 0} offline messages");
 
         if (messages != null && messages.isNotEmpty) {
-          print("[SYNC] Processing ${messages.length} missed messages...");
-
-          for (int i = 0; i < messages.length; i++) {
-          for (int i = 0; i < messages.length; i++) {
-            final msgData = messages[i];
-            print("[SYNC] Processing message ${i + 1}/${messages.length}: $msgData");
-            await _processMissedMessage(msgData);
+          for (var msgData in messages) {
+            await _processOfflineMessage(msgData);
           }
-
-          print("[SYNC] All missed messages processed successfully");
-          await _updateLastSyncTimestamp(DateTime.now());
-          print("[SYNC] Sync timestamp updated");
-        }
-        } else {
-          print("[SYNC] No missed messages found");
+          print("[OFFLINE] All offline messages processed");
         }
       } else {
-        print("[SYNC] Server error: ${response.statusCode} - ${response.body}");
-      }
-    } catch (e, stackTrace) {
-      print("[SYNC] Sync failed with error: $e");
-      print("[SYNC] Stack trace: $stackTrace");
-    }
-  }
-
-  Future<DateTime> _getLastSyncTimestamp() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final timestampString = prefs.getString('last_sync_timestamp');
-      if (timestampString != null) {
-        return DateTime.parse(timestampString);
+        print("[OFFLINE] Server error: ${response.statusCode}");
       }
     } catch (e) {
-      print('Error getting last sync timestamp: $e');
-    }
-    // Default to 30 days ago instead of 24 hours
-    return DateTime.now().subtract(Duration(days: 30));
-  }
-
-  Future<void> _updateLastSyncTimestamp(DateTime timestamp) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('last_sync_timestamp', timestamp.toIso8601String());
-    } catch (e) {
-      print('Error updating last sync timestamp: $e');
+      print("[OFFLINE] Fetch failed: $e");
     }
   }
 
-  Future<void> _processMissedMessage(Map<String, dynamic> msgData) async {
+  Future<void> _processOfflineMessage(Map<String, dynamic> msgData) async {
     try {
       final messageId = msgData['message_id'] as int;
       final conversationId = msgData['conversation_id'] as int;
@@ -507,42 +438,90 @@ class _AuthWrapperState extends State<AuthWrapper> {
       final senderUsername = msgData['sender_username'] as String;
       final contentB64 = msgData['content_b64'] as String;
       final createdAt = msgData['created_at'] as String;
-      final senderDeviceId = msgData['sender_device_id'] as int? ?? 1;
+      final sessionContextB64 = msgData['session_context_b64'] as String?;
 
-      // Decrypt the message content
-      String decryptedContent;
-      try {
-        final result = await platform.invokeMethod('decryptMessage', {
-          'myUid': widget.user.uid,
-          'senderUid': senderUid,
-          'ciphertextB64': contentB64,
-          'senderDeviceId': senderDeviceId,
-        });
-        decryptedContent = result as String;
-      } catch (e) {
-        print('Decryption failed for missed message, using base64 decode: $e');
-        decryptedContent = utf8.decode(base64Decode(contentB64));
+      print("[OFFLINE] Processing message with session context: ${sessionContextB64 != null}");
+      print("[OFFLINE] Processing message $messageId from $senderUid");
+
+      if (sessionContextB64 != null && sessionContextB64.isNotEmpty) {
+        print("[OFFLINE] Applying session context...");
+        final applied = await SignalService.applySessionContext(
+          senderUid: senderUid,
+          sessionContextB64: sessionContextB64,
+        );
+        print("[OFFLINE] Session context applied: $applied");
+
+        if (!applied) {
+          print("[OFFLINE] Failed to apply session context, skipping message");
+          return;
+        }
+      } else {
+        print("[OFFLINE] No session context available for message $messageId");
+        return;
       }
 
-      // Save to local database
-      final dbService = Provider.of<DatabaseService>(context, listen: false);
+      // Decrypt the message directly (no session establishment)
+      final result = await platform.invokeMethod('decryptMessage', {
+        'myUid': widget.user.uid,
+        'senderUid': senderUid,
+        'ciphertextB64': contentB64,
+        'senderDeviceId': 1,
+      });
+
+      print("[OFFLINE] Decryption result: ${result != null ? 'SUCCESS' : 'FAILED'}");
+
+      if (result == null) {
+        print("[OFFLINE] Decryption failed with preserved session context");
+        return;
+      }
+
+      // Save the message
       final message = Message(
         id: messageId,
         conversationId: conversationId,
         username: senderUsername,
-        content: decryptedContent,
+        content: result as String,
         timestamp: DateTime.parse(createdAt),
         senderUid: senderUid,
         status: MessageStatus.sent,
       );
 
+      final dbService = Provider.of<DatabaseService>(context, listen: false);
       await dbService.insertMessage(message);
-      print('Missed message processed and saved: $decryptedContent');
+      print("[OFFLINE] Message $messageId saved successfully");
 
     } catch (e) {
-      print('Error processing missed message: $e');
+      print("[OFFLINE] Error processing message: $e");
     }
   }
+
+  Future<bool> _ensureSessionForOfflineMessage(String senderUid) async {
+    try {
+      print("[OFFLINE] Attempting session establishment with $senderUid");
+      print("[OFFLINE] Current user: ${widget.user.uid}");
+
+      // Check if we already have a session first
+      final hasSession = await SignalService.hasSession(recipientUid: senderUid);
+      print("[OFFLINE] Session check result: $hasSession");
+
+      if (hasSession) {
+        print("[OFFLINE] Session already exists, no need to establish");
+        return true;
+      }
+
+      final success = await SignalService.initSession(
+        recipientUid: senderUid,
+        prekeyBundle: {},
+      );
+      print("[OFFLINE] Session establishment result: $success");
+      return success;
+    } catch (e) {
+      print("[OFFLINE] Session establishment failed: $e");
+      return false;
+    }
+  }
+
+
 
   Future<bool> _checkIfProfileExists() async {
     final token = await widget.user.getIdToken(true);

@@ -98,8 +98,8 @@ class DeviceService {
   /// For testing we send a dummy base64 ciphertext. Replace contentB64 with real ciphertext later.
   static Future<Map<String, dynamic>> sendMessage({
     required int conversationId,
-    required String contentB64, // base64 encoded ciphertext
-    String messageType = 'chat',
+    required String contentB64,
+    String? sessionContext, // Add this parameter
     String baseUrl = baseUrl,
   }) async {
     final user = FirebaseAuth.instance.currentUser;
@@ -107,27 +107,30 @@ class DeviceService {
 
     final idToken = await user.getIdToken(true);
 
-    final uri = Uri.parse('$baseUrl/v1/messages/send');
-
-    final body = {
+    final requestBody = {
       'conversation_id': conversationId,
       'content_b64': contentB64,
-      'message_type': messageType,
+      'message_type': 'chat',
     };
 
-    final resp = await http.post(
-      uri,
+    // Add session context if provided
+    if (sessionContext != null) {
+      requestBody['session_context_b64'] = sessionContext;
+    }
+
+    final response = await http.post(
+      Uri.parse('$baseUrl/v1/messages/send'),
       headers: {
-        'Content-Type': 'application/json',
         'Authorization': 'Bearer $idToken',
+        'Content-Type': 'application/json',
       },
-      body: jsonEncode(body),
+      body: jsonEncode(requestBody),
     );
 
-    if (resp.statusCode >= 200 && resp.statusCode < 300) {
-      return jsonDecode(resp.body) as Map<String, dynamic>;
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
     } else {
-      throw Exception('sendMessage failed: ${resp.statusCode} ${resp.body}');
+      throw Exception('Failed to send message: ${response.statusCode}');
     }
   }
 

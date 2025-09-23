@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:firebase_auth/firebase_auth.dart';
@@ -12,6 +13,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:zarq_messenger/message_model.dart' as signal_lib;
 import 'package:zarq_messenger/services/conversation_service.dart';
 import 'package:flutter/services.dart';
+import 'package:zarq_messenger/services/deletion_service.dart';
 
 import 'chat_background.dart';
 import 'home_screen.dart';
@@ -82,7 +84,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _initializeChat();
 
     // Listen for new messages AND status updates from WebSocket
-    _messageSubscription = _websocketService.stream.listen((data) {
+    _messageSubscription = _websocketService.stream.listen((data) async {
       print("[ChatScreen] 🔍 WebSocket stream received: $data");
 
       if (data is Map<String, dynamic>) {
@@ -90,94 +92,75 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         print("[ChatScreen] 🔍 Message type: $type");
 
         if (type == 'local_message_saved') {
-          final conversationId = data['conversation_id'] as int?;
-          print("[ChatScreen] 🔍 local_message_saved for conversation: $conversationId");
-          if (conversationId == widget.conversationInfo.conversationId) {
-            _refreshMessagesFromDb();
-          }
-        } else if (type == 'local_sent_message') {
+  final conversationId = data['conversation_id'] as int?;
+  final messageId = data['message_id'] as int?;
+  print("[ChatScreen] 🔍 local_message_saved for conversation: $conversationId");
+  if (conversationId == widget.conversationInfo.conversationId && messageId != null) {
+    // Only add the specific new message, don't reload everything
+    _addNewMessageToUI(messageId);
+  }
+} else if (type == 'local_sent_message') {
           final conversationId = data['conversation_id'] as int?;
           print("[ChatScreen] 🔍 local_sent_message for conversation: $conversationId");
           if (conversationId == widget.conversationInfo.conversationId) {
             _handleLocalSentMessage(data);
           }
-        } else if (type == 'message_status_update') {
-          // Handle real-time status updates
+        }else if (type == 'message_status_update') {
           print("[ChatScreen] 🔍 message_status_update received: $data");
           final messageId = data['message_id'] as int?;
           final status = data['status'] as String?;
           final conversationId = data['conversation_id'] as int?;
 
-          print("[ChatScreen] 🔍 Status update - messageId: $messageId, status: $status, conversationId: $conversationId");
+          // Debug each condition separately:
+          print("[ChatScreen] 🔍 Expected conversationId: ${widget.conversationInfo.conversationId}");
+          print("[ChatScreen] 🔍 Received conversationId: $conversationId");
 
-          if (conversationId == widget.conversationInfo.conversationId &&
-              messageId != null && status != null) {
-            print("[ChatScreen] 🔍 Calling _updateMessageStatusInUI...");
+          final conversationMatches = conversationId == widget.conversationInfo.conversationId;
+          final messageIdValid = messageId != null;
+          final statusValid = status != null;
+
+          print("[ChatScreen] 🔍 Conversation matches: $conversationMatches");
+          print("[ChatScreen] 🔍 MessageId valid: $messageIdValid (value: $messageId)");
+          print("[ChatScreen] 🔍 Status valid: $statusValid (value: $status)");
+          print("[ChatScreen] 🔍 Combined condition result: ${conversationMatches && messageIdValid && statusValid}");
+
+          if (conversationMatches && messageIdValid && statusValid) {
+            print("[ChatScreen] ✅ Status update accepted");
             _updateMessageStatusInUI(messageId, status);
           } else {
-            print("[ChatScreen] ❌ Status update filtered out - wrong conversation or missing data");
+            print("[ChatScreen] ❌ Status update filtered out");
+            print("[ChatScreen] ❌ Reason: conversationMatches=$conversationMatches, messageIdValid=$messageIdValid, statusValid=$statusValid");
           }
         }
+          else if (type == 'message_deleted') {
+  final messageId = data['message_id'] as int?;
+  final deletionType = data['deletion_type'] as String?;
+  final conversationId = data['conversation_id'] as int?;
+
+  if (messageId != null && conversationId == widget.conversationInfo.conversationId) {
+    if (deletionType == 'delete_for_everyone') {
+      _handleDeletedForEveryone(messageId);
+    } else {
+      // Add the database update for persistence:
+      await _dbService.markMessageAsDeletedForMe(messageId);
+      _chatProvider.removeMessage(messageId);
+    }
+  }
+}
       } else {
         print("[ChatScreen] 🔍 Non-map data received: ${data.runtimeType}");
       }
     });
   }
 
-  Future<void> testForwardSecrecy() async {
-    try {
-      print("[ForwardSecrecyTest] Starting forward secrecy test...");
+Future<void> _addNewMessageToUI(int messageId) async {
+  final allMessages = await _dbService.getAllMessagesInConversation(widget.conversationInfo.conversationId);
+  final matchingMessages = allMessages.where((msg) => msg.id == messageId);
 
-      if (_recipientUid == null) {
-        print("[ForwardSecrecyTest] No recipient UID, cannot test");
-        return;
-      }
-
-      // Get current messages count for comparison
-      final messagesBefore = _chatProvider.messages.length;
-      print("[ForwardSecrecyTest] Messages before session clear: $messagesBefore");
-
-      // Log some current message IDs for tracking
-      final currentMessageIds = _chatProvider.messages.map((m) => m.id).take(3).toList();
-      print("[ForwardSecrecyTest] Sample message IDs: $currentMessageIds");
-
-      // Clear the Signal Protocol session
-      print("[ForwardSecrecyTest] Clearing Signal Protocol session...");
-      await SignalService.clearSession(recipientUid: _recipientUid!);
-      print("[ForwardSecrecyTest] Session cleared successfully");
-
-      // Clear the decryption cache to force re-decryption attempts
-      _decryptedMessageIds.clear();
-      print("[ForwardSecrecyTest] Cleared decryption cache");
-
-      // Try to refresh and decrypt existing messages
-      print("[ForwardSecrecyTest] Attempting to decrypt old messages...");
-      await _refreshMessagesFromDb();
-
-      // Check results
-      final messagesAfter = _chatProvider.messages.length;
-      print("[ForwardSecrecyTest] Messages after session clear: $messagesAfter");
-
-      // Count messages that failed to decrypt
-      final failedDecryptions = _chatProvider.messages
-          .where((msg) => msg.content.contains("Failed to decrypt"))
-          .length;
-
-      print("[ForwardSecrecyTest] Messages that failed to decrypt: $failedDecryptions");
-
-      // Analyze results
-      if (failedDecryptions > 0) {
-        print("[ForwardSecrecyTest] ✅ FORWARD SECRECY WORKING: ${failedDecryptions} messages failed to decrypt after session clear");
-      } else {
-        print("[ForwardSecrecyTest] ❌ FORWARD SECRECY ISSUE: All messages still decryptable after session clear");
-      }
-
-      print("[ForwardSecrecyTest] Forward secrecy test completed");
-
-    } catch (e) {
-      print("[ForwardSecrecyTest] Test error: $e");
-    }
+  if (matchingMessages.isNotEmpty && !await _dbService.isMessageDeletedForMe(messageId)) {
+    _chatProvider.addMessage(matchingMessages.first);
   }
+}
 
   void _handleLocalSentMessage(Map<String, dynamic> data) {
     try {
@@ -241,20 +224,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _recipientUid = widget.conversationInfo.partnerUid;
     }
 
+    // Load messages from database immediately (don't wait for WebSocket)
     await _refreshMessagesFromDb();
-
-    // NEW: Load and merge sent messages from quick replies
     await _loadAndMergeSentMessages();
 
-    print("[ChatScreen] 🔍 About to call syncMessageStatuses for conversation ${widget.conversationInfo.conversationId}");
-    await _websocketService.syncMessageStatuses(widget.conversationInfo.conversationId);
-
-    // Mark messages as read when opening chat
-    await _markMessagesAsRead();
-
-    print("[ChatScreen] ✅ syncMessageStatuses call completed");
+    // Show UI immediately - don't wait for WebSocket
     if (mounted) setState(() => _isLoading = false);
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom(instant: true));
+
+    // WebSocket operations can happen in background (async, don't await)
+    _performBackgroundWebSocketTasks();
+  }
+
+// Separate method for WebSocket operations
+  Future<void> _performBackgroundWebSocketTasks() async {
+    // These operations happen after UI is already shown
+    await _websocketService.syncMessageStatuses(widget.conversationInfo.conversationId);
+    await _markMessagesAsRead();
+    print("[ChatScreen] Background WebSocket tasks completed");
   }
 
   Future<void> _refreshMessagesFromDb() async {
@@ -281,8 +268,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             final decryptedMessage = message.copyWith(content: decryptedContent);
             messages[i] = decryptedMessage;
 
-            // Update database with decrypted content
-            await _dbService.insertMessage(decryptedMessage);
+            // Instead of insertMessage, just update the existing record
+            await _dbService.updateMessageContent(message.id, decryptedContent);
             _decryptedMessageIds.add(message.id);
           }
         } catch (e) {
@@ -297,6 +284,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
     }
   }
+
 
   Future<void> _loadAndMergeSentMessages() async {
     try {
@@ -378,6 +366,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return false;
     }
 
+    print("🔧 Checking if current user has Signal Protocol setup...");
+    final hasIdentity = await _ensureCurrentUserSignalSetup();
+    if (!hasIdentity) {
+      print("❌ Current user Signal Protocol setup failed");
+      return false;
+    }
+
     if (_establishingSession) {
       print("⏳ Session establishment already in progress");
       return false;
@@ -437,11 +432,44 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _sendMessage() async {
+  Future<bool> _ensureCurrentUserSignalSetup() async {
+    try {
+      final currentUser = FirebaseAuth.instance.currentUser;
+      if (currentUser == null) return false;
+
+      // Check if user already has Signal Protocol setup
+      final result = await platform.invokeMethod('checkUserSetup', {
+        'uid': currentUser.uid,
+      });
+
+      if (result == true) {
+        print("✅ Current user already has Signal Protocol setup");
+        return true;
+      }
+
+      print("🔧 Setting up Signal Protocol for current user...");
+
+      // Initialize Signal Protocol for current user
+      final setupResult = await platform.invokeMethod('setupUser', {
+        'uid': currentUser.uid,
+      });
+
+      print("🔧 Signal Protocol setup result: $setupResult");
+      return setupResult == true;
+
+    } catch (e) {
+      print("❌ Error setting up Signal Protocol: $e");
+      return false;
+    }
+  }
+
+  Future<void> _sendMessage({Message? retryMessage}) async {
     print("📤 _sendMessage called");
     print("🔍 Current recipientUid: $_recipientUid");
     print("🔍 Is group chat: ${widget.conversationInfo.isGroup}");
-    final messageText = _controller.text.trim();
+    print("🔍 Retry message: ${retryMessage != null ? 'YES (${retryMessage.content})' : 'NO'}");
+
+    final messageText = retryMessage?.content ?? _controller.text.trim();
     if (messageText.isEmpty) return;
 
     // Ensure WebSocket is connected before sending
@@ -454,7 +482,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           await _websocketService.connect(token);
         } catch (e) {
           print("Failed to reconnect WebSocket: $e");
-          // Show error to user
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
@@ -468,27 +495,41 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
     }
 
-    // Clear the input field immediately for better UX
-    _controller.clear();
+    // Only clear input for NEW messages, not retries
+    if (retryMessage == null) {
+      _controller.clear();
+    }
 
-    // Create optimistic message with "sending" status
-    final tempId = DateTime.now().millisecondsSinceEpoch;
-    final optimisticMessage = Message(
-      id: tempId,
-      conversationId: widget.conversationInfo.conversationId,
-      username: _currentUser,
-      content: messageText,
-      timestamp: DateTime.now(),
-      senderUid: _currentUserUid,
-      status: MessageStatus.sending,
-    );
+    Message optimisticMessage;
+    int messageId;
 
-    // Add optimistic message to UI immediately
-    _chatProvider.addMessage(optimisticMessage);
+    if (retryMessage != null) {
+      // For retries, update the existing failed message to "sending"
+      optimisticMessage = retryMessage.copyWith(status: MessageStatus.sending);
+      _chatProvider.updateMessageStatus(retryMessage.id, optimisticMessage);
+      messageId = retryMessage.id;
+      print("🔄 Retrying existing message ID: $messageId");
+    } else {
+      // For new messages, create optimistic message
+      messageId = DateTime.now().millisecondsSinceEpoch;
+      optimisticMessage = Message(
+        id: messageId,
+        conversationId: widget.conversationInfo.conversationId,
+        username: _currentUser,
+        content: messageText,
+        timestamp: DateTime.now(),
+        senderUid: _currentUserUid,
+        status: MessageStatus.sending,
+      );
+      _chatProvider.addMessage(optimisticMessage);
+      print("📝 Created new message ID: $messageId");
+    }
+
     _scrollToBottom();
 
     try {
       String? encryptedContent;
+      String? sessionContext;
 
       if (widget.conversationInfo.isGroup) {
         // For groups, use plaintext encoding for now
@@ -499,17 +540,47 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           throw Exception('No recipient UID for 1-on-1 chat');
         }
 
-        // Ensure session is established
-        if (!_sessionEstablished) {
-          print("No session established, waiting for session setup...");
+        // === COMPREHENSIVE SESSION DEBUGGING ===
+        print("=== PRE-ENCRYPTION SESSION DEBUG ===");
+        print("_sessionEstablished flag: $_sessionEstablished");
+
+        final hasSession = await SignalService.hasSession(recipientUid: _recipientUid!);
+        print("hasSession initial check: $hasSession");
+
+        if (!_sessionEstablished || !hasSession) {
+          print("Session not ready - calling _ensureSessionEstablished...");
           final sessionReady = await _ensureSessionEstablished();
+          print("_ensureSessionEstablished result: $sessionReady");
+
           if (!sessionReady) {
             throw Exception('Failed to establish encrypted session');
           }
+
+          // Verify session actually exists after establishment
+          final hasSessionAfter = await SignalService.hasSession(recipientUid: _recipientUid!);
+          print("hasSession after establishment: $hasSessionAfter");
+
+          if (!hasSessionAfter) {
+            print("ERROR: Session establishment reported success but no session exists!");
+            throw Exception('Session establishment verification failed');
+          }
+
           await Future.delayed(Duration(milliseconds: 100));
         }
 
+        print("🔍 About to capture session context - code flow check");
+        print("🔍 Current _sessionEstablished: $_sessionEstablished");
+        print("🔍 RecipientUid: $_recipientUid");
+
+        // Capture session context before encryption
+        print("🔐 Attempting session context capture...");
+        sessionContext = await SignalService.captureSessionContext(
+          recipientUid: _recipientUid!,
+        );
+        print("🔐 Session context captured: ${sessionContext != null ? 'SUCCESS (${sessionContext!.length} chars)' : 'FAILED'}");
+
         // Encrypt the message
+        print("🔐 Attempting message encryption...");
         encryptedContent = await SignalService.encryptMessage(
           recipientUid: _recipientUid!,
           plaintext: messageText,
@@ -518,38 +589,57 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         if (encryptedContent == null) {
           throw Exception('Failed to encrypt message');
         }
+        print("🔐 Message encrypted successfully (${encryptedContent.length} chars)");
+        print("=== END SESSION DEBUG ===");
       }
 
-      // Send encrypted content to server
+      // Send encrypted content to server WITH session context
+      print("📤 Sending to server with sessionContext: ${sessionContext != null}");
       final response = await DeviceService.sendMessage(
         conversationId: widget.conversationInfo.conversationId,
         contentB64: encryptedContent,
+        sessionContext: sessionContext,
       );
 
-      // Update optimistic message with real server ID and "sent" status
+      // Update optimistic message with real server ID
       final realMessageId = response['message_id'] as int;
       final sentMessage = optimisticMessage.copyWith(
         id: realMessageId,
         status: MessageStatus.sent,
       );
 
-      // Save to database with real ID
-      await _dbService.insertMessage(sentMessage);
+      // Update UI to show "sent" status
+      _chatProvider.updateMessageStatus(messageId, sentMessage);
+      print("✅ Message sent successfully. Temp ID: $messageId -> Real ID: $realMessageId");
 
-      // Update UI to show "sent" status (keep the message visible for sender)
-      _chatProvider.updateMessageStatus(tempId, sentMessage);
+      // Add reliable status tracking via WebSocket
+      final statusData = {
+        'type': 'status_request',
+        'message_id': realMessageId,
+        'conversation_id': widget.conversationInfo.conversationId,
+      };
+
+      final statusBytes = jsonEncode(statusData);
+      if (_websocketService.channel != null) {
+        _websocketService.channel!.sink.add(statusBytes);
+        print("DEBUG: Status request sent: $statusData");
+      } else {
+        print("DEBUG: WebSocket channel is null, cannot send status request");
+      }
 
     } catch (e) {
-      print('Error sending message: $e');
+      print('❌ Error sending message: $e');
 
       // Update optimistic message to show failed status
       final failedMessage = optimisticMessage.copyWith(
         status: MessageStatus.failed,
       );
-      _chatProvider.updateMessageStatus(tempId, failedMessage);
+      _chatProvider.updateMessageStatus(messageId, failedMessage);
 
-      // Restore the message text for retry
-      _controller.text = messageText;
+      // Only restore text for NEW messages, not retries
+      if (retryMessage == null) {
+        _controller.text = messageText;
+      }
 
       // Show error message to user
       if (mounted) {
@@ -559,7 +649,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             backgroundColor: Colors.red,
             action: SnackBarAction(
               label: 'Retry',
-              onPressed: () => _sendMessage(),
+              onPressed: () => _sendMessage(retryMessage: failedMessage),
             ),
           ),
         );
@@ -627,18 +717,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     ),
                 ],
               ),
-              actions: [
-                if (!widget.conversationInfo.isGroup && _recipientUid != null)
-                  IconButton(
-                    icon: const Icon(Icons.security),
-                    onPressed: () {
-                      testForwardSecrecy();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Forward secrecy test started - check logs'))
-                      );
-                    },
-                  ),
-              ],
               flexibleSpace: Container(
                 decoration: const BoxDecoration(
                   gradient: LinearGradient(
@@ -730,6 +808,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _toggleMessageSelection(signal_lib.Message message) {
     if (message.senderUid != _currentUserUid) return;
+    if (message.content == "This message was deleted") return;
     setState(() {
       if (_selectedMessageIds.contains(message.id)) {
         _selectedMessageIds.remove(message.id);
@@ -747,75 +826,216 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
   }
 
-  Future<void> _deleteSelectedMessages() async {
-    if (_selectedMessageIds.isEmpty) return;
+  void _showMessageOptions(Message message) {
+  showModalBottomSheet(
+    context: context,
+    backgroundColor: Colors.grey[900],
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (context) => Container(
+      padding: EdgeInsets.all(16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.grey[600],
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          SizedBox(height: 20),
+          ListTile(
+            leading: Icon(Icons.delete_outline, color: Colors.white),
+            title: Text('Delete for me', style: TextStyle(color: Colors.white)),
+            onTap: () {
+              Navigator.pop(context);
+              _deleteMessage(message, 'delete_for_me');
+            },
+          ),
+          ListTile(
+            leading: Icon(Icons.delete_forever, color: Colors.red),
+            title: Text('Delete for everyone', style: TextStyle(color: Colors.white)),
+            onTap: () {
+              Navigator.pop(context);
+              _showDeleteForEveryoneConfirmation(message);
+            },
+          ),
+          ListTile(
+            leading: Icon(Icons.archive, color: Colors.amber),
+            title: Text('Recoverable delete', style: TextStyle(color: Colors.white)),
+            onTap: () {
+              Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Recoverable delete - Coming soon!'),
+                  backgroundColor: Colors.amber[700],
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    ),
+  );
+}
 
+void _showDeleteForEveryoneConfirmation(Message message) {
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      backgroundColor: Colors.grey[850],
+      title: Text('Delete for everyone?', style: TextStyle(color: Colors.white)),
+      content: Text(
+        'This message will be deleted for all participants in the conversation.',
+        style: TextStyle(color: Colors.white70),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text('Cancel', style: TextStyle(color: Colors.white70)),
+        ),
+        TextButton(
+          onPressed: () {
+            Navigator.pop(context);
+            _deleteMessage(message, 'delete_for_everyone');
+          },
+          child: Text('Delete', style: TextStyle(color: Colors.red)),
+        ),
+      ],
+    ),
+  );
+}
+
+Future<void> _deleteMessage(Message message, String deletionType) async {
+  final success = await DeletionService.deleteMessage(
+    messageId: message.id,
+    deletionType: deletionType,
+  );
+
+  if (success) {
+    if (deletionType == 'delete_for_everyone') {
+      // Update database locally AND UI
+      await _dbService.markMessageAsDeletedForEveryone(message.id);
+      _handleDeletedForEveryone(message.id);
+    } else {
+      // Update database locally AND UI
+      await _dbService.markMessageAsDeletedForMe(message.id);
+      _chatProvider.removeMessage(message.id);
+    }
+  } else {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to delete message')),
+      );
+    }
+  }
+}
+
+Future<void> _handleDeletedForEveryone(int messageId) async {
+  final messageIndex = _chatProvider.messages.indexWhere((msg) => msg.id == messageId);
+  if (messageIndex != -1) {
+    final deletedMessage = _chatProvider.messages[messageIndex].copyWith(
+      content: "This message was deleted",
+    );
+    _chatProvider.messages[messageIndex] = deletedMessage;
+    _chatProvider.notifyListeners();
+
+    await _dbService.markMessageAsDeletedForEveryone(messageId);
+  }
+}
+
+Future<void> _deleteSelectedMessages() async {
+  if (_selectedMessageIds.isEmpty) return;
+
+  // Show deletion type selection dialog
+  final deletionType = await showDialog<String>(
+    context: context,
+    builder: (context) => AlertDialog(
+      backgroundColor: Colors.grey[850],
+      title: Text('Delete ${_selectedMessageIds.length} messages?',
+                  style: TextStyle(color: Colors.white)),
+      content: Text(
+        'Choose deletion type:',
+        style: TextStyle(color: Colors.white70),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text('Cancel', style: TextStyle(color: Colors.white70)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop('delete_for_me'),
+          child: Text('Delete for me', style: TextStyle(color: Colors.white)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop('delete_for_everyone'),
+          child: Text('Delete for everyone', style: TextStyle(color: Colors.red)),
+        ),
+      ],
+    ),
+  );
+
+  if (deletionType == null) return;
+
+  // Additional confirmation for delete_for_everyone
+  if (deletionType == 'delete_for_everyone') {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete Messages?'),
+        backgroundColor: Colors.grey[850],
+        title: Text('Delete for everyone?', style: TextStyle(color: Colors.white)),
         content: Text(
-          'Are you sure you want to delete ${_selectedMessageIds.length} selected message(s)? This action cannot be undone.',
+          'These messages will be deleted for all participants.',
+          style: TextStyle(color: Colors.white70),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
+            child: Text('Cancel', style: TextStyle(color: Colors.white70)),
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Delete'),
+            child: Text('Delete', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
     );
+    if (confirmed != true) return;
+  }
 
-    if (confirmed == true) {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Error: User not authenticated.'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-        return;
-      }
-      final token = await user.getIdToken();
-      final List<int> idsToDelete = _selectedMessageIds.toList();
+  final List<int> idsToDelete = _selectedMessageIds.toList();
+  int successCount = 0;
 
-      for (int messageId in idsToDelete) {
-        try {
-          final url = Uri.parse('http://192.168.29.81:8080/messages/$messageId');
-          final response = await http.delete(
-            url,
-            headers: {'Authorization': 'Bearer $token'},
-          );
+  for (int messageId in idsToDelete) {
+    final success = await DeletionService.deleteMessage(
+      messageId: messageId,
+      deletionType: deletionType,
+    );
 
-          if (response.statusCode != 200) {
-            print('Failed to delete message $messageId: ${response.statusCode}');
-          }
-          await _dbService.deleteMessage(messageId);
-        } catch (e) {
-          print('Error deleting message $messageId: $e');
-        }
-      }
-
-      await _refreshMessagesFromDb();
-      _clearSelection();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Messages deletion process initiated.'),
-            backgroundColor: Colors.green,
-          ),
-        );
+    if (success) {
+      successCount++;
+      if (deletionType == 'delete_for_everyone') {
+        _handleDeletedForEveryone(messageId);
+      } else {
+        _chatProvider.removeMessage(messageId);
       }
     }
   }
+
+  _clearSelection();
+
+  if (mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$successCount of ${idsToDelete.length} messages deleted'),
+        backgroundColor: successCount == idsToDelete.length ? Colors.green : Colors.orange,
+      ),
+    );
+  }
+}
 
   Widget _buildMessageBubble(Message message, int index, int itemCount) {
     final isMe = message.senderUid == _currentUserUid;
@@ -828,6 +1048,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       onTap: () {
         if (_isMultiSelectionMode) {
           _toggleMessageSelection(message);
+        } else if (message.content == "This message was deleted") {
+          _showDeletedMessageOptions(message);
         } else if (message.isFailed && isMe) {
           _retryMessage(message);
         } else {
@@ -956,13 +1178,45 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+void _showDeletedMessageOptions(Message message) {
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      backgroundColor: Colors.grey[850],
+      title: Text('Remove deleted message?', style: TextStyle(color: Colors.white)),
+      content: Text(
+        'This will permanently remove this deleted message from your view.',
+        style: TextStyle(color: Colors.white70),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text('Cancel', style: TextStyle(color: Colors.white70)),
+        ),
+        TextButton(
+          onPressed: () {
+            Navigator.pop(context);
+            _removeDeletedMessage(message.id);
+          },
+          child: Text('Remove', style: TextStyle(color: Colors.red)),
+        ),
+      ],
+    ),
+  );
+}
+
+Future<void> _removeDeletedMessage(int messageId) async {
+  await _dbService.markMessageAsDeletedForMe(messageId);
+  _chatProvider.removeMessage(messageId);
+}
+
 
   Future<void> _retryMessage(Message failedMessage) async {
     final retryMessage = failedMessage.copyWith(status: MessageStatus.sending);
     _chatProvider.updateMessageStatus(failedMessage.id, retryMessage);
 
-    _controller.text = failedMessage.content;
-    await _sendMessage();
+    print("🔄 _retryMessage called for message: ${failedMessage.content}");
+    await _sendMessage(retryMessage: failedMessage);
   }
 
   Future<void> _copySelectedMessages() async {

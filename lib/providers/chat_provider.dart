@@ -16,14 +16,18 @@ class ChatProvider with ChangeNotifier {
   /// This is now the primary way to update the UI.
   /// It replaces the entire list with a new one, ensuring no duplicates.
   void setMessages(List<Message> messages) {
-    // Keep any optimistic/sending messages that aren't in the database yet
+    // Preserve messages that are actively being processed or available for retry
     final pendingMessages = _messages.where((msg) =>
     msg.status == MessageStatus.sending ||
-        !messages.any((dbMsg) => dbMsg.id == msg.id)
+        msg.status == MessageStatus.failed
     ).toList();
 
-    // Merge database messages with pending messages
-    _messages = [...messages, ...pendingMessages];
+    // Remove any pending messages that now exist in database (successful sends)
+    final uniquePendingMessages = pendingMessages.where((pendingMsg) =>
+    !messages.any((dbMsg) => dbMsg.id == pendingMsg.id)
+    ).toList();
+
+    _messages = [...messages, ...uniquePendingMessages];
     notifyListeners();
   }
 
@@ -53,8 +57,11 @@ class ChatProvider with ChangeNotifier {
       _messages[index] = newMessage;
       notifyListeners();
 
-      // Also save to database immediately to prevent conflicts with setMessages
-      _saveMessageToDatabase(newMessage);
+      // Only save persistent states to database (exclude temporary UI states)
+      if (newMessage.status != MessageStatus.sending &&
+          newMessage.status != MessageStatus.failed) {
+        _saveMessageToDatabase(newMessage);
+      }
     }
   }
 

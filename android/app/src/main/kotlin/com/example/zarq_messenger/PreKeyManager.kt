@@ -22,7 +22,7 @@ class PreKeyManager(
 
     // Configuration: refill threshold and batch size.
     private val oneTimeThreshold = 10
-    private val oneTimeBatch = 50
+    private val oneTimeBatch = 100
     private val signedPreKeyIdRangeStart = 1000
 
     /**
