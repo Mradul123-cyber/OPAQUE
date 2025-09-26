@@ -134,4 +134,45 @@ class DeviceService {
     }
   }
 
+  static Future<bool> uploadRotatedKeys({
+    required int deviceId,
+    Map<String, dynamic>? signedPreKey,
+    List<Map<String, dynamic>>? oneTimePreKeys,
+  }) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) throw Exception('Not authenticated');
+
+      final idToken = await user.getIdToken(true);
+      final uri = Uri.parse('$baseUrl/v1/prekeys/update');
+
+      final body = <String, dynamic>{
+        'device_id': deviceId,
+      };
+
+      if (signedPreKey != null) body['signed_prekey'] = signedPreKey;
+      if (oneTimePreKeys != null) body['one_time_prekeys'] = oneTimePreKeys;
+
+      print('[Upload] Request URL: $uri');
+      print('[Upload] Request body: ${jsonEncode(body)}');
+
+      final resp = await http.put(
+        uri,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $idToken',
+        },
+        body: jsonEncode(body),
+      );
+
+      print('[Upload] Response status: ${resp.statusCode}');
+      print('[Upload] Response body: ${resp.body}');
+
+      return resp.statusCode == 200;
+    } catch (e) {
+      print('[Upload] Error: $e');
+      return false;
+    }
+  }
+
 }

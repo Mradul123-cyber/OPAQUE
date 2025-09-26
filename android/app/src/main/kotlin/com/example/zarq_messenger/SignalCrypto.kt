@@ -3,199 +3,234 @@ package com.example.zarq_messenger
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.util.Base64
 import android.util.Log
-import java.io.File
-import java.nio.ByteBuffer
 import java.security.KeyStore
-import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
+/**
+ * SignalCrypto - Handles secure key storage using Android Keystore
+ * Provides encryption/decryption for sensitive Signal Protocol data
+ */
+class SignalCrypto(private val context: Context) {
 
-object SignalCrypto {
-    private const val TAG = "SignalCrypto"
-    private const val KEYSTORE_ALIAS = "zarq_wrap_key_v1"
-    private const val KEYSTORE_PROVIDER = "AndroidKeyStore"
-    private const val WRAPPED_DIR = "zarq_keys"
-    private const val AES_KEY_SIZE_BITS = 256
-    private const val GCM_TAG_LEN_BITS = 128
-    private val secureRandom = SecureRandom()
-
-    // -------------------------
-    // Public helper APIs
-    // -------------------------
-
-    /** Save raw private key bytes for uid (wrapped with keystore AES). Returns true on success. */
-    fun saveIdentityPrivateKey(context: Context, uid: String, rawPrivateKey: ByteArray): Boolean {
-        return try {
-            val wrapped = wrapWithKeystore(rawPrivateKey)
-            val f = getWrappedKeyFile(context, uid)
-            f.parentFile?.mkdirs()
-            f.writeBytes(wrapped)
-            Log.d(TAG, "Saved wrapped private key for uid=$uid (bytes=${wrapped.size})")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "saveIdentityPrivateKey failed: ${e.message}", e)
-            false
-        }
+    companion object {
+        private const val TAG = "SignalCrypto"
+        private const val KEYSTORE_PROVIDER = "AndroidKeyStore"
+        private const val KEY_ALIAS = "zarq_signal_master_key"
+        private const val TRANSFORMATION = "AES/GCM/NoPadding"
+        private const val GCM_IV_LENGTH = 12
+        private const val GCM_TAG_LENGTH = 16
     }
 
-    /** Load raw private key bytes for uid, or null if not present / unwrap failed. */
-    fun loadIdentityPrivateKey(context: Context, uid: String): ByteArray? {
-        return try {
-            val raw = unwrapPrivateKeyForUid(context, uid)
-            if (raw == null) {
-                Log.d(TAG, "No wrapped private key for uid=$uid")
-            } else {
-                Log.d(TAG, "Loaded private key for uid=$uid (len=${raw.size})")
-            }
-            raw
-        } catch (e: Exception) {
-            Log.e(TAG, "loadIdentityPrivateKey failed: ${e.message}", e)
-            null
-        }
-    }
+    private var keyStore: KeyStore? = null
+    private var masterKey: SecretKey? = null
 
-    /** Delete wrapped private key file for uid (best-effort). */
-    fun deleteIdentityPrivateKey(context: Context, uid: String) {
-        try {
-            val f = getWrappedKeyFile(context, uid)
-            if (f.exists()) f.delete()
-            Log.d(TAG, "Deleted wrapped private key for uid=$uid")
-        } catch (e: Exception) {
-            Log.e(TAG, "deleteIdentityPrivateKey failed: ${e.message}", e)
-        }
-    }
-
-    /** Save public key bytes (raw) to files for easy retrieval by other native code or for exporting. */
-    fun savePublicKey(context: Context, uid: String, publicBytes: ByteArray) {
-        try {
-            val f = getPublicKeyFile(context, uid)
-            f.parentFile?.mkdirs()
-            f.writeBytes(publicBytes)
-            Log.d(TAG, "Saved public key for uid=$uid (len=${publicBytes.size})")
-        } catch (e: Exception) {
-            Log.e(TAG, "savePublicKey failed: ${e.message}", e)
-        }
-    }
-
-    fun loadPublicKey(context: Context, uid: String): ByteArray? {
-        val f = getPublicKeyFile(context, uid)
-        return if (f.exists()) f.readBytes() else null
-    }
-
-    // -------------------------
-    // Internal helpers
-    // -------------------------
-
-    private fun getWrappedKeyFile(context: Context, uid: String): File {
-        val dir = File(context.filesDir, WRAPPED_DIR)
-        return File(dir, "$uid.priv")
-    }
-
-    private fun getPublicKeyFile(context: Context, uid: String): File {
-        val dir = File(context.filesDir, WRAPPED_DIR)
-        return File(dir, "$uid.pub")
+    init {
+        initializeKeystore()
     }
 
     /**
-     * Wrap raw private key bytes with an AES-GCM key stored in AndroidKeyStore.
-     * FIXED: Let Android Keystore generate the IV automatically
-     * Return format: [4-byte ivLength][iv][ciphertext]
+     * Initialize Android Keystore and generate master key if needed
      */
-    private fun wrapWithKeystore(rawPriv: ByteArray): ByteArray {
-        val key = getOrCreateKeystoreAesKey()
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-
-        // FIXED: Initialize without providing IV - let Keystore generate it
-        cipher.init(Cipher.ENCRYPT_MODE, key)
-
-        // Get the generated IV after initialization
-        val iv = cipher.iv
-        Log.d(TAG, "Android Keystore generated IV of length: ${iv.size}")
-
-        val ciphertext = cipher.doFinal(rawPriv)
-
-        // Store iv length + iv + ciphertext
-        val bb = ByteBuffer.allocate(4 + iv.size + ciphertext.size)
-        bb.putInt(iv.size)
-        bb.put(iv)
-        bb.put(ciphertext)
-
-        Log.d(TAG, "Wrapped private key: iv=${iv.size} bytes, ciphertext=${ciphertext.size} bytes")
-        return bb.array()
-    }
-
-    /** Unwrap the wrapped bytes and return the raw private key bytes. */
-    private fun unwrapPrivateKeyForUid(context: Context, uid: String): ByteArray? {
-        val f = getWrappedKeyFile(context, uid)
-        if (!f.exists()) {
-            Log.d(TAG, "No wrapped key file exists for uid=$uid")
-            return null
-        }
-
-        val wrapped = f.readBytes()
-        Log.d(TAG, "Reading wrapped key file for uid=$uid, size=${wrapped.size}")
-
-        val bb = ByteBuffer.wrap(wrapped)
-        val ivLen = bb.int
-        if (ivLen <= 0 || ivLen > 1024) {
-            Log.e(TAG, "Invalid IV length: $ivLen")
-            throw IllegalStateException("invalid iv length: $ivLen")
-        }
-
-        val iv = ByteArray(ivLen)
-        bb.get(iv)
-        val ciphertext = ByteArray(bb.remaining())
-        bb.get(ciphertext)
-
-        Log.d(TAG, "Unwrapping: iv=${iv.size} bytes, ciphertext=${ciphertext.size} bytes")
-
-        val key = getOrCreateKeystoreAesKey()
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val spec = GCMParameterSpec(GCM_TAG_LEN_BITS, iv)
-        cipher.init(Cipher.DECRYPT_MODE, key, spec)
-
-        return cipher.doFinal(ciphertext)
-    }
-
-    /** Create or obtain an AES key stored in AndroidKeyStore for wrapping private keys. */
-    private fun getOrCreateKeystoreAesKey(): SecretKey {
+    private fun initializeKeystore() {
         try {
-            val ks = KeyStore.getInstance(KEYSTORE_PROVIDER)
-            ks.load(null)
+            Log.d(TAG, "Initializing Android Keystore...")
 
-            // Check if key already exists
-            if (ks.containsAlias(KEYSTORE_ALIAS)) {
-                Log.d(TAG, "Loading existing Keystore key: $KEYSTORE_ALIAS")
-                val entry = ks.getEntry(KEYSTORE_ALIAS, null) as KeyStore.SecretKeyEntry
-                return entry.secretKey
+            // Load Android Keystore
+            keyStore = KeyStore.getInstance(KEYSTORE_PROVIDER)
+            keyStore?.load(null)
+
+            // Check if master key exists, generate if not
+            if (!keyStore?.containsAlias(KEY_ALIAS)!!) {
+                Log.d(TAG, "Generating new master key in Android Keystore")
+                generateMasterKey()
+            } else {
+                Log.d(TAG, "Loading existing master key from Android Keystore")
             }
 
-            // Generate new key
-            Log.d(TAG, "Generating new Keystore key: $KEYSTORE_ALIAS")
-            val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE_PROVIDER)
-            val spec = KeyGenParameterSpec.Builder(
-                KEYSTORE_ALIAS,
+            // Load the master key
+            masterKey = keyStore?.getKey(KEY_ALIAS, null) as? SecretKey
+
+            if (masterKey != null) {
+                Log.d(TAG, "Android Keystore initialized successfully")
+            } else {
+                throw Exception("Failed to load master key")
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize Android Keystore", e)
+            // Note: Calling code should handle this and fall back to unencrypted storage
+            throw Exception("Keystore initialization failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Generate a new AES master key in Android Keystore
+     */
+    private fun generateMasterKey() {
+        try {
+            val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE_PROVIDER)
+
+            val keyGenParameterSpec = KeyGenParameterSpec.Builder(
+                KEY_ALIAS,
                 KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
             )
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setKeySize(AES_KEY_SIZE_BITS)
-                .setUserAuthenticationRequired(false)
-                // FIXED: Ensure random IV generation is enabled
+                .setKeySize(256)
+                // Require authentication for key use (if device has secure lock screen)
+                .setUserAuthenticationRequired(false) // Set to true for additional security
                 .setRandomizedEncryptionRequired(true)
                 .build()
-            kg.init(spec)
-            val generatedKey = kg.generateKey()
-            Log.d(TAG, "Successfully generated Keystore key")
-            return generatedKey
+
+            keyGenerator.init(keyGenParameterSpec)
+            keyGenerator.generateKey()
+
+            Log.d(TAG, "Master key generated successfully in Android Keystore")
+
         } catch (e: Exception) {
-            Log.e(TAG, "getOrCreateKeystoreAesKey failed: ${e.message}", e)
-            throw RuntimeException("getOrCreateKeystoreAesKey failed: ${e.message}", e)
+            Log.e(TAG, "Failed to generate master key", e)
+            throw Exception("Master key generation failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Encrypt data using Android Keystore master key
+     */
+    fun encryptData(plaintext: String): String {
+        return try {
+            if (masterKey == null) {
+                throw Exception("Master key not available")
+            }
+
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, masterKey)
+
+            // Get the IV generated by GCM mode
+            val iv = cipher.iv
+
+            // Encrypt the data
+            val ciphertext = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
+
+            // Combine IV + ciphertext and encode as base64
+            val combined = iv + ciphertext
+            val encoded = Base64.encodeToString(combined, Base64.NO_WRAP)
+
+            Log.d(TAG, "Data encrypted successfully (${plaintext.length} -> ${encoded.length} chars)")
+            encoded
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to encrypt data", e)
+            throw Exception("Encryption failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Decrypt data using Android Keystore master key
+     */
+    fun decryptData(encryptedData: String): String {
+        return try {
+            if (masterKey == null) {
+                throw Exception("Master key not available")
+            }
+
+            // Decode from base64
+            val combined = Base64.decode(encryptedData, Base64.NO_WRAP)
+
+            // Extract IV and ciphertext
+            val iv = combined.sliceArray(0 until GCM_IV_LENGTH)
+            val ciphertext = combined.sliceArray(GCM_IV_LENGTH until combined.size)
+
+            // Initialize cipher for decryption
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            val spec = GCMParameterSpec(GCM_TAG_LENGTH * 8, iv)
+            cipher.init(Cipher.DECRYPT_MODE, masterKey, spec)
+
+            // Decrypt the data
+            val plaintext = cipher.doFinal(ciphertext)
+            val decrypted = String(plaintext, Charsets.UTF_8)
+
+            Log.d(TAG, "Data decrypted successfully (${encryptedData.length} -> ${decrypted.length} chars)")
+            decrypted
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to decrypt data", e)
+            throw Exception("Decryption failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Check if Android Keystore encryption is available
+     */
+    fun isKeystoreAvailable(): Boolean {
+        return try {
+            masterKey != null && keyStore?.containsAlias(KEY_ALIAS) == true
+        } catch (e: Exception) {
+            Log.w(TAG, "Keystore availability check failed", e)
+            false
+        }
+    }
+
+    /**
+     * Clear all keys from Android Keystore (for logout/reset)
+     */
+    fun clearKeys() {
+        try {
+            Log.d(TAG, "Clearing keys from Android Keystore...")
+
+            keyStore?.deleteEntry(KEY_ALIAS)
+            masterKey = null
+
+            Log.d(TAG, "Keys cleared from Android Keystore")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to clear keys from Keystore", e)
+            // Not critical - continue with cleanup
+        }
+    }
+
+    /**
+     * Test encryption/decryption functionality
+     */
+    fun testEncryption(): Boolean {
+        return try {
+            val testData = "test_encryption_${System.currentTimeMillis()}"
+            val encrypted = encryptData(testData)
+            val decrypted = decryptData(encrypted)
+
+            val success = (testData == decrypted)
+            Log.d(TAG, "Encryption test ${if (success) "PASSED" else "FAILED"}")
+            success
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Encryption test failed", e)
+            false
+        }
+    }
+
+    /**
+     * Get encryption information for debugging
+     */
+    fun getEncryptionInfo(): Map<String, Any> {
+        return try {
+            mapOf<String, Any>(
+                "keystore_available" to isKeystoreAvailable(),
+                "master_key_exists" to (masterKey != null),
+                "key_alias" to KEY_ALIAS,
+                "encryption_algorithm" to TRANSFORMATION,
+                "key_size" to if (masterKey != null) "256-bit AES" else "unknown",
+                "test_result" to testEncryption()
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get encryption info", e)
+            mapOf<String, Any>(
+                "error" to (e.message ?: "unknown_error"),
+                "keystore_available" to false
+            )
         }
     }
 }

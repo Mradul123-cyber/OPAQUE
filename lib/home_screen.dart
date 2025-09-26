@@ -2,12 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import 'package:zarq_messenger/encryption_test.dart';
+import 'package:zarq_messenger/services/SignalService.dart';
 import 'package:zarq_messenger/services/database_service.dart';
 import 'package:zarq_messenger/services/navigation_handler.dart';
 import 'dart:ui';
 import 'dart:convert';
 
 // Import Providers
+import 'SessionEstablishmentTest.dart';
+import 'SignalTestPage.dart';
+import 'backend_prekey_test.dart';
 import 'providers/home_provider.dart';
 import 'providers/chat_provider.dart';
 import 'services/websocket_service.dart';
@@ -214,15 +219,34 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _logout(BuildContext context) async {
     print("[HomeScreen] _logout() triggered at ${DateTime.now()} — stacktrace:\n${StackTrace.current}");
 
-    final websocketService = Provider.of<WebSocketService>(context, listen: false);
-    websocketService.disconnect();
+    try {
+      // 1. Reset Signal Protocol user context FIRST
+      print("[HomeScreen] Resetting Signal Protocol user context...");
+      final signalResetSuccess = await SignalService.resetUserContext();
+      if (signalResetSuccess) {
+        print("[HomeScreen] Signal Protocol context reset successfully");
+      } else {
+        print("[HomeScreen] Warning: Signal Protocol context reset failed");
+      }
 
-    // Add database reset using the public method
-    final dbService = Provider.of<DatabaseService>(context, listen: false);
-    await dbService.resetDatabase();
+      // 2. Disconnect WebSocket
+      final websocketService = Provider.of<WebSocketService>(context, listen: false);
+      websocketService.disconnect();
 
-    await FirebaseAuth.instance.signOut();
+      // 3. Reset database
+      final dbService = Provider.of<DatabaseService>(context, listen: false);
+      await dbService.resetDatabase();
 
+      // 4. Firebase logout
+      await FirebaseAuth.instance.signOut();
+      print("[HomeScreen] Firebase logout completed");
+
+    } catch (e) {
+      print("[HomeScreen] Error during logout: $e");
+      // Continue with navigation even if some cleanup fails
+    }
+
+    // 5. Navigate to login screen
     if (context.mounted) {
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (context) => const LoginScreen()),
@@ -435,6 +459,7 @@ class _HomeScreenState extends State<HomeScreen> {
           centerTitle: true,
           actions: [
             if (_isGroupSelectionMode) ...[
+              // Group actions remain the same...
               if (isCreatorOfSelectedGroup)
                 MouseRegion(
                   onEnter: (_) => setState(() => _isDeleteHovering = true),
@@ -510,6 +535,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
             ] else ...[
+              // UPDATED: Added Backend PreKey Test option
               PopupMenuButton<String>(
                 icon: const Icon(Icons.more_vert),
                 color: const Color(0xFF1b263b).withOpacity(0.8),
@@ -518,6 +544,37 @@ class _HomeScreenState extends State<HomeScreen> {
                   side: BorderSide(color: Colors.white.withOpacity(0.2)),
                 ),
                 itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                  PopupMenuItem<String>(
+                    value: 'signal_test',
+                    child: Row(
+                      children: [
+                        Icon(Icons.security, color: Colors.blue.withOpacity(0.8)),
+                        const SizedBox(width: 10),
+                        const Text('Signal Protocol Test', style: TextStyle(color: Colors.white)),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'backend_test',
+                    child: Row(
+                      children: [
+                        Icon(Icons.cloud_sync, color: Colors.green.withOpacity(0.8)),
+                        const SizedBox(width: 10),
+                        const Text('Backend PreKey Test', style: TextStyle(color: Colors.white)),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'Encryption_test',
+                    child: Row(
+                      children: [
+                        Icon(Icons.cloud_sync, color: Colors.green.withOpacity(0.8)),
+                        const SizedBox(width: 10),
+                        const Text('Encryption Test', style: TextStyle(color: Colors.white)),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuDivider(),
                   PopupMenuItem<String>(
                     value: 'logout',
                     child: Row(
@@ -530,7 +587,27 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
                 onSelected: (String result) {
-                  if (result == 'logout') {
+                  if (result == 'signal_test') {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (context) => const SignalTestPage(),
+                      ),
+                    );
+                  } else if (result == 'backend_test') {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (context) => const BackendPreKeyTest(),
+                      ),
+                    );
+                  }
+                  else if (result == 'Encryption_test'){
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (context) => const EncryptionTest(),
+                      ),
+                    );
+                  }
+                  else if (result == 'logout') {
                     _logout(context);
                   }
                 },
@@ -541,6 +618,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+
 
   Widget _buildConversationList(List<ConversationInfo> conversations, bool isReady) {
     return Column(

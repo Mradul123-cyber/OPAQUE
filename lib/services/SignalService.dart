@@ -1,49 +1,318 @@
 import 'dart:convert';
-import 'package:flutter/services.dart';
+
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+
+import 'device_service.dart';
 
 class SignalService {
   static const MethodChannel _channel = MethodChannel('com.zarq/signal');
 
-  /// Initialize a Signal protocol session with a recipient using their prekey bundle
-  static Future<bool> initSession({
-    required String recipientUid,
-    required Map<String, dynamic> prekeyBundle,
-  }) async {
+  /// Test method to verify Signal method channel is working
+  static Future<String?> ping() async {
     try {
-      print('=== SignalService.initSession START ===');
-      print('Recipient UID: $recipientUid');
-      print('Bundle keys: ${prekeyBundle.keys.toList()}');
+      print('=== SignalService.ping START ===');
 
-      final currentUser = FirebaseAuth.instance.currentUser;
-      if (currentUser == null) {
-        print('ERROR: No authenticated user for session init');
-        throw Exception('No authenticated user');
-      }
+      final result = await _channel.invokeMethod('ping');
 
-      print('Current user UID: ${currentUser.uid}');
+      print('Signal ping result: $result');
+      print('=== SignalService.ping END ===');
 
-      final result = await _channel.invokeMethod('initSession', {
-        'myUid': currentUser.uid,
-        'recipientUid': recipientUid,
-        'bundleJson': jsonEncode(prekeyBundle),
-      });
-
-      print('initSession result: $result');
-
-      // Immediately verify session was created
-      final hasSessionAfter = await hasSession(recipientUid: recipientUid);
-      print('Session verification after init: $hasSessionAfter');
-
-      print('=== SignalService.initSession END ===');
-      return result == true && hasSessionAfter;
-
+      return result as String?;
     } on PlatformException catch (e) {
-      print('SignalService.initSession PlatformException: ${e.code} - ${e.message}');
-      print('Details: ${e.details}');
+      print('SignalService.ping PlatformException: ${e.code} - ${e.message}');
+      return null;
+    } catch (e) {
+      print('SignalService.ping error: $e');
+      return null;
+    }
+  }
+
+  /// Get the unique device ID for this installation
+  static Future<int?> getDeviceId() async {
+    try {
+      print('=== SignalService.getDeviceId START ===');
+
+      final result = await _channel.invokeMethod('getDeviceId');
+
+      print('Device ID: $result');
+      print('=== SignalService.getDeviceId END ===');
+
+      return result as int?;
+    } on PlatformException catch (e) {
+      print('SignalService.getDeviceId PlatformException: ${e.code} - ${e.message}');
+      return null;
+    } catch (e) {
+      print('SignalService.getDeviceId error: $e');
+      return null;
+    }
+  }
+
+  /// Check if Signal Protocol keys have already been generated
+  static Future<bool> hasKeys() async {
+    try {
+      print('=== SignalService.hasKeys START ===');
+
+      final result = await _channel.invokeMethod('hasKeys');
+
+      print('hasKeys result: $result');
+      print('=== SignalService.hasKeys END ===');
+
+      return result == true;
+    } on PlatformException catch (e) {
+      print('SignalService.hasKeys PlatformException: ${e.code} - ${e.message}');
       return false;
     } catch (e) {
-      print('SignalService.initSession error: $e');
+      print('SignalService.hasKeys error: $e');
+      return false;
+    }
+  }
+
+  /// Generate Signal Protocol key bundle (IdentityKey, SignedPreKey, OneTimePreKeys)
+  static Future<Map<String, dynamic>?> generateKeyBundle() async {
+    try {
+      print('=== SignalService.generateKeyBundle START ===');
+
+      final result = await _channel.invokeMethod('generateKeyBundle');
+
+      if (result != null) {
+        final keyBundle = Map<String, dynamic>.from(result);
+        print('Key bundle generated successfully:');
+        print('- Identity Key: ${keyBundle['identity_key_b64']?.toString().substring(0, 20)}...');
+        print('- Registration ID: ${keyBundle['registration_id']}');
+        print('- Device ID: ${keyBundle['device_id']}'); // Now shows actual device ID
+        print('- Signed PreKey ID: ${keyBundle['signed_prekey_id']}');
+        print('- One-Time PreKeys count: ${(keyBundle['one_time_prekeys'] as List?)?.length ?? 0}');
+        print('=== SignalService.generateKeyBundle END ===');
+
+        return keyBundle;
+      } else {
+        print('Key bundle generation returned null');
+        return null;
+      }
+    } on PlatformException catch (e) {
+      print('SignalService.generateKeyBundle PlatformException: ${e.code} - ${e.message}');
+      return null;
+    } catch (e) {
+      print('SignalService.generateKeyBundle error: $e');
+      return null;
+    }
+  }
+
+  /// Get the current registration ID
+  static Future<int?> getRegistrationId() async {
+    try {
+      print('=== SignalService.getRegistrationId START ===');
+
+      final result = await _channel.invokeMethod('getRegistrationId');
+
+      print('Registration ID: $result');
+      print('=== SignalService.getRegistrationId END ===');
+
+      return result as int?;
+    } on PlatformException catch (e) {
+      print('SignalService.getRegistrationId PlatformException: ${e.code} - ${e.message}');
+      return null;
+    } catch (e) {
+      print('SignalService.getRegistrationId error: $e');
+      return null;
+    }
+  }
+
+  /// Clear all Signal Protocol keys (for logout/reset)
+  static Future<bool> clearKeys() async {
+    try {
+      print('=== SignalService.clearKeys START ===');
+
+      final result = await _channel.invokeMethod('clearKeys');
+
+      print('Clear keys result: $result');
+      print('=== SignalService.clearKeys END ===');
+
+      return result == true;
+    } on PlatformException catch (e) {
+      print('SignalService.clearKeys PlatformException: ${e.code} - ${e.message}');
+      return false;
+    } catch (e) {
+      print('SignalService.clearKeys error: $e');
+      return false;
+    }
+  }
+
+  /// Test method to verify prekey bundle placeholder (still unimplemented)
+  static Future<Map<String, dynamic>?> testGetPreKeyBundle() async {
+    try {
+      print('=== SignalService.testGetPreKeyBundle START ===');
+
+      final result = await _channel.invokeMethod('getPreKeyBundle');
+
+      print('Get prekey bundle result: $result');
+      print('=== SignalService.testGetPreKeyBundle END ===');
+
+      return result as Map<String, dynamic>?;
+    } on PlatformException catch (e) {
+      print('SignalService.testGetPreKeyBundle PlatformException: ${e.code} - ${e.message}');
+      print('This is expected - method not implemented yet');
+      return null;
+    } catch (e) {
+      print('SignalService.testGetPreKeyBundle error: $e');
+      return null;
+    }
+  }
+
+  static Future<bool> establishSession({
+    required String recipientUid,
+    required Map<String, dynamic> prekeyBundle,
+    int? deviceId, // Made nullable - will use actual device ID if not provided
+  }) async {
+    try {
+      print('=== SignalService.establishSession START ===');
+      print('Establishing session with: $recipientUid');
+      print('Bundle contains: ${prekeyBundle.keys.toList()}');
+
+      final params = <String, dynamic>{
+        'recipientUid': recipientUid,
+        'prekeyBundle': prekeyBundle,
+      };
+
+      // Only add deviceId if explicitly provided
+      if (deviceId != null) {
+        params['deviceId'] = deviceId;
+      }
+
+      final result = await _channel.invokeMethod('establishSession', params);
+
+      print('Session establishment result: $result');
+      print('=== SignalService.establishSession END ===');
+
+      return result == true;
+    } on PlatformException catch (e) {
+      print('SignalService.establishSession PlatformException: ${e.code} - ${e.message}');
+      return false;
+    } catch (e) {
+      print('SignalService.establishSession error: $e');
+      return false;
+    }
+  }
+
+  /// Upload rotated keys to backend without full re-registration
+  static Future<bool> uploadRotatedKeys({
+    required int deviceId,
+    Map<String, dynamic>? signedPreKey,
+    List<Map<String, dynamic>>? oneTimePreKeys,
+  }) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) throw Exception('Not authenticated');
+
+      final idToken = await user.getIdToken(true);
+      final uri = Uri.parse('${DeviceService.baseUrl}/v1/prekeys/update');
+
+      final body = <String, dynamic>{
+        'device_id': deviceId,
+      };
+
+      if (signedPreKey != null) body['signed_prekey'] = signedPreKey;
+      if (oneTimePreKeys != null) body['one_time_prekeys'] = oneTimePreKeys;
+
+      final resp = await http.put(
+        uri,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $idToken',
+        },
+        body: jsonEncode(body),
+      );
+
+      return resp.statusCode == 200;
+    } catch (e) {
+      print('uploadRotatedKeys error: $e');
+      return false;
+    }
+  }
+
+  /// Check if we have a session with a specific user
+  static Future<bool> hasSession({
+    required String recipientUid,
+    int? deviceId, // Made nullable - will use actual device ID if not provided
+  }) async {
+    try {
+      print('=== SignalService.hasSession START ===');
+      print('Checking session with: $recipientUid${deviceId != null ? ':$deviceId' : ''}');
+
+      final params = <String, dynamic>{
+        'recipientUid': recipientUid,
+      };
+
+      // Only add deviceId if explicitly provided
+      if (deviceId != null) {
+        params['deviceId'] = deviceId;
+      }
+
+      final result = await _channel.invokeMethod('hasSession', params);
+
+      print('hasSession result: $result');
+      print('=== SignalService.hasSession END ===');
+
+      return result == true;
+    } on PlatformException catch (e) {
+      print('SignalService.hasSession PlatformException: ${e.code} - ${e.message}');
+      return false;
+    } catch (e) {
+      print('SignalService.hasSession error: $e');
+      return false;
+    }
+  }
+
+  static Future<bool> resetUserContext() async {
+    try {
+      print('=== SignalService.resetUserContext START ===');
+
+      final result = await _channel.invokeMethod('resetUserContext');
+
+      print('Reset user context result: $result');
+      print('=== SignalService.resetUserContext END ===');
+
+      return result == true;
+    } on PlatformException catch (e) {
+      print('SignalService.resetUserContext PlatformException: ${e.code} - ${e.message}');
+      return false;
+    } catch (e) {
+      print('SignalService.resetUserContext error: $e');
+      return false;
+    }
+  }
+
+  /// Remove session with a user (for testing)
+  static Future<bool> removeSession({
+    required String recipientUid,
+    int? deviceId, // Made nullable - will use actual device ID if not provided
+  }) async {
+    try {
+      print('=== SignalService.removeSession START ===');
+      print('Removing session with: $recipientUid${deviceId != null ? ':$deviceId' : ''}');
+
+      final params = <String, dynamic>{
+        'recipientUid': recipientUid,
+      };
+
+      // Only add deviceId if explicitly provided
+      if (deviceId != null) {
+        params['deviceId'] = deviceId;
+      }
+
+      final result = await _channel.invokeMethod('removeSession', params);
+
+      print('removeSession result: $result');
+      print('=== SignalService.removeSession END ===');
+
+      return result == true;
+    } on PlatformException catch (e) {
+      print('SignalService.removeSession PlatformException: ${e.code} - ${e.message}');
+      return false;
+    } catch (e) {
+      print('SignalService.removeSession error: $e');
       return false;
     }
   }
@@ -52,38 +321,33 @@ class SignalService {
   static Future<String?> encryptMessage({
     required String recipientUid,
     required String plaintext,
-    int recipientDeviceId = 1,
+    int? deviceId, // Made nullable - will use actual device ID if not provided
   }) async {
     try {
       print('=== SignalService.encryptMessage START ===');
-      print('Recipient: $recipientUid, Message length: ${plaintext.length}');
+      print('Encrypting for: $recipientUid');
+      print('Plaintext length: ${plaintext.length}');
 
-      final currentUser = FirebaseAuth.instance.currentUser;
-      if (currentUser == null) {
-        print('ERROR: No authenticated user for encryption');
-        throw Exception('No authenticated user');
-      }
-
-      // Verify session exists before encryption
-      final hasSessionBefore = await hasSession(recipientUid: recipientUid);
-      print('Session exists before encryption: $hasSessionBefore');
-
-      if (!hasSessionBefore) {
-        print('ERROR: No session exists for encryption');
-        return null;
-      }
-
-      final result = await _channel.invokeMethod('encryptMessage', {
-        'myUid': currentUser.uid,
+      final params = <String, dynamic>{
         'recipientUid': recipientUid,
         'plaintext': plaintext,
-        'recipientDeviceId': recipientDeviceId,
-      });
+      };
 
-      print('Encryption result length: ${result?.toString().length ?? 0}');
+      // Only add deviceId if explicitly provided
+      if (deviceId != null) {
+        params['deviceId'] = deviceId;
+      }
+
+      final result = await _channel.invokeMethod('encryptMessage', params);
+
+      if (result != null) {
+        print('Encryption successful, ciphertext length: ${result.toString().length}');
+      } else {
+        print('Encryption failed - null result');
+      }
       print('=== SignalService.encryptMessage END ===');
-      return result as String?;
 
+      return result as String?;
     } on PlatformException catch (e) {
       print('SignalService.encryptMessage PlatformException: ${e.code} - ${e.message}');
       return null;
@@ -93,230 +357,191 @@ class SignalService {
     }
   }
 
-  /// Decrypt a received message
+  /// Decrypt a received message from a sender
   static Future<String?> decryptMessage({
     required String senderUid,
     required String ciphertextB64,
-    int senderDeviceId = 1,
+    int? deviceId, // Made nullable - will use actual device ID if not provided
   }) async {
     try {
       print('=== SignalService.decryptMessage START ===');
-      print('Sender: $senderUid, Ciphertext length: ${ciphertextB64.length}');
+      print('Decrypting from: $senderUid');
+      print('Ciphertext length: ${ciphertextB64.length}');
 
-      final currentUser = FirebaseAuth.instance.currentUser;
-      if (currentUser == null) {
-        print('ERROR: No authenticated user for decryption');
-        throw Exception('No authenticated user');
-      }
-
-      final result = await _channel.invokeMethod('decryptMessage', {
-        'myUid': currentUser.uid,
+      final params = <String, dynamic>{
         'senderUid': senderUid,
         'ciphertextB64': ciphertextB64,
-        'senderDeviceId': senderDeviceId,
-      });
+      };
 
-      print('Decryption result: ${result != null ? "SUCCESS" : "FAILED"}');
+      // Only add deviceId if explicitly provided
+      if (deviceId != null) {
+        params['deviceId'] = deviceId;
+      }
+
+      final result = await _channel.invokeMethod('decryptMessage', params);
+
+      if (result != null) {
+        print('Decryption successful, plaintext length: ${result.toString().length}');
+      } else {
+        print('Decryption failed - null result');
+      }
       print('=== SignalService.decryptMessage END ===');
-      return result as String?;
 
+      return result as String?;
     } on PlatformException catch (e) {
       print('SignalService.decryptMessage PlatformException: ${e.code} - ${e.message}');
       return null;
     } catch (e) {
-      print('SignalService.decryptMessage error: $e');
+      print ('SignalService.decryptMessage error: $e');
       return null;
     }
   }
 
-  /// Check if we have an established session with a recipient
-  static Future<bool> hasSession({
+  /// Encrypt message with automatic session establishment if needed
+  static Future<String?> encryptMessageWithSessionSetup({
     required String recipientUid,
+    required String plaintext,
+    Map<String, dynamic>? prekeyBundle,
+    int? deviceId, // Made nullable - will use actual device ID if not provided
   }) async {
     try {
-      print('=== SignalService.hasSession CHECK ===');
-      print('Checking session for: $recipientUid');
+      print('=== SignalService.encryptMessageWithSessionSetup START ===');
+      print('Recipient: $recipientUid');
+      print('Has prekey bundle: ${prekeyBundle != null}');
 
-      final currentUser = FirebaseAuth.instance.currentUser;
-      if (currentUser == null) {
-        print('No authenticated user for session check');
-        return false;
-      }
-
-      final result = await _channel.invokeMethod('hasSession', {
-        'myUid': currentUser.uid,
+      final params = <String, dynamic>{
         'recipientUid': recipientUid,
-      });
+        'plaintext': plaintext,
+        'prekeyBundle': prekeyBundle,
+      };
 
-      print('hasSession result: $result');
-      print('=== SignalService.hasSession END ===');
-      return result == true;
+      // Only add deviceId if explicitly provided
+      if (deviceId != null) {
+        params['deviceId'] = deviceId;
+      }
 
+      final result = await _channel.invokeMethod('encryptMessageWithSessionSetup', params);
+
+      print('Encrypt with session setup result: ${result != null ? "SUCCESS" : "FAILED"}');
+      print('=== SignalService.encryptMessageWithSessionSetup END ===');
+
+      return result as String?;
+    } on PlatformException catch (e) {
+      print('SignalService.encryptMessageWithSessionSetup PlatformException: ${e.code} - ${e.message}');
+      return null;
     } catch (e) {
-      print('SignalService.hasSession error: $e');
-      return false;
+      print('SignalService.encryptMessageWithSessionSetup error: $e');
+      return null;
     }
   }
 
-  /// Restore session state after app restart
-  static Future<bool> restoreSessionState({
-    required String recipientUid,
-  }) async {
+  /// Get encryption statistics and status
+  static Future<Map<String, dynamic>?> getEncryptionStats() async {
     try {
-      print('=== SignalService.restoreSessionState START ===');
+      print('=== SignalService.getEncryptionStats START ===');
 
-      final currentUser = FirebaseAuth.instance.currentUser;
-      if (currentUser == null) {
-        print('No authenticated user for session restore');
-        return false;
-      }
+      final result = await _channel.invokeMethod('getEncryptionStats');
 
-      final result = await _channel.invokeMethod('restoreSessionState', {
-        'myUid': currentUser.uid,
-        'recipientUid': recipientUid,
-      });
-
-      print('restoreSessionState result: $result');
-      print('=== SignalService.restoreSessionState END ===');
-      return result == true;
-
-    } catch (e) {
-      print('SignalService.restoreSessionState error: $e');
-      return false;
-    }
-  }
-
-  /// Clear session for a specific recipient
-  static Future<bool> clearSession({required String recipientUid}) async {
-    try {
-      print('=== SignalService.clearSession START ===');
-      print('Clearing session with $recipientUid');
-
-      final currentUser = FirebaseAuth.instance.currentUser;
-      if (currentUser == null) {
-        print('No current user for clearing session');
-        return false;
-      }
-
-      final result = await _channel.invokeMethod('clearSession', {
-        'myUid': currentUser.uid,
-        'recipientUid': recipientUid,
-        'clearAll': false,
-      });
-
-      print('Clear session result: $result');
-      print('=== SignalService.clearSession END ===');
-      return result == true;
-
-    } catch (e) {
-      print('SignalService.clearSession error: $e');
-      return false;
-    }
-  }
-
-  /// Clear all sessions for logout
-  static Future<bool> clearAllSessions() async {
-    try {
-      print('=== SignalService.clearAllSessions START ===');
-
-      final currentUser = FirebaseAuth.instance.currentUser;
-      if (currentUser == null) {
-        print('No authenticated user for clearing all sessions');
-        return false;
-      }
-
-      final result = await _channel.invokeMethod('clearSession', {
-        'myUid': currentUser.uid,
-        'clearAll': true,
-      });
-
-      print('Clear all sessions result: $result');
-      print('=== SignalService.clearAllSessions END ===');
-      return result == true;
-
-    } catch (e) {
-      print('SignalService.clearAllSessions error: $e');
-      return false;
-    }
-  }
-
-  /// Capture session context before encryption
-  static Future<String?> captureSessionContext({
-    required String recipientUid,
-    int recipientDeviceId = 1,
-  }) async {
-    try {
-      print('=== SignalService.captureSessionContext START ===');
-      print('Capturing context for: $recipientUid');
-
-      final currentUser = FirebaseAuth.instance.currentUser;
-      if (currentUser == null) {
-        print('ERROR: No authenticated user for session context capture');
-        throw Exception('No authenticated user');
-      }
-
-      // Verify session exists before capture
-      final hasSessionBefore = await hasSession(recipientUid: recipientUid);
-      print('Session exists before capture: $hasSessionBefore');
-
-      if (!hasSessionBefore) {
-        print('ERROR: Cannot capture context - no session exists');
+      if (result != null) {
+        final stats = Map<String, dynamic>.from(result);
+        print('Encryption stats retrieved: ${stats.keys.toList()}');
+        print('=== SignalService.getEncryptionStats END ===');
+        return stats;
+      } else {
+        print('Failed to get encryption stats');
         return null;
       }
-
-      final result = await _channel.invokeMethod('captureSessionContext', {
-        'myUid': currentUser.uid,
-        'recipientUid': recipientUid,
-        'recipientDeviceId': recipientDeviceId,
-      });
-
-      print('Session context capture result: ${result != null ? "SUCCESS (${result.toString().length} chars)" : "FAILED"}');
-      print('=== SignalService.captureSessionContext END ===');
-      return result as String?;
-
     } on PlatformException catch (e) {
-      print('SignalService.captureSessionContext PlatformException: ${e.code} - ${e.message}');
+      print('SignalService.getEncryptionStats PlatformException: ${e.code} - ${e.message}');
       return null;
     } catch (e) {
-      print('SignalService.captureSessionContext error: $e');
+      print('SignalService.getEncryptionStats error: $e');
       return null;
     }
   }
 
-  /// Apply session context before decryption
-  static Future<bool> applySessionContext({
-    required String senderUid,
-    required String sessionContextB64,
-    int senderDeviceId = 1,
-  }) async {
+  /// Rotate signed prekey for forward secrecy
+  static Future<bool> rotateSignedPreKey() async {
     try {
-      print('=== SignalService.applySessionContext START ===');
-      print('Applying context from: $senderUid');
-      print('Context length: ${sessionContextB64.length}');
+      print('=== SignalService.rotateSignedPreKey START ===');
 
-      final currentUser = FirebaseAuth.instance.currentUser;
-      if (currentUser == null) {
-        print('ERROR: No authenticated user for session context apply');
-        throw Exception('No authenticated user');
-      }
+      final result = await _channel.invokeMethod('rotateSignedPreKey');
 
-      final result = await _channel.invokeMethod('applySessionContext', {
-        'myUid': currentUser.uid,
-        'senderUid': senderUid,
-        'sessionContextB64': sessionContextB64,
-        'senderDeviceId': senderDeviceId,
-      });
+      print('Rotate signed prekey result: $result');
+      print('=== SignalService.rotateSignedPreKey END ===');
 
-      print('Session context apply result: $result');
-      print('=== SignalService.applySessionContext END ===');
       return result == true;
-
     } on PlatformException catch (e) {
-      print('SignalService.applySessionContext PlatformException: ${e.code} - ${e.message}');
+      print('SignalService.rotateSignedPreKey PlatformException: ${e.code} - ${e.message}');
       return false;
     } catch (e) {
-      print('SignalService.applySessionContext error: $e');
+      print('SignalService.rotateSignedPreKey error: $e');
       return false;
+    }
+  }
+
+  /// Generate additional one-time prekeys
+  static Future<List<Map<String, dynamic>>> generateAdditionalPreKeys({int count = 100}) async {
+    try {
+      print('=== SignalService.generateAdditionalPreKeys START ===');
+      print('Generating $count additional prekeys...');
+
+      final result = await _channel.invokeMethod('generateAdditionalPreKeys', {
+        'count': count,
+      });
+
+      if (result != null && result is List) {
+        final preKeys = result.map((item) => Map<String, dynamic>.from(item)).toList();
+        print('Generated ${preKeys.length} additional prekeys');
+        print('=== SignalService.generateAdditionalPreKeys END ===');
+        return preKeys;
+      } else {
+        print('Failed to generate additional prekeys');
+        return [];
+      }
+    } on PlatformException catch (e) {
+      print('SignalService.generateAdditionalPreKeys PlatformException: ${e.code} - ${e.message}');
+      return [];
+    } catch (e) {
+      print('SignalService.generateAdditionalPreKeys error: $e');
+      return [];
+    }
+  }
+
+  /// Perform security audit of the Signal Protocol setup
+  static Future<Map<String, dynamic>?> performSecurityAudit() async {
+    try {
+      print('=== SignalService.performSecurityAudit START ===');
+
+      final result = await _channel.invokeMethod('performSecurityAudit');
+
+      if (result != null) {
+        final audit = Map<String, dynamic>.from(result);
+        print('Security audit completed: ${audit['security_level']}');
+        print('Security score: ${audit['security_score']}/100');
+        print('=== SignalService.performSecurityAudit END ===');
+        return audit;
+      } else {
+        print('Failed to perform security audit');
+        return null;
+      }
+    } on PlatformException catch (e) {
+      print('SignalService.performSecurityAudit PlatformException: ${e.code} - ${e.message}');
+      return null;
+    } catch (e) {
+      print('SignalService.performSecurityAudit error: $e');
+      return null;
+    }
+  }
+
+  /// Get the current signed prekey data for upload
+  static Future<Map<String, dynamic>?> getCurrentSignedPreKey() async {
+    try {
+      final result = await _channel.invokeMethod('getCurrentSignedPreKey');
+      return result != null ? Map<String, dynamic>.from(result) : null;
+    } catch (e) {
+      print('getCurrentSignedPreKey error: $e');
+      return null;
     }
   }
 }

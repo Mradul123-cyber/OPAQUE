@@ -20,30 +20,62 @@ android {
         jvmTarget = JavaVersion.VERSION_11.toString()
     }
 
+    packagingOptions {
+        resources {
+            excludes += setOf(
+                "META-INF/DEPENDENCIES",
+                "META-INF/LICENSE",
+                "META-INF/LICENSE.txt",
+                "META-INF/NOTICE",
+                "META-INF/NOTICE.txt"
+            )
+        }
+    }
+
     defaultConfig {
         applicationId = "com.example.zarq_messenger"
         minSdk = 23
         targetSdk = 35
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        multiDexEnabled = true
     }
 
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("debug")
+
+            // Enable ProGuard/R8 for release builds
+            isMinifyEnabled = true  // Enable code shrinking
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"  // Your custom rules file
+            )
+        }
+
+        // Optional: For testing ProGuard in debug
+        debug {
+            isMinifyEnabled = false  // Keep false for debug
+            // proguardFiles(...) // Don't use ProGuard in debug for faster builds
         }
     }
 }
+
 
 flutter {
     source = "../.."
 }
 
+
 dependencies {
+    // Your existing Firebase dependencies (keep these)
     implementation(platform("com.google.firebase:firebase-bom:33.1.2"))
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-analytics")
-    implementation("org.whispersystems:signal-protocol-java:2.8.1")
+    implementation("com.google.firebase:firebase-messaging:24.1.2")
+
+    // Your existing utilities (keep these)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:okhttp-urlconnection:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
@@ -51,8 +83,18 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("org.json:json:20240303")
-    implementation("com.google.firebase:firebase-messaging:24.1.2")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.3")
 
+    // COMPATIBLE Signal Protocol Libraries
+    // Using the stable, well-tested Java implementation
 
+    implementation("org.whispersystems:signal-protocol-java:2.8.1")
+    implementation("org.whispersystems:signal-protocol-android:2.8.1")
+
+    // Security for key storage
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // Curve25519 for cryptographic operations (required by Signal Protocol)
+    implementation("org.whispersystems:curve25519-android:0.5.0")
+    //implementation("org.whispersystems:curve25519-java:0.5.0")
 }
