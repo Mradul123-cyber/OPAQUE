@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
 
@@ -113,6 +114,9 @@ class DeviceService {
       'message_type': 'chat',
     };
 
+    // print("HTTP DEBUG: Request body content_b64 length: ${contentB64.length}");
+    // print("HTTP DEBUG: Request body first 20: ${contentB64.substring(0, min(20, contentB64.length))}");
+
     // Add session context if provided
     if (sessionContext != null) {
       requestBody['session_context_b64'] = sessionContext;
@@ -153,8 +157,8 @@ class DeviceService {
       if (signedPreKey != null) body['signed_prekey'] = signedPreKey;
       if (oneTimePreKeys != null) body['one_time_prekeys'] = oneTimePreKeys;
 
-      print('[Upload] Request URL: $uri');
-      print('[Upload] Request body: ${jsonEncode(body)}');
+      // print('[Upload] Request URL: $uri');
+      // print('[Upload] Request body: ${jsonEncode(body)}');
 
       final resp = await http.put(
         uri,
@@ -165,13 +169,44 @@ class DeviceService {
         body: jsonEncode(body),
       );
 
-      print('[Upload] Response status: ${resp.statusCode}');
-      print('[Upload] Response body: ${resp.body}');
+      // print('[Upload] Response status: ${resp.statusCode}');
+      // print('[Upload] Response body: ${resp.body}');
 
       return resp.statusCode == 200;
     } catch (e) {
-      print('[Upload] Error: $e');
+      // print('[Upload] Error: $e');
       return false;
+    }
+  }
+
+  static Future<int?> getActiveDeviceId(String userUid) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) throw Exception('Not authenticated');
+
+      final idToken = await user.getIdToken(true);
+      final uri = Uri.parse('$baseUrl/v1/users/$userUid/device');
+
+      final resp = await http.get(
+        uri,
+        headers: {
+          'Authorization': 'Bearer $idToken',
+          'Accept': 'application/json',
+        },
+      );
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        return data['device_id'] as int?;
+      } else if (resp.statusCode == 404) {
+        // print('DeviceService: User $userUid has no registered device');
+        return null;
+      } else {
+        throw Exception('Failed to get device ID: ${resp.statusCode} ${resp.body}');
+      }
+    } catch (e) {
+      // print('DeviceService.getActiveDeviceId error: $e');
+      return null;
     }
   }
 

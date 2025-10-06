@@ -3,15 +3,17 @@ import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import '../home_screen.dart';
+import 'database_service.dart';
 
 class ConversationService {
   final String _baseUrl = 'http://192.168.29.81:8080';
   
   // Fetches the list of conversations for the currently logged-in user.
   Future<List<ConversationInfo>> fetchConversations() async {
+    final dbService = DatabaseService.instance;
     final user = FirebaseAuth.instance.currentUser;
+
     if (user == null) {
-      // If no user is logged in, return an empty list.
       return [];
     }
 
@@ -28,20 +30,43 @@ class ConversationService {
       );
 
       if (response.statusCode == 200) {
-        // Successfully fetched data.
+        // print('[ConversationService] === RAW BACKEND RESPONSE ===');
+        // print('[ConversationService] Response body: ${response.body}');
+        // print('[ConversationService] === END RAW RESPONSE ===');
+
         final List<dynamic> convosFromServer = json.decode(response.body);
-        return convosFromServer
+
+        // Parse conversations first
+        final baseConversations = convosFromServer
             .map((data) => ConversationInfo.fromJson(data))
             .toList();
+
+        // Add unread status to each
+        final conversationsWithUnread = <ConversationInfo>[];
+        for (final convo in baseConversations) {
+          final hasUnread = await dbService.hasUnreadMessages(
+              convo.conversationId,
+              user.uid
+          );
+
+          conversationsWithUnread.add(ConversationInfo(
+            conversationId: convo.conversationId,
+            chatTitle: convo.chatTitle,
+            isGroup: convo.isGroup,
+            creatorUid: convo.creatorUid,
+            avatarUrl: convo.avatarUrl,
+            partnerUid: convo.partnerUid,
+            hasUnreadMessages: hasUnread,
+          ));
+        }
+
+        return conversationsWithUnread;
       } else {
-        // If the server returns an error, throw an exception to be caught by the UI.
         throw Exception('Failed to load conversations: ${response.body}');
       }
     } on FirebaseAuthException catch (e) {
-      // Handle potential errors from getting the token.
       throw Exception('Authentication error: ${e.message}');
     } catch (e) {
-      // Handle other errors like network issues.
       throw Exception('An error occurred: $e');
     }
   }

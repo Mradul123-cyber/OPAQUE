@@ -5,23 +5,31 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:zarq_messenger/home_screen.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'dart:math' as math;
+import 'package:provider/provider.dart';
+import 'services/user_settings_provider.dart';
 
 import 'chat_screen.dart';
+import 'widgets/call_aware_screen.dart';
 
 // This Friend model should be consistent with the one in your other files.
 class Friend {
   final String username;
   final String? avatarUrl;
+  final String? displayName;
 
-  Friend({required this.username, this.avatarUrl});
+  Friend({required this.username, this.avatarUrl, this.displayName});
 
   factory Friend.fromJson(Map<String, dynamic> json) {
     return Friend(
       username: json['username'] ?? 'Unknown User',
       avatarUrl: json['avatarUrl'],
+      displayName: json['displayName'],
     );
   }
+
+  String get displayNameOrUsername => displayName ?? username;
 }
 
 // The Leaf animation classes and painter can remain as they were,
@@ -104,6 +112,7 @@ class CreateGroupScreen extends StatefulWidget {
 class _CreateGroupScreenState extends State<CreateGroupScreen>
     with TickerProviderStateMixin {
   final _groupNameController = TextEditingController();
+  final _descriptionController = TextEditingController();
   final _searchController = TextEditingController();
   List<Friend> _friendsList = [];
   final Set<String> _selectedFriends = {};
@@ -178,6 +187,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
   @override
   void dispose() {
     _groupNameController.dispose();
+    _descriptionController.dispose();
     _searchController.dispose();
     _animationController.dispose();
     super.dispose();
@@ -221,7 +231,92 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
     }
   }
 
+  void _showDescriptionDialog() {
+    final tempDescriptionController = TextEditingController();
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    final dialogTitleSize = (screenWidth * 0.045).clamp(16.0, 20.0);
+    final dialogTextSize = (screenWidth * 0.035).clamp(12.0, 16.0);
+    final spacing1 = (screenHeight * 0.02).clamp(14.0, 20.0);
+
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: Colors.grey[850],
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16.0),
+          ),
+          title: Text(
+            'Add Group Description',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: dialogTitleSize,
+              color: Colors.white,
+            ),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Would you like to add a description for this group? (Optional)',
+                style: TextStyle(
+                  fontSize: dialogTextSize,
+                  color: Colors.white70,
+                ),
+              ),
+              SizedBox(height: spacing1),
+              TextField(
+                controller: tempDescriptionController,
+                maxLines: 3,
+                style: TextStyle(fontSize: dialogTextSize),
+                decoration: InputDecoration(
+                  hintText: 'e.g., For discussing project updates',
+                  hintStyle: TextStyle(fontSize: dialogTextSize),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Colors.blue, width: 2),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _createGroupWithDescription(''); // Skip description
+              },
+              child: Text('Skip', style: TextStyle(fontSize: dialogTextSize)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final description = tempDescriptionController.text.trim();
+                Navigator.pop(context);
+                _createGroupWithDescription(description);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+              child: Text('Add & Create', style: TextStyle(fontSize: dialogTextSize)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   void _showCreatingGroupDialog() {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final dialogTextSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final spacing1 = (screenHeight * 0.025).clamp(18.0, 24.0);
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -231,18 +326,18 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(15.0),
           ),
-          content: const Column(
+          content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              CircularProgressIndicator(
+              const CircularProgressIndicator(
                 valueColor: AlwaysStoppedAnimation<Color>(
                   Colors.lightGreenAccent,
                 ),
               ),
-              SizedBox(height: 20),
+              SizedBox(height: spacing1),
               Text(
                 "Creating group...",
-                style: TextStyle(color: Colors.white70, fontSize: 16),
+                style: TextStyle(color: Colors.white, fontSize: dialogTextSize),
               ),
             ],
           ),
@@ -251,7 +346,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
     );
   }
 
-  Future<void> _createGroup() async {
+  void _createGroup() {
     if (_isCreatingGroup) return;
 
     if (_groupNameController.text.trim().isEmpty || _selectedFriends.isEmpty) {
@@ -266,6 +361,11 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
       return;
     }
 
+    // Show description dialog first
+    _showDescriptionDialog();
+  }
+
+  Future<void> _createGroupWithDescription(String description) async {
     setState(() => _isCreatingGroup = true);
     _showCreatingGroupDialog();
 
@@ -291,6 +391,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
         },
         body: json.encode({
           'groupName': _groupNameController.text.trim(),
+          'description': description,
           'memberUsernames': _selectedFriends.toList(),
         }),
       );
@@ -359,58 +460,182 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
   }
 
   Widget _buildAvatar(Friend friend) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final avatarRadius = (screenWidth * 0.06).clamp(20.0, 28.0);
+    final avatarFontSize = (screenWidth * 0.06).clamp(20.0, 28.0);
+    final progressSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+
     final hasImage = friend.avatarUrl != null && friend.avatarUrl!.isNotEmpty;
-    final initial = friend.username.isNotEmpty
-        ? friend.username[0].toUpperCase()
+    final displayText = friend.displayNameOrUsername;
+    final initial = displayText.isNotEmpty
+        ? displayText[0].toUpperCase()
         : '?';
-    final color = Color(friend.username.hashCode | 0xFF000000).withOpacity(1.0);
+    final color = Color(displayText.hashCode | 0xFF000000).withOpacity(1.0);
+
+    if (hasImage) {
+      return CachedNetworkImage(
+        imageUrl: friend.avatarUrl!,
+        imageBuilder: (context, imageProvider) => CircleAvatar(
+          radius: avatarRadius,
+          backgroundImage: imageProvider,
+          backgroundColor: Colors.transparent,
+        ),
+        placeholder: (context, url) => CircleAvatar(
+          radius: avatarRadius,
+          backgroundColor: color,
+          child: SizedBox(
+            width: progressSize,
+            height: progressSize,
+            child: const CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+            ),
+          ),
+        ),
+        errorWidget: (context, url, error) => CircleAvatar(
+          radius: avatarRadius,
+          backgroundColor: color,
+          child: Text(
+            initial,
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: avatarFontSize,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+      );
+    }
 
     return CircleAvatar(
-      radius: 24,
-      backgroundColor: hasImage ? Colors.transparent : color,
-      backgroundImage: hasImage ? NetworkImage(friend.avatarUrl!) : null,
-      child: hasImage
-          ? null
-          : Text(
-              initial,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+      radius: avatarRadius,
+      backgroundColor: color,
+      child: Text(
+        initial,
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: avatarFontSize,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final filteredFriends = _friendsList.where((friend) {
-      final usernameLower = friend.username.toLowerCase();
       final queryLower = _searchQuery.toLowerCase();
-      return usernameLower.contains(queryLower);
+      return friend.displayNameOrUsername.toLowerCase().contains(queryLower) ||
+             friend.username.toLowerCase().contains(queryLower);
     }).toList();
 
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        title: const Text(
-          'Create New Group',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+    return Consumer<UserSettingsProvider>(
+      builder: (context, userSettings, child) {
+        final groupScreenStyle = userSettings.groupScreenStyle;
+
+        if (groupScreenStyle == 'static') {
+          return _buildStaticVersion(filteredFriends);
+        } else {
+          return _buildDynamicVersion(filteredFriends);
+        }
+      },
+    );
+  }
+
+  Widget _buildDynamicVersion(List<Friend> filteredFriends) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    // Responsive sizing
+    final appBarTitleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+    final textFieldPadding = EdgeInsets.symmetric(
+      horizontal: screenWidth * 0.04,
+      vertical: screenHeight * 0.01,
+    );
+    final textFieldFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final iconSize = (screenWidth * 0.06).clamp(20.0, 26.0);
+    final labelFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final listItemMargin = EdgeInsets.symmetric(
+      horizontal: screenWidth * 0.04,
+      vertical: screenHeight * 0.008,
+    );
+    final listItemPadding = EdgeInsets.all(screenWidth * 0.03);
+    final nameFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final usernameFontSize = (screenWidth * 0.0325).clamp(12.0, 15.0);
+    final checkIconSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final spacing1 = (screenWidth * 0.04).clamp(12.0, 18.0);
+    final treeImageHeight = (screenHeight * 0.18).clamp(120.0, 180.0);
+
+    return CallAwareScreen(
+      screenName: 'CreateGroupScreen',
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        extendBodyBehindAppBar: true,
+        appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Create New Group',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: appBarTitleSize,
+              ),
+            ),
+            Text(
+              '${_selectedFriends.length + 1}/100 members',
+              style: TextStyle(
+                color: Colors.white70,
+                fontSize: appBarTitleSize * 0.6,
+              ),
+            ),
+          ],
         ),
         backgroundColor: Colors.transparent,
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.white),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.check, color: Colors.white),
-            tooltip: 'Create Group',
-            onPressed:
-                (_isCreatingGroup ||
-                    _groupNameController.text.trim().isEmpty ||
-                    _selectedFriends.isEmpty)
-                ? null
-                : _createGroup,
+          Padding(
+            padding: EdgeInsets.only(right: screenWidth * 0.02),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: (_groupNameController.text.trim().isNotEmpty &&
+                        _selectedFriends.isNotEmpty &&
+                        !_isCreatingGroup)
+                    ? Colors.lightGreenAccent
+                    : Colors.transparent,
+                boxShadow: (_groupNameController.text.trim().isNotEmpty &&
+                           _selectedFriends.isNotEmpty &&
+                           !_isCreatingGroup)
+                    ? [
+                        BoxShadow(
+                          color: Colors.lightGreenAccent.withOpacity(0.5),
+                          blurRadius: 8,
+                          spreadRadius: 2,
+                        ),
+                      ]
+                    : null,
+              ),
+              child: IconButton(
+                icon: Icon(
+                  Icons.check,
+                  color: (_groupNameController.text.trim().isNotEmpty &&
+                          _selectedFriends.isNotEmpty &&
+                          !_isCreatingGroup)
+                      ? Colors.green[900]
+                      : Colors.white,
+                ),
+                tooltip: 'Create Group',
+                onPressed: (_isCreatingGroup ||
+                            _groupNameController.text.trim().isEmpty ||
+                            _selectedFriends.isEmpty)
+                    ? null
+                    : _createGroup,
+              ),
+            ),
           ),
         ],
       ),
@@ -452,7 +677,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
                     child: Image.network(
                       'https://placehold.co/1000x200/0F380F/0F380F?text=Trees',
                       fit: BoxFit.cover,
-                      height: 150,
+                      height: treeImageHeight,
                       width: double.infinity,
                       errorBuilder: (context, error, stackTrace) => Container(),
                     ),
@@ -463,27 +688,27 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
                   child: Column(
                     children: [
                       Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16.0,
-                          vertical: 8.0,
-                        ),
+                        padding: textFieldPadding,
                         child: TextField(
                           controller: _groupNameController,
-                          style: const TextStyle(color: Colors.white),
+                          style: TextStyle(color: Colors.white, fontSize: textFieldFontSize),
                           decoration: InputDecoration(
                             labelText: 'Group Name',
                             labelStyle: TextStyle(
                               color: Colors.white.withOpacity(0.7),
+                              fontSize: labelFontSize,
                             ),
                             hintText: 'e.g., The Avengers',
                             hintStyle: TextStyle(
                               color: Colors.white.withOpacity(0.5),
+                              fontSize: textFieldFontSize,
                             ),
                             filled: true,
                             fillColor: const Color(0xFF2E8B57).withOpacity(0.2),
-                            prefixIcon: const Icon(
+                            prefixIcon: Icon(
                               Icons.title,
                               color: Colors.white54,
+                              size: iconSize,
                             ),
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(30.0),
@@ -507,31 +732,32 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
                         ),
                       ),
                       Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16.0,
-                          vertical: 8.0,
-                        ),
+                        padding: textFieldPadding,
                         child: TextField(
                           controller: _searchController,
-                          style: const TextStyle(color: Colors.white),
+                          style: TextStyle(color: Colors.white, fontSize: textFieldFontSize),
                           decoration: InputDecoration(
                             labelText: 'Search friends',
                             labelStyle: TextStyle(
                               color: Colors.white.withOpacity(0.7),
+                              fontSize: labelFontSize,
                             ),
                             hintText: 'Enter a username...',
                             hintStyle: TextStyle(
                               color: Colors.white.withOpacity(0.5),
+                              fontSize: textFieldFontSize,
                             ),
-                            prefixIcon: const Icon(
+                            prefixIcon: Icon(
                               Icons.search,
                               color: Colors.white54,
+                              size: iconSize,
                             ),
                             suffixIcon: _searchController.text.isNotEmpty
                                 ? IconButton(
-                                    icon: const Icon(
+                                    icon: Icon(
                                       Icons.clear,
                                       color: Colors.white54,
+                                      size: iconSize,
                                     ),
                                     onPressed: () {
                                       _searchController.clear();
@@ -561,10 +787,10 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
                           ),
                         ),
                       ),
-                      const Padding(
+                      Padding(
                         padding: EdgeInsets.symmetric(
-                          horizontal: 16.0,
-                          vertical: 12.0,
+                          horizontal: screenWidth * 0.04,
+                          vertical: screenHeight * 0.015,
                         ),
                         child: Align(
                           alignment: Alignment.centerLeft,
@@ -573,7 +799,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
                             style: TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
-                              fontSize: 16,
+                              fontSize: labelFontSize,
                             ),
                           ),
                         ),
@@ -588,6 +814,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
                                   textAlign: TextAlign.center,
                                   style: TextStyle(
                                     color: Colors.white.withOpacity(0.7),
+                                    fontSize: textFieldFontSize,
                                   ),
                                 ),
                               )
@@ -615,10 +842,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
                                       duration: const Duration(
                                         milliseconds: 200,
                                       ),
-                                      margin: const EdgeInsets.symmetric(
-                                        horizontal: 16.0,
-                                        vertical: 6.0,
-                                      ),
+                                      margin: listItemMargin,
                                       decoration: BoxDecoration(
                                         color: isSelected
                                             ? const Color(
@@ -645,7 +869,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
                                         ],
                                       ),
                                       child: Padding(
-                                        padding: const EdgeInsets.all(12.0),
+                                        padding: listItemPadding,
                                         child: Row(
                                           children: [
                                             Stack(
@@ -664,23 +888,36 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
                                                         width: 2,
                                                       ),
                                                     ),
-                                                    child: const Icon(
+                                                    child: Icon(
                                                       Icons.check,
                                                       color: Colors.black,
-                                                      size: 16,
+                                                      size: checkIconSize,
                                                     ),
                                                   ),
                                               ],
                                             ),
-                                            const SizedBox(width: 16),
+                                            SizedBox(width: spacing1),
                                             Expanded(
-                                              child: Text(
-                                                friend.username,
-                                                style: const TextStyle(
-                                                  color: Colors.white,
-                                                  fontSize: 16,
-                                                  fontWeight: FontWeight.w500,
-                                                ),
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    friend.displayName ?? friend.username,
+                                                    style: TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: nameFontSize,
+                                                      fontWeight: FontWeight.w600,
+                                                    ),
+                                                  ),
+                                                  if (friend.displayName != null)
+                                                    Text(
+                                                      '@${friend.username}',
+                                                      style: TextStyle(
+                                                        color: Colors.white.withOpacity(0.7),
+                                                        fontSize: usernameFontSize,
+                                                      ),
+                                                    ),
+                                                ],
                                               ),
                                             ),
                                           ],
@@ -696,6 +933,345 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
                 ),
               ],
             ),
+      ),
+    );
+  }
+
+  Widget _buildStaticVersion(List<Friend> filteredFriends) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    // Responsive sizing
+    final appBarTitleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+    final textFieldFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final iconSize = (screenWidth * 0.06).clamp(20.0, 26.0);
+    final labelFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final listItemMargin = EdgeInsets.symmetric(
+      horizontal: screenWidth * 0.04,
+      vertical: screenHeight * 0.008,
+    );
+    final listItemPadding = EdgeInsets.all(screenWidth * 0.03);
+    final nameFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final usernameFontSize = (screenWidth * 0.0325).clamp(12.0, 15.0);
+    final checkIconSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final spacing1 = (screenWidth * 0.04).clamp(12.0, 18.0);
+    final spacing2 = (screenWidth * 0.03).clamp(10.0, 14.0);
+    final cardPadding = EdgeInsets.symmetric(
+      horizontal: screenWidth * 0.04,
+      vertical: screenHeight * 0.015,
+    );
+    final cardIconSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+
+    return CallAwareScreen(
+      screenName: 'CreateGroupScreen',
+      child: Scaffold(
+        backgroundColor: Colors.lightBlue[50],
+        appBar: AppBar(
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Create New Group',
+                style: TextStyle(
+                  color: Colors.black,
+                  fontWeight: FontWeight.bold,
+                  fontSize: appBarTitleSize,
+                ),
+              ),
+              Text(
+                '${_selectedFriends.length + 1}/100 members',
+                style: TextStyle(
+                  color: Colors.black54,
+                  fontSize: appBarTitleSize * 0.6,
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: Colors.lightBlue[50],
+          elevation: 0,
+          iconTheme: const IconThemeData(color: Colors.black),
+          actions: [
+            Padding(
+              padding: EdgeInsets.only(right: screenWidth * 0.02),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: (_groupNameController.text.trim().isNotEmpty &&
+                          _selectedFriends.isNotEmpty &&
+                          !_isCreatingGroup)
+                      ? Colors.green
+                      : Colors.transparent,
+                  boxShadow: (_groupNameController.text.trim().isNotEmpty &&
+                             _selectedFriends.isNotEmpty &&
+                             !_isCreatingGroup)
+                      ? [
+                          BoxShadow(
+                            color: Colors.green.withOpacity(0.4),
+                            blurRadius: 8,
+                            spreadRadius: 2,
+                          ),
+                        ]
+                      : null,
+                ),
+                child: IconButton(
+                  icon: Icon(
+                    Icons.check,
+                    color: (_groupNameController.text.trim().isNotEmpty &&
+                            _selectedFriends.isNotEmpty &&
+                            !_isCreatingGroup)
+                        ? Colors.white
+                        : Colors.black45,
+                  ),
+                  tooltip: 'Create Group',
+                  onPressed: (_isCreatingGroup ||
+                              _groupNameController.text.trim().isEmpty ||
+                              _selectedFriends.isEmpty)
+                      ? null
+                      : _createGroup,
+                ),
+              ),
+            ),
+          ],
+        ),
+        body: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : SafeArea(
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: EdgeInsets.only(
+                        left: 16.0,
+                        right: 16.0,
+                        top: 8.0,
+                        bottom: MediaQuery.of(context).padding.bottom + 8.0,
+                      ),
+                      child: Column(
+                        children: [
+                          // Group Name Field - PURPLE
+                          TextField(
+                            controller: _groupNameController,
+                            style: TextStyle(color: Colors.black87, fontSize: textFieldFontSize),
+                            decoration: InputDecoration(
+                              labelText: 'Group Name',
+                              labelStyle: TextStyle(color: Colors.black54, fontSize: labelFontSize),
+                              hintText: 'e.g., The Avengers',
+                              hintStyle: TextStyle(color: Colors.black38, fontSize: textFieldFontSize),
+                              filled: true,
+                              fillColor: Colors.purple[50],
+                              prefixIcon: Icon(Icons.title, color: Colors.purple[700], size: iconSize),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12.0),
+                                borderSide: BorderSide.none,
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12.0),
+                                borderSide: BorderSide(color: Colors.purple[200]!, width: 1.0),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12.0),
+                                borderSide: BorderSide(color: Colors.purple[400]!, width: 2.0),
+                              ),
+                            ),
+                          ),
+                          SizedBox(height: spacing2),
+                          // Search Field - ORANGE
+                          TextField(
+                            controller: _searchController,
+                            style: TextStyle(color: Colors.black87, fontSize: textFieldFontSize),
+                            decoration: InputDecoration(
+                              labelText: 'Search friends',
+                              labelStyle: TextStyle(color: Colors.black54, fontSize: labelFontSize),
+                              hintText: 'Enter a username...',
+                              hintStyle: TextStyle(color: Colors.black38, fontSize: textFieldFontSize),
+                              prefixIcon: Icon(Icons.search, color: Colors.orange[700], size: iconSize),
+                              suffixIcon: _searchController.text.isNotEmpty
+                                  ? IconButton(
+                                      icon: Icon(Icons.clear, color: Colors.black54, size: iconSize),
+                                      onPressed: () {
+                                        _searchController.clear();
+                                      },
+                                    )
+                                  : null,
+                              filled: true,
+                              fillColor: Colors.orange[50],
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12.0),
+                                borderSide: BorderSide.none,
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12.0),
+                                borderSide: BorderSide(color: Colors.orange[200]!, width: 1.0),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12.0),
+                                borderSide: BorderSide(color: Colors.orange[400]!, width: 2.0),
+                              ),
+                            ),
+                          ),
+                          SizedBox(height: spacing1),
+                          // "Select Members" Card
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: Container(
+                              padding: cardPadding,
+                              decoration: BoxDecoration(
+                                color: Colors.amber[50],
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: Colors.amber[200]!, width: 1),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.amber.withOpacity(0.2),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.people, color: Colors.amber[800], size: cardIconSize),
+                                  SizedBox(width: spacing2),
+                                  Text(
+                                    'Select Members:',
+                                    style: TextStyle(
+                                      color: Colors.amber[900],
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: labelFontSize,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: filteredFriends.isEmpty
+                          ? Center(
+                              child: Text(
+                                _searchQuery.isNotEmpty
+                                    ? "No friends found matching your search."
+                                    : "You don't have any friends to add.",
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: Colors.black54, fontSize: textFieldFontSize),
+                              ),
+                            )
+                          : ListView.builder(
+                              itemCount: filteredFriends.length,
+                              itemBuilder: (context, index) {
+                                final friend = filteredFriends[index];
+                                final isSelected = _selectedFriends.contains(friend.username);
+
+                                return GestureDetector(
+                                  onTap: () {
+                                    setState(() {
+                                      if (isSelected) {
+                                        _selectedFriends.remove(friend.username);
+                                      } else {
+                                        // Check limit: 99 friends + 1 creator = 100 total
+                                        if (_selectedFriends.length >= 99) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(
+                                              content: Text('Maximum 100 members allowed (including you)'),
+                                              backgroundColor: Colors.orange,
+                                            ),
+                                          );
+                                          return;
+                                        }
+                                        _selectedFriends.add(friend.username);
+                                      }
+                                    });
+                                  },
+                                  child: Container(
+                                    margin: listItemMargin,
+                                    decoration: BoxDecoration(
+                                      color: isSelected ? Colors.green[100] : Colors.green[50],
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(
+                                        color: isSelected ? Colors.green[400]! : Colors.green[200]!,
+                                        width: 1,
+                                      ),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.green.withOpacity(0.2),
+                                          blurRadius: 4,
+                                          offset: const Offset(0, 2),
+                                        ),
+                                      ],
+                                    ),
+                                    child: Padding(
+                                      padding: listItemPadding,
+                                      child: Row(
+                                        children: [
+                                          Stack(
+                                            alignment: Alignment.bottomRight,
+                                            children: [
+                                              Container(
+                                                decoration: BoxDecoration(
+                                                  shape: BoxShape.circle,
+                                                  border: Border.all(
+                                                    color: Colors.black,
+                                                    width: 2.0,
+                                                  ),
+                                                ),
+                                                child: _buildAvatar(friend),
+                                              ),
+                                              if (isSelected)
+                                                Container(
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.green,
+                                                    shape: BoxShape.circle,
+                                                    border: Border.all(
+                                                      color: Colors.black,
+                                                      width: 2,
+                                                    ),
+                                                  ),
+                                                  child: Icon(
+                                                    Icons.check,
+                                                    color: Colors.white,
+                                                    size: checkIconSize,
+                                                  ),
+                                                ),
+                                            ],
+                                          ),
+                                          SizedBox(width: spacing1),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  friend.displayName ?? friend.username,
+                                                  style: TextStyle(
+                                                    color: isSelected ? Colors.green[900] : Colors.black87,
+                                                    fontSize: nameFontSize,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                                if (friend.displayName != null)
+                                                  Text(
+                                                    '@${friend.username}',
+                                                    style: TextStyle(
+                                                      color: isSelected ? Colors.green[700] : Colors.black54,
+                                                      fontSize: usernameFontSize,
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+      ),
     );
   }
 }

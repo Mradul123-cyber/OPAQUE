@@ -46,8 +46,11 @@ class HomeProvider with ChangeNotifier {
   Future<void> fetchInitialConversations() async {
     if (_state == HomeState.Loading) return;
 
-    _state = HomeState.Loading;
-    notifyListeners();
+    // Safe way to update during potential build phase
+    Future.microtask(() {
+      _state = HomeState.Loading;
+      notifyListeners();
+    });
 
     try {
       _conversations = await _conversationService.fetchConversations();
@@ -62,9 +65,32 @@ class HomeProvider with ChangeNotifier {
   // Listens for real-time updates from the server
   void _listenToWebSocket() {
     _webSocketSubscription = _webSocketService.stream.listen((message) {
-      print("HomeProvider received a WebSocket signal. Refreshing data.");
+      // print("HomeProvider received a WebSocket signal. Refreshing data.");
       fetchInitialConversations();
     });
+  }
+
+  void markConversationAsRead(int conversationId) {
+    final index = _conversations.indexWhere((c) => c.conversationId == conversationId);
+    if (index != -1) {
+      _conversations[index] = ConversationInfo(
+        conversationId: _conversations[index].conversationId,
+        chatTitle: _conversations[index].chatTitle,
+        isGroup: _conversations[index].isGroup,
+        creatorUid: _conversations[index].creatorUid,
+        avatarUrl: _conversations[index].avatarUrl,
+        partnerUid: _conversations[index].partnerUid,
+        hasUnreadMessages: false, // Clear the green dot
+      );
+      notifyListeners();
+      // print('[HomeProvider] Cleared unread indicator for conversation $conversationId');
+    }
+  }
+
+  void removeConversation(int conversationId) {
+    _conversations.removeWhere((c) => c.conversationId == conversationId);
+    notifyListeners();
+    // print('[HomeProvider] Removed conversation $conversationId from list');
   }
 
   // Clean up the subscription when the provider is disposed

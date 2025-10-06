@@ -22,23 +22,67 @@ class ChatProvider with ChangeNotifier {
         msg.status == MessageStatus.failed
     ).toList();
 
-    // Remove any pending messages that now exist in database (successful sends)
-    final uniquePendingMessages = pendingMessages.where((pendingMsg) =>
-    !messages.any((dbMsg) => dbMsg.id == pendingMsg.id)
+    // Keep pending messages, and remove database messages with same ID
+    // (pending messages take precedence over database to show correct status)
+    final pendingMessageIds = pendingMessages.map((msg) => msg.id).toSet();
+    final filteredDbMessages = messages.where((dbMsg) =>
+    !pendingMessageIds.contains(dbMsg.id)
     ).toList();
 
-    _messages = [...messages, ...uniquePendingMessages];
+    _messages = [...filteredDbMessages, ...pendingMessages];
     notifyListeners();
   }
 
   /// This is a simple helper for adding a single message, used for temporary messages.
   void addMessage(Message message) {
-    _messages.add(message);
+    // print("=== ChatProvider.addMessage START ===");
+    // print("Adding message ID: ${message.id}");
+    // print("Adding message content: '${message.content}'");
+    // print("Adding message timestamp: ${message.timestamp}");
+
+    // Check if message already exists to avoid duplicates
+    if (_messages.any((msg) => msg.id == message.id)) {
+      // print("Message ${message.id} already exists - skipping");
+      return;
+    }
+
+    // Convert to UTC for consistent comparison
+    final newMessageUtc = message.timestamp.toUtc();
+    // print("New message UTC: $newMessageUtc");
+
+    // Find correct insertion point by timestamp (chronological order)
+    int insertIndex = 0;
+
+    for (int i = 0; i < _messages.length; i++) {
+      final existingMessageUtc = _messages[i].timestamp.toUtc();
+      // print("Comparing: $newMessageUtc vs existing: $existingMessageUtc");
+
+      if (newMessageUtc.isBefore(existingMessageUtc)) {
+        insertIndex = i;
+        // print("Inserting at index $i (new message is earlier)");
+        break;
+      }
+      insertIndex = i + 1; // Insert after this message
+    }
+
+    // print("Final insertion index: $insertIndex");
+    _messages.insert(insertIndex, message);
+
+    // print("Messages after insertion:");
+    for (int i = 0; i < _messages.length; i++) {
+      // print("  [$i] ID:${_messages[i].id} timestamp:${_messages[i].timestamp.toUtc()}");
+    }
+
     notifyListeners();
   }
 
   void removeMessage(int messageId) {
     _messages.removeWhere((message) => message.id == messageId);
+    notifyListeners();
+  }
+
+  void clearMessages() {
+    _messages.clear();
     notifyListeners();
   }
 
@@ -71,25 +115,44 @@ class ChatProvider with ChangeNotifier {
       final dbService = DatabaseService.instance;
       await dbService.insertMessage(message);
     } catch (e) {
-      print('Error saving message to database: $e');
+      // print('Error saving message to database: $e');
     }
   }
 
   void updateMessageStatusById(int messageId, MessageStatus newStatus) {
-    print("[ChatProvider] 🔍 Updating message $messageId to $newStatus");
-    print("[ChatProvider] 🔍 Current messages count: ${_messages.length}");
-
     final index = _messages.indexWhere((msg) => msg.id == messageId);
     if (index != -1) {
       final oldStatus = _messages[index].status;
+
+      // ✅ PERFORMANCE FIX: Only update and notify if status actually changed
+      if (oldStatus == newStatus) {
+        // print("[ChatProvider] ⏭️ Message $messageId already has status $newStatus, skipping");
+        return;
+      }
+
+      // Status progression check: don't downgrade status
+      // read > delivered > sent > sending
+      final statusOrder = {
+        MessageStatus.sending: 0,
+        MessageStatus.sent: 1,
+        MessageStatus.delivered: 2,
+        MessageStatus.read: 3,
+        MessageStatus.failed: -1,
+        MessageStatus.decrypting: 0,
+        MessageStatus.decryptFailed: -1,
+      };
+
+      final oldOrder = statusOrder[oldStatus] ?? 0;
+      final newOrder = statusOrder[newStatus] ?? 0;
+
+      if (oldOrder >= newOrder && oldOrder >= 0 && newOrder >= 0) {
+        // print("[ChatProvider] ⏭️ Message $messageId status not updated - $oldStatus is higher than $newStatus");
+        return;
+      }
+
       _messages[index] = _messages[index].copyWith(status: newStatus);
-      print("[ChatProvider] ✅ Message $messageId status updated from $oldStatus to $newStatus");
-      print("[ChatProvider] 🔍 Notifying UI listeners...");
+      // print("[ChatProvider] ✅ Message $messageId status updated: $oldStatus → $newStatus");
       notifyListeners();
-    } else {
-      print("[ChatProvider] ❌ Message $messageId not found in provider");
-      // Debug: Show what messages we do have
-      print("[ChatProvider] 🔍 Available message IDs: ${_messages.map((m) => m.id).toList()}");
     }
   }
 

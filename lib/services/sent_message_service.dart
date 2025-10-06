@@ -11,7 +11,7 @@ class SentMessageService {
 
   static void initialize() {
     _channel.setMethodCallHandler(_handleMethodCall);
-    print('[SentMessageService] Initialized');
+    // print('[SentMessageService] Initialized');
   }
 
   static Future<dynamic> _handleMethodCall(MethodCall call) async {
@@ -20,7 +20,7 @@ class SentMessageService {
         await _handleSentMessage(call.arguments);
         break;
       default:
-        print('[SentMessageService] Unknown method: ${call.method}');
+        // print('[SentMessageService] Unknown method: ${call.method}');
     }
   }
 
@@ -35,13 +35,13 @@ class SentMessageService {
       final senderUid = data['sender_uid'] as String;
       final timestamp = data['timestamp'] as int;
 
-      print('[SentMessageService] Processing sent message: $messageText');
-      print('[SentMessageService] Local ID: $localMessageId, Real ID: $realMessageId');
+      // print('[SentMessageService] Processing sent message: $messageText');
+      // print('[SentMessageService] Local ID: $localMessageId, Real ID: $realMessageId');
 
       // Get current user info
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null || currentUser.uid != senderUid) {
-        print('[SentMessageService] User mismatch or not authenticated');
+        // print('[SentMessageService] User mismatch or not authenticated');
         return;
       }
 
@@ -59,10 +59,10 @@ class SentMessageService {
       // Broadcast the message to listeners
       _sentMessageController.add(message);
 
-      print('[SentMessageService] Broadcasted sent message with real ID: ${message.id}');
+      // print('[SentMessageService] Broadcasted sent message with real ID: ${message.id}');
 
     } catch (e) {
-      print('[SentMessageService] Error handling sent message: $e');
+      // print('[SentMessageService] Error handling sent message: $e');
     }
   }
 

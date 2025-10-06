@@ -11,10 +11,15 @@ class DeletionService {
     required String deletionType, // 'delete_for_me' or 'delete_for_everyone'
   }) async {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return false;
+    if (user == null) {
+      // print('[DeletionService] ERROR: No authenticated user');
+      return false;
+    }
 
     try {
       final token = await user.getIdToken();
+      // print('[DeletionService] Deleting message $messageId with type: $deletionType');
+
       final response = await http.delete(
         Uri.parse('$baseUrl/messages/$messageId'),
         headers: {
@@ -26,9 +31,18 @@ class DeletionService {
         }),
       );
 
-      return response.statusCode == 200;
+      // print('[DeletionService] Response status: ${response.statusCode}');
+      // print('[DeletionService] Response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        // print('[DeletionService] Delete successful for message $messageId');
+        return true;
+      } else {
+        // print('[DeletionService] Delete failed: ${response.statusCode} - ${response.body}');
+        return false;
+      }
     } catch (e) {
-      print('Error deleting message: $e');
+      // print('[DeletionService] Exception deleting message: $e');
       return false;
     }
   }

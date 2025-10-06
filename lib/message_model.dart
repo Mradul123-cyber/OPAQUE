@@ -1,11 +1,11 @@
-// lib/message_model.dart
-
 enum MessageStatus {
-  sending,
-  sent,
-  delivered,
-  read,
-  failed,
+  sending,        // Encrypting and sending
+  sent,           // Successfully encrypted and sent
+  delivered,      // Delivered to recipient
+  read,          // Read by recipient
+  failed,        // Encryption or sending failed
+  decrypting,    // Currently decrypting received message
+  decryptFailed, // Failed to decrypt received message
 }
 
 class Message {
@@ -17,6 +17,36 @@ class Message {
   final String? senderUid;
   final MessageStatus status;
 
+  // Encryption metadata
+  final String? encryptedContent;
+  final bool isEncrypted;
+  final int? senderDeviceId;
+  final int? recipientDeviceId;
+
+  // Quick reply flag
+  final bool isQuickReply;
+
+  // Attachment metadata
+  final int? attachmentId;
+  final String? attachmentType; // 'image', 'video', 'audio', 'document', etc.
+  final bool hasAttachment;
+  final int? videoDuration; // Video duration in seconds (for video attachments)
+  final int? audioDuration; // Audio duration in seconds (for audio voice messages)
+
+  // Media encryption metadata (for end-to-end encrypted media)
+  final String? mediaEncryptionKey; // AES key encrypted with recipient's Signal Protocol (base64)
+  final String? mediaEncryptionIv;  // AES IV in base64 (can be plaintext)
+  final String? senderMediaEncryptionKey; // AES key encrypted with sender's Signal Protocol (base64) - for re-download
+
+  // E2EE Backup metadata - stores Signal/Sender Keys encrypted AES key
+  final String? encryptedMediaKey; // AES key encrypted with Signal/Sender Keys (for E2EE backup)
+  final String? mediaEncryptionType; // 'signal' or 'sender_keys'
+  final String? mediaRecipientUid;
+  final int? mediaRecipientDeviceId;
+  final String? mediaGroupId;
+  final String? mediaSenderUid;
+  final int? mediaSenderDeviceId;
+
   Message({
     required this.id,
     required this.conversationId,
@@ -24,7 +54,27 @@ class Message {
     required this.content,
     required this.timestamp,
     this.senderUid,
-    this.status = MessageStatus.sent, // Default to sent for received messages
+    this.status = MessageStatus.sent,
+    this.encryptedContent,
+    this.isEncrypted = true,
+    this.senderDeviceId,
+    this.recipientDeviceId,
+    this.isQuickReply = false,
+    this.attachmentId,
+    this.attachmentType,
+    this.hasAttachment = false,
+    this.videoDuration,
+    this.audioDuration,
+    this.mediaEncryptionKey,
+    this.mediaEncryptionIv,
+    this.senderMediaEncryptionKey,
+    this.encryptedMediaKey,
+    this.mediaEncryptionType,
+    this.mediaRecipientUid,
+    this.mediaRecipientDeviceId,
+    this.mediaGroupId,
+    this.mediaSenderUid,
+    this.mediaSenderDeviceId,
   });
 
   factory Message.fromJson(Map<String, dynamic> json) {
@@ -35,42 +85,37 @@ class Message {
     final dynamic usernameValue = json['username'];
     final String parsedUsername = (usernameValue is String) ? usernameValue : 'Unknown User';
 
-    // Handle encrypted content - prioritize content_b64 over content
-    final String? encryptedContentB64 = json['content_b64'] as String?;
-    final String? plaintextContent = json['content'] as String?;
+    final String? decryptedContent = json['content'] as String?;
+    final String? encryptedContentB64 = json['content_b64'] as String? ?? json['encryptedContent'] as String?;
 
     String parsedContent;
-    if (encryptedContentB64 != null && encryptedContentB64.isNotEmpty) {
-      // This is encrypted content - mark it for decryption
-      parsedContent = encryptedContentB64;
-    } else if (plaintextContent != null) {
-      // This is already decrypted content (for sent messages)
-      parsedContent = plaintextContent;
+    bool isEncrypted = false;
+
+    if (decryptedContent != null && !decryptedContent.startsWith('ENCRYPTED:')) {
+      parsedContent = decryptedContent;
+      isEncrypted = encryptedContentB64 != null;
+    } else if (encryptedContentB64 != null) {
+      parsedContent = 'Decrypting message...';
+      isEncrypted = true;
     } else {
       parsedContent = '--- Invalid Content ---';
     }
 
-    final dynamic timestampValue = json['timestamp'];
+    final dynamic timestampValue = json['timestamp'] ?? json['created_at'];
     DateTime parsedTimestamp;
     if (timestampValue is String) {
       try {
         parsedTimestamp = DateTime.parse(timestampValue);
       } catch (e) {
-        print("WARNING: Message.fromJson - Invalid timestamp format for message ID $parsedId: $timestampValue. Using current time. Error: $e");
         parsedTimestamp = DateTime.now();
       }
     } else {
-      print("WARNING: Message.fromJson - 'timestamp' is null or not a String for message ID $parsedId. Value: $timestampValue. Using current time.");
       parsedTimestamp = DateTime.now();
     }
 
     final String? parsedSenderUid = json['senderUid'] as String? ??
         json['sender_uid'] as String?;
-    if (parsedSenderUid == null) {
-      print('WARNING: Message.fromJson - "senderUid" is missing for message ID $parsedId.');
-    }
 
-    // Parse status from JSON or default to sent
     MessageStatus parsedStatus = MessageStatus.sent;
     final String? statusString = json['status'] as String?;
     if (statusString != null) {
@@ -79,7 +124,9 @@ class Message {
               (status) => status.toString().split('.').last == statusString,
         );
       } catch (e) {
-        print('WARNING: Unknown message status: $statusString, defaulting to sent');
+        if (encryptedContentB64 != null && decryptedContent == null) {
+          parsedStatus = MessageStatus.decrypting;
+        }
       }
     }
 
@@ -87,15 +134,35 @@ class Message {
       id: parsedId,
       conversationId: parsedConversationId,
       username: parsedUsername,
-      content: parsedContent, // This will be either encrypted B64 or plaintext
+      content: parsedContent,
       timestamp: parsedTimestamp,
       senderUid: parsedSenderUid,
       status: parsedStatus,
+      encryptedContent: encryptedContentB64,
+      isEncrypted: isEncrypted,
+      senderDeviceId: json['sender_device_id'] as int? ?? json['senderDeviceId'] as int?,
+      recipientDeviceId: json['recipient_device_id'] as int? ?? json['recipientDeviceId'] as int?,
+      isQuickReply: (json['is_quick_reply'] as int?) == 1,
+      attachmentId: json['attachment_id'] as int?,
+      attachmentType: json['attachment_type'] as String?,
+      hasAttachment: (json['has_attachment'] as int?) == 1 || json['attachment_id'] != null,
+      videoDuration: json['video_duration'] as int?,
+      audioDuration: json['audio_duration'] as int?,
+      mediaEncryptionKey: json['media_encryption_key'] as String?,
+      mediaEncryptionIv: json['media_encryption_iv'] as String?,
+      senderMediaEncryptionKey: json['sender_media_encryption_key'] as String?,
+      encryptedMediaKey: json['encrypted_media_key'] as String?,
+      mediaEncryptionType: json['media_encryption_type'] as String?,
+      mediaRecipientUid: json['media_recipient_uid'] as String?,
+      mediaRecipientDeviceId: json['media_recipient_device_id'] as int?,
+      mediaGroupId: json['media_group_id'] as String?,
+      mediaSenderUid: json['media_sender_uid'] as String?,
+      mediaSenderDeviceId: json['media_sender_device_id'] as int?,
     );
   }
 
   Map<String, dynamic> toJson() {
-    return {
+    final json = {
       'id': id,
       'conversationId': conversationId,
       'username': username,
@@ -103,7 +170,30 @@ class Message {
       'timestamp': timestamp.toIso8601String(),
       'senderUid': senderUid,
       'status': status.toString().split('.').last,
+      'isEncrypted': isEncrypted,
+      'isQuickReply': isQuickReply,  // NEW
     };
+
+    if (encryptedContent != null) json['encryptedContent'] = encryptedContent;
+    if (senderDeviceId != null) json['senderDeviceId'] = senderDeviceId;
+    if (recipientDeviceId != null) json['recipientDeviceId'] = recipientDeviceId;
+    if (attachmentId != null) json['attachment_id'] = attachmentId;
+    if (attachmentType != null) json['attachment_type'] = attachmentType;
+    json['has_attachment'] = hasAttachment;
+    if (videoDuration != null) json['video_duration'] = videoDuration;
+    if (audioDuration != null) json['audio_duration'] = audioDuration;
+    if (mediaEncryptionKey != null) json['media_encryption_key'] = mediaEncryptionKey;
+    if (mediaEncryptionIv != null) json['media_encryption_iv'] = mediaEncryptionIv;
+    if (senderMediaEncryptionKey != null) json['sender_media_encryption_key'] = senderMediaEncryptionKey;
+    if (encryptedMediaKey != null) json['encrypted_media_key'] = encryptedMediaKey;
+    if (mediaEncryptionType != null) json['media_encryption_type'] = mediaEncryptionType;
+    if (mediaRecipientUid != null) json['media_recipient_uid'] = mediaRecipientUid;
+    if (mediaRecipientDeviceId != null) json['media_recipient_device_id'] = mediaRecipientDeviceId;
+    if (mediaGroupId != null) json['media_group_id'] = mediaGroupId;
+    if (mediaSenderUid != null) json['media_sender_uid'] = mediaSenderUid;
+    if (mediaSenderDeviceId != null) json['media_sender_device_id'] = mediaSenderDeviceId;
+
+    return json;
   }
 
   Message copyWith({
@@ -114,6 +204,26 @@ class Message {
     DateTime? timestamp,
     String? senderUid,
     MessageStatus? status,
+    String? encryptedContent,
+    bool? isEncrypted,
+    int? senderDeviceId,
+    int? recipientDeviceId,
+    bool? isQuickReply,
+    int? attachmentId,
+    String? attachmentType,
+    bool? hasAttachment,
+    int? videoDuration,
+    int? audioDuration,
+    String? mediaEncryptionKey,
+    String? mediaEncryptionIv,
+    String? senderMediaEncryptionKey,
+    String? encryptedMediaKey,
+    String? mediaEncryptionType,
+    String? mediaRecipientUid,
+    int? mediaRecipientDeviceId,
+    String? mediaGroupId,
+    String? mediaSenderUid,
+    int? mediaSenderDeviceId,
   }) {
     return Message(
       id: id ?? this.id,
@@ -123,13 +233,36 @@ class Message {
       timestamp: timestamp ?? this.timestamp,
       senderUid: senderUid ?? this.senderUid,
       status: status ?? this.status,
+      encryptedContent: encryptedContent ?? this.encryptedContent,
+      isEncrypted: isEncrypted ?? this.isEncrypted,
+      senderDeviceId: senderDeviceId ?? this.senderDeviceId,
+      recipientDeviceId: recipientDeviceId ?? this.recipientDeviceId,
+      isQuickReply: isQuickReply ?? this.isQuickReply,
+      attachmentId: attachmentId ?? this.attachmentId,
+      attachmentType: attachmentType ?? this.attachmentType,
+      hasAttachment: hasAttachment ?? this.hasAttachment,
+      videoDuration: videoDuration ?? this.videoDuration,
+      audioDuration: audioDuration ?? this.audioDuration,
+      mediaEncryptionKey: mediaEncryptionKey ?? this.mediaEncryptionKey,
+      mediaEncryptionIv: mediaEncryptionIv ?? this.mediaEncryptionIv,
+      senderMediaEncryptionKey: senderMediaEncryptionKey ?? this.senderMediaEncryptionKey,
+      encryptedMediaKey: encryptedMediaKey ?? this.encryptedMediaKey,
+      mediaEncryptionType: mediaEncryptionType ?? this.mediaEncryptionType,
+      mediaRecipientUid: mediaRecipientUid ?? this.mediaRecipientUid,
+      mediaRecipientDeviceId: mediaRecipientDeviceId ?? this.mediaRecipientDeviceId,
+      mediaGroupId: mediaGroupId ?? this.mediaGroupId,
+      mediaSenderUid: mediaSenderUid ?? this.mediaSenderUid,
+      mediaSenderDeviceId: mediaSenderDeviceId ?? this.mediaSenderDeviceId,
     );
   }
 
-  // Helper methods for status checks
   bool get isPending => status == MessageStatus.sending;
   bool get isSent => status == MessageStatus.sent;
   bool get isDelivered => status == MessageStatus.delivered;
   bool get isRead => status == MessageStatus.read;
   bool get isFailed => status == MessageStatus.failed;
+  bool get isDecrypting => status == MessageStatus.decrypting;
+  bool get isDecryptFailed => status == MessageStatus.decryptFailed;
+  bool get needsDecryption => isEncrypted && encryptedContent != null &&
+      (status == MessageStatus.decrypting || content == 'Decrypting message...');
 }

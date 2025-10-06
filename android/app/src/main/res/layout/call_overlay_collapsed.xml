@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Collapsed state: circular bubble with avatar -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="60dp"
+    android:layout_height="60dp">
+
+    <!-- Circular container -->
+    <FrameLayout
+        android:id="@+id/circle_container"
+        android:layout_width="60dp"
+        android:layout_height="60dp"
+        android:background="@drawable/circle_avatar_background">
+
+        <!-- Avatar image -->
+        <ImageView
+            android:id="@+id/avatar_image"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="centerCrop"
+            android:src="@android:drawable/ic_menu_call"
+            android:layout_margin="4dp" />
+
+        <!-- Pulse ring animation indicator -->
+        <View
+            android:id="@+id/pulse_ring"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/pulse_ring" />
+    </FrameLayout>
+
+</FrameLayout>

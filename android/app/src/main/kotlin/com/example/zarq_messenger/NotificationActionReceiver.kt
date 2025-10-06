@@ -4,8 +4,11 @@ import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.core.app.RemoteInput
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.*
@@ -36,9 +39,13 @@ class NotificationActionReceiver : BroadcastReceiver() {
             ZarqNotificationService.ACTION_REPLY -> {
                 handleQuickReply(context, intent, conversationId, messageId)
             }
+            ZarqNotificationService.ACTION_ANSWER_CALL -> {
+                handleAnswerCall(context, intent)
+            }
+            ZarqNotificationService.ACTION_DECLINE_CALL -> {
+                handleDeclineCall(context, intent)
+            }
         }
-
-        dismissNotification(context, conversationId)
     }
 
     /**
@@ -47,7 +54,6 @@ class NotificationActionReceiver : BroadcastReceiver() {
     private fun handleQuickReply(context: Context, intent: Intent, conversationId: Int, messageId: Int) {
         Log.d(TAG, "Processing quick reply for conversation $conversationId")
 
-        // Extract reply text from RemoteInput
         val replyText = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(ZarqNotificationService.KEY_TEXT_REPLY)
 
         if (replyText.isNullOrEmpty()) {
@@ -55,11 +61,8 @@ class NotificationActionReceiver : BroadcastReceiver() {
             return
         }
 
-        // Extract UIDs from intent extras (passed from ZarqNotificationService)
         val recipientUid = intent.getStringExtra("recipient_uid")
         val senderUid = intent.getStringExtra("sender_uid")
-
-        // Get current user UID
         val currentUser = FirebaseAuth.getInstance().currentUser
         val myUid = currentUser?.uid
 
@@ -68,16 +71,14 @@ class NotificationActionReceiver : BroadcastReceiver() {
             return
         }
 
-        // Determine who to encrypt for (the other person in the conversation)
         val encryptForUid = if (myUid == senderUid) {
-            recipientUid // I'm replying to someone who sent me a message
+            recipientUid
         } else {
-            senderUid // I'm replying in a conversation where I'm the recipient
+            senderUid
         }
 
         Log.d(TAG, "Quick reply: $myUid -> $encryptForUid, text: '${replyText.take(20)}...'")
 
-        // Start SignalQuickReplyService to handle encryption and sending
         val serviceIntent = Intent(context, SignalQuickReplyService::class.java).apply {
             putExtra("conversation_id", conversationId)
             putExtra("reply_text", replyText.toString())
@@ -88,9 +89,36 @@ class NotificationActionReceiver : BroadcastReceiver() {
         try {
             context.startService(serviceIntent)
             Log.d(TAG, "SignalQuickReplyService started successfully")
+
+            // Dismiss notification immediately after starting service
+            dismissNotificationWithSuccess(context, conversationId)
+
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start SignalQuickReplyService: ${e.message}", e)
         }
+    }
+
+    private fun dismissNotificationWithSuccess(context: Context, conversationId: Int) {
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        // Show a brief "Reply sent" notification that auto-dismisses
+        val successNotification = NotificationCompat.Builder(context, "zarq_messages")
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle("Reply sent")
+            .setContentText("Your message was sent securely")
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setAutoCancel(true)
+            .setTimeoutAfter(2000) // Auto-dismiss after 2 seconds
+            .build()
+
+        notificationManager.notify(ZarqNotificationService.NOTIFICATION_ID_BASE + conversationId, successNotification)
+
+        // Cancel it after a delay
+        Handler(Looper.getMainLooper()).postDelayed({
+            notificationManager.cancel(ZarqNotificationService.NOTIFICATION_ID_BASE + conversationId)
+        }, 2000)
+
+        Log.d(TAG, "Notification updated to show success and will dismiss in 2 seconds")
     }
 
     private fun handleMarkAsRead(context: Context, conversationId: Int, messageId: Int) {
@@ -103,7 +131,10 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 withContext(Dispatchers.Main) {
                     if (success) {
                         Log.d(TAG, "Successfully marked as read")
-                        showConfirmationNotification(context, "Marked as read")
+
+                        // For mark as read, just cancel the notification immediately
+                        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        notificationManager.cancel(ZarqNotificationService.NOTIFICATION_ID_BASE + conversationId)
                     } else {
                         Log.e(TAG, "Failed to mark as read")
                     }
@@ -162,6 +193,49 @@ class NotificationActionReceiver : BroadcastReceiver() {
         }
     }
 
+    private fun handleAnswerCall(context: Context, intent: Intent) {
+        val callerUid = intent.getStringExtra("caller_uid") ?: return
+        val callerName = intent.getStringExtra("caller_name") ?: "Unknown"
+        val callType = intent.getStringExtra("call_type") ?: "voice"
+
+        Log.d(TAG, "Answering call from $callerName ($callerUid)")
+
+        // Launch the app with call answer intent
+        val launchIntent = Intent(context, MainActivity::class.java).apply {
+            putExtra("incoming_call", true)
+            putExtra("answer_call", true)
+            putExtra("caller_uid", callerUid)
+            putExtra("caller_name", callerName)
+            putExtra("call_type", callType)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+
+        context.startActivity(launchIntent)
+
+        // Dismiss the call notification
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(ZarqNotificationService.CALL_NOTIFICATION_ID)
+
+        Log.d(TAG, "App launched to answer call")
+    }
+
+    private fun handleDeclineCall(context: Context, intent: Intent) {
+        val callerUid = intent.getStringExtra("caller_uid") ?: return
+        val callerName = intent.getStringExtra("caller_name") ?: "Unknown"
+
+        Log.d(TAG, "Declining call from $callerName ($callerUid)")
+
+        // Send decline signal via WebSocket (if connected) or API
+        // For now, just dismiss the notification
+        // The Flutter app will handle the actual decline logic when the WebSocket receives the event
+
+        // Dismiss the call notification
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(ZarqNotificationService.CALL_NOTIFICATION_ID)
+
+        Log.d(TAG, "Call declined and notification dismissed")
+    }
+
     private fun showConfirmationNotification(context: Context, message: String) {
         // This could show a brief confirmation notification
         Log.d(TAG, "Confirmation: $message")
@@ -170,9 +244,4 @@ class NotificationActionReceiver : BroadcastReceiver() {
         // You can implement this if you want visual feedback
     }
 
-    private fun dismissNotification(context: Context, conversationId: Int) {
-        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.cancel(ZarqNotificationService.NOTIFICATION_ID_BASE + conversationId)
-        Log.d(TAG, "Dismissed notification for conversation: $conversationId")
-    }
 }

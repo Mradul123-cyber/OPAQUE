@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Veera/.claude/projects/C--Users-Veera-zarq-messenger/**)",
+      "Read(//c/Users/Veera/Desktop/Zarq-Messenger-Backend/**)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

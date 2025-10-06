@@ -3,16 +3,25 @@
 # proguardFiles setting in build.gradle.
 
 # ===== SIGNAL PROTOCOL PROTECTION =====
-# Keep all Signal Protocol classes and methods
--keep class org.signal.** { *; }
--dontwarn org.signal.**
+# Keep WhisperSystems Signal Protocol classes (correct package)
+-keep class org.whispersystems.** { *; }
+-dontwarn org.whispersystems.**
 
-# Keep libsignal native methods
--keep class org.signal.libsignal.protocol.** { *; }
--keep class org.signal.libsignal.zkgroup.** { *; }
--keep class org.signal.libsignal.metadata.** { *; }
+# Keep all libsignal classes and methods
+-keep class org.whispersystems.libsignal.** { *; }
+-keep class org.whispersystems.curve25519.** { *; }
 
-# Keep native method signatures
+# Keep protocol buffer classes
+-keep class * extends com.google.protobuf.** { *; }
+-keep class com.google.protobuf.** { *; }
+
+# Keep serialization methods
+-keepclassmembers class * {
+    *** serialize();
+    *** deserialize(...);
+}
+
+# Keep native methods
 -keepclasseswithmembernames class * {
     native <methods>;
 }
@@ -59,3 +68,7 @@
 # Keep Flutter method channels
 -keep class io.flutter.** { *; }
 -keep class com.example.zarq_messenger.MainActivity { *; }
+
+# Ignore missing Play Core classes
+-dontwarn com.google.android.play.core.**
+-keep class com.google.android.play.core.** { *; }

@@ -23,12 +23,16 @@ class ZarqNotificationService : FirebaseMessagingService() {
 
     companion object {
         private const val CHANNEL_ID = "zarq_messages"
+        private const val CALL_CHANNEL_ID = "zarq_calls"
         const val NOTIFICATION_ID_BASE = 1001
+        const val CALL_NOTIFICATION_ID = 9999
         private const val TAG = "ZarqNotifications"
 
         // Action constants
         const val ACTION_MARK_READ = "MARK_READ"
         const val ACTION_REPLY = "REPLY"
+        const val ACTION_ANSWER_CALL = "ANSWER_CALL"
+        const val ACTION_DECLINE_CALL = "DECLINE_CALL"
         const val KEY_TEXT_REPLY = "KEY_TEXT_REPLY"
     }
 
@@ -46,12 +50,26 @@ class ZarqNotificationService : FirebaseMessagingService() {
         Log.d(TAG, "Data payload: ${remoteMessage.data}")
         Log.d(TAG, "Notification payload: ${remoteMessage.notification}")
 
-        // Check if we should show notification (app in background)
-        if (!isAppInForeground()) {
-            Log.d(TAG, "App in background, showing notification")
-            showNotification(remoteMessage)
-        } else {
-            Log.d(TAG, "App in foreground, skipping notification display")
+        // Check notification type
+        val notificationType = remoteMessage.data["type"]
+
+        when (notificationType) {
+            "incoming_call" -> {
+                Log.d(TAG, "Incoming call notification received")
+                showIncomingCallNotification(remoteMessage)
+            }
+            "new_message" -> {
+                // Check if we should show notification (app in background)
+                if (!isAppInForeground()) {
+                    Log.d(TAG, "App in background, showing message notification")
+                    showNotification(remoteMessage)
+                } else {
+                    Log.d(TAG, "App in foreground, skipping notification display")
+                }
+            }
+            else -> {
+                Log.d(TAG, "Unknown notification type: $notificationType")
+            }
         }
     }
 
@@ -79,6 +97,15 @@ class ZarqNotificationService : FirebaseMessagingService() {
         val messageId = remoteMessage.data["message_id"]?.toIntOrNull() ?: 0
         val senderName = remoteMessage.data["sender_username"] ?: "Unknown"
         val messageText = "You have a new message" // Don't show encrypted content
+
+        // Check if conversation is muted
+        val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        val isMuted = prefs.getBoolean("flutter.muted_$conversationId", false)
+
+        if (isMuted) {
+            Log.d(TAG, "Conversation $conversationId is muted, skipping notification")
+            return
+        }
 
         // EXTRACT UIDs FROM FCM DATA - THESE ARE CRITICAL FOR QUICK REPLY
         val senderUid = remoteMessage.data["sender_uid"]
@@ -187,7 +214,10 @@ class ZarqNotificationService : FirebaseMessagingService() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            // Messages channel
+            val messageChannel = NotificationChannel(
                 CHANNEL_ID,
                 "Zarq Messages",
                 NotificationManager.IMPORTANCE_HIGH
@@ -199,15 +229,117 @@ class ZarqNotificationService : FirebaseMessagingService() {
                 setShowBadge(true)
             }
 
-            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            notificationManager.createNotificationChannel(channel)
-            Log.d(TAG, "Notification channel created")
+            // Calls channel (max importance for full-screen notifications)
+            val callChannel = NotificationChannel(
+                CALL_CHANNEL_ID,
+                "Zarq Calls",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Incoming call notifications"
+                enableLights(true)
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 1000, 500, 1000)
+                setShowBadge(true)
+            }
+
+            notificationManager.createNotificationChannel(messageChannel)
+            notificationManager.createNotificationChannel(callChannel)
+            Log.d(TAG, "Notification channels created (messages + calls)")
         }
     }
 
     private fun isAppInForeground(): Boolean {
         // Simple check - you can enhance this with proper app state tracking
         return false // For now, always show notifications
+    }
+
+    private fun showIncomingCallNotification(remoteMessage: RemoteMessage) {
+        val callerUid = remoteMessage.data["caller_uid"] ?: return
+        val callerName = remoteMessage.data["caller_name"] ?: "Unknown Caller"
+        val callType = remoteMessage.data["call_type"] ?: "voice"
+
+        Log.d(TAG, "=== Creating incoming call notification ===")
+        Log.d(TAG, "Caller: $callerName")
+        Log.d(TAG, "Caller UID: $callerUid")
+        Log.d(TAG, "Call Type: $callType")
+
+        // Create full-screen intent to launch the app
+        val fullScreenIntent = Intent(this, com.example.zarq_messenger.MainActivity::class.java).apply {
+            putExtra("incoming_call", true)
+            putExtra("answer_call", false) // false - user should choose to answer or decline
+            putExtra("caller_uid", callerUid)
+            putExtra("caller_name", callerName)
+            putExtra("call_type", callType)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+
+        val fullScreenPendingIntent = PendingIntent.getActivity(
+            this,
+            CALL_NOTIFICATION_ID,
+            fullScreenIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Create answer action - Launch MainActivity directly for better reliability
+        val answerIntent = Intent(this, com.example.zarq_messenger.MainActivity::class.java).apply {
+            putExtra("incoming_call", true)
+            putExtra("answer_call", true) // KEY: Auto-answer when launched from Answer button
+            putExtra("caller_uid", callerUid)
+            putExtra("caller_name", callerName)
+            putExtra("call_type", callType)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+
+        val answerPendingIntent = PendingIntent.getActivity(
+            this,
+            CALL_NOTIFICATION_ID + 1,
+            answerIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Create decline action
+        val declineIntent = Intent(this, NotificationActionReceiver::class.java).apply {
+            action = ACTION_DECLINE_CALL
+            putExtra("caller_uid", callerUid)
+            putExtra("caller_name", callerName)
+        }
+
+        val declinePendingIntent = PendingIntent.getBroadcast(
+            this,
+            CALL_NOTIFICATION_ID + 2,
+            declineIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Build full-screen call notification
+        val notification = NotificationCompat.Builder(this, CALL_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_call)
+            .setContentTitle("Incoming ${callType} call")
+            .setContentText(callerName)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setAutoCancel(true)
+            .setOngoing(true) // Can't be dismissed by swiping
+            .setFullScreenIntent(fullScreenPendingIntent, true)
+            .addAction(
+                android.R.drawable.ic_menu_call,
+                "Answer",
+                answerPendingIntent
+            )
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "Decline",
+                declinePendingIntent
+            )
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setVibrate(longArrayOf(0, 1000, 500, 1000))
+            .setSound(android.provider.Settings.System.DEFAULT_RINGTONE_URI)
+            .build()
+
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.notify(CALL_NOTIFICATION_ID, notification)
+
+        Log.d(TAG, "Incoming call notification displayed for $callerName")
     }
 
     private fun sendTokenToServer(token: String) {

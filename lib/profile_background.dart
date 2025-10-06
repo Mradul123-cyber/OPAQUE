@@ -17,10 +17,9 @@ class ProfileBackground extends StatefulWidget {
 class _ProfileBackgroundState extends State<ProfileBackground> with TickerProviderStateMixin {
   late AnimationController _animationController;
   late Animation<double> _auroraAnimation;
-  
-  late List<Snowflake> _snowflakes;
+
   late List<FrostParticle> _frostParticles;
-  
+
   final Random _random = Random();
   StreamSubscription? _gyroscopeSubscription;
   Offset _parallaxOffset = Offset.zero;
@@ -42,7 +41,6 @@ class _ProfileBackgroundState extends State<ProfileBackground> with TickerProvid
       ),
     );
 
-    _snowflakes = List.generate(150, (index) => Snowflake(random: _random));
     _frostParticles = [];
 
     if (!kIsWeb) {
@@ -97,10 +95,7 @@ class _ProfileBackgroundState extends State<ProfileBackground> with TickerProvid
         child: AnimatedBuilder(
           animation: _animationController,
           builder: (context, child) {
-            // Update all particles
-            for (var flake in _snowflakes) {
-              flake.update(size);
-            }
+            // Update frost particles only
             for (var frost in _frostParticles) {
               frost.update();
             }
@@ -109,9 +104,7 @@ class _ProfileBackgroundState extends State<ProfileBackground> with TickerProvid
             return Container(
               decoration: const BoxDecoration(
                 gradient: LinearGradient(
-                  // --- Start of Color Fix ---
                   colors: [Color(0xff000c29), Color(0xff1c2541), Color(0xff0a1128)],
-                  // --- End of Color Fix ---
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
                 ),
@@ -121,7 +114,6 @@ class _ProfileBackgroundState extends State<ProfileBackground> with TickerProvid
                   CustomPaint(
                     size: size,
                     painter: ArcticAuroraPainter(
-                      snowflakes: _snowflakes,
                       frostParticles: _frostParticles,
                       auroraAnimation: _auroraAnimation,
                       parallaxOffset: _parallaxOffset,
@@ -139,13 +131,11 @@ class _ProfileBackgroundState extends State<ProfileBackground> with TickerProvid
 }
 
 class ArcticAuroraPainter extends CustomPainter {
-  final List<Snowflake> snowflakes;
   final List<FrostParticle> frostParticles;
   final Animation<double> auroraAnimation;
   final Offset parallaxOffset;
 
   ArcticAuroraPainter({
-    required this.snowflakes,
     required this.frostParticles,
     required this.auroraAnimation,
     required this.parallaxOffset,
@@ -157,7 +147,7 @@ class ArcticAuroraPainter extends CustomPainter {
     final auroraPaint = Paint();
     final rect = Rect.fromLTWH(-size.width * 0.5, 0, size.width * 2, size.height * 0.6);
     final center = Offset(size.width * 0.5 + (auroraAnimation.value * size.width * 0.2 - size.width * 0.1), size.height * 0.2);
-    
+
     auroraPaint.shader = RadialGradient(
       center: Alignment.topCenter,
       radius: 1.5,
@@ -171,18 +161,7 @@ class ArcticAuroraPainter extends CustomPainter {
     auroraPaint.maskFilter = const MaskFilter.blur(BlurStyle.normal, 60);
     canvas.drawCircle(center, size.width, auroraPaint);
 
-    // Layer 2: Snowflakes
-    final snowPaint = Paint()..color = Colors.white;
-    for (var flake in snowflakes) {
-      snowPaint.color = Colors.white.withOpacity(flake.opacity);
-      final parallaxPosition = flake.position.translate(
-        parallaxOffset.dx * flake.depth,
-        parallaxOffset.dy * flake.depth,
-      );
-      canvas.drawCircle(parallaxPosition, flake.radius, snowPaint);
-    }
-
-    // Layer 3: Interactive Frost
+    // Layer 2: Interactive Frost
     final frostPaint = Paint()..color = Colors.white;
     for (var particle in frostParticles) {
       final progress = particle.life / particle.maxLife;
@@ -197,28 +176,6 @@ class ArcticAuroraPainter extends CustomPainter {
 }
 
 // Data Models
-class Snowflake {
-  Offset position;
-  double radius;
-  double speed;
-  double opacity;
-  double depth; // For parallax
-
-  Snowflake({required Random random})
-      : position = Offset(random.nextDouble() * 500, random.nextDouble() * 1000),
-        radius = random.nextDouble() * 1.5 + 0.5,
-        speed = random.nextDouble() * 0.5 + 0.2,
-        opacity = random.nextDouble() * 0.5 + 0.3,
-        depth = random.nextDouble() * 0.8 + 0.2;
-
-  void update(Size size) {
-    position = Offset(position.dx + (depth - 0.5) * 0.2, position.dy + speed);
-    if (position.dy > size.height + 10) {
-      position = Offset(Random().nextDouble() * size.width, -10);
-    }
-  }
-}
-
 class FrostParticle {
   Offset position;
   Offset velocity;

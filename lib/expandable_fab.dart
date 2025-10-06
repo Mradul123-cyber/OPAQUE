@@ -10,11 +10,13 @@ class ExpandableFab extends StatefulWidget {
     this.initialOpen,
     required this.distance,
     required this.children,
+    this.isLightTheme = false,
   });
 
   final bool? initialOpen;
   final double distance;
   final List<Widget> children;
+  final bool isLightTheme;
 
   @override
   State<ExpandableFab> createState() => _ExpandableFabState();
@@ -76,6 +78,7 @@ class _ExpandableFabState extends State<ExpandableFab>
     required VoidCallback? onTap,
     double size = 60.0,
   }) {
+    final isLight = widget.isLightTheme;
     return AnimatedBuilder(
       animation: _pulseController,
       builder: (context, child) {
@@ -87,53 +90,44 @@ class _ExpandableFabState extends State<ExpandableFab>
             height: size,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              gradient: RadialGradient(
+              gradient: isLight ? null : RadialGradient(
                 colors: [
                   const Color(0xFF480ca8).withOpacity(0.5),
                   const Color(0xFF1b263b).withOpacity(0.8),
                 ],
                 stops: const [0.0, 1.0],
               ),
+              color: isLight ? const Color(0xFF667EEA) : null,
               boxShadow: [
                 // Inner glow
                 BoxShadow(
-                  color: Colors.purpleAccent.withOpacity(0.3 * _pulseController.value),
+                  color: (isLight ? Colors.blueAccent : Colors.purpleAccent).withOpacity(0.3 * _pulseController.value),
                   blurRadius: 10,
                   spreadRadius: 2,
                 ),
                 // Outer glow for the icon
                 BoxShadow(
-                  color: Colors.cyanAccent.withOpacity(0.5 * _pulseController.value),
-                  blurRadius: 20,
-                  spreadRadius: 5,
+                  color: (isLight ? Colors.blue : Colors.cyanAccent).withOpacity(0.4 * _pulseController.value),
+                  blurRadius: isLight ? 12 : 20,
+                  spreadRadius: isLight ? 2 : 5,
                 ),
               ],
             ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(size / 2),
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 2, sigmaY: 2),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: onTap,
+                borderRadius: BorderRadius.circular(size / 2),
                 child: Container(
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     border: Border.all(
-                      color: Colors.white.withOpacity(0.2),
-                    ),
-                    gradient: LinearGradient(
-                      colors: [
-                        Colors.white.withOpacity(0.2),
-                        Colors.white.withOpacity(0.05),
-                      ],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
+                      color: Colors.white.withOpacity(isLight ? 0.3 : 0.2),
+                      width: isLight ? 2 : 1,
                     ),
                   ),
-                  child: InkWell(
-                    onTap: onTap,
-                    borderRadius: BorderRadius.circular(size / 2),
-                    child: Center(
-                      child: Icon(icon, color: Colors.white.withOpacity(0.9)),
-                    ),
+                  child: Center(
+                    child: Icon(icon, color: Colors.white, size: isLight ? 28 : 24),
                   ),
                 ),
               ),
@@ -262,10 +256,12 @@ class ActionButton extends StatefulWidget {
     super.key,
     this.onPressed,
     required this.icon,
+    this.isLightTheme = false,
   });
 
   final VoidCallback? onPressed;
   final Widget icon;
+  final bool isLightTheme;
 
   @override
   State<ActionButton> createState() => _ActionButtonState();
@@ -276,6 +272,7 @@ class _ActionButtonState extends State<ActionButton> {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = widget.isLightTheme;
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovering = true),
       onExit: (_) => setState(() => _isHovering = false),
@@ -291,16 +288,20 @@ class _ActionButtonState extends State<ActionButton> {
             height: 50.0,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              gradient: RadialGradient(
+              gradient: isLight ? null : RadialGradient(
                 colors: [
                   const Color(0xFF5a189a).withOpacity(0.6),
                   const Color(0xFF240046).withOpacity(0.9),
                 ],
               ),
-              border: Border.all(color: Colors.purpleAccent.withOpacity(0.5)),
+              color: isLight ? const Color(0xFF764BA2) : null,
+              border: Border.all(
+                color: (isLight ? Colors.white : Colors.purpleAccent).withOpacity(0.5),
+                width: isLight ? 2 : 1,
+              ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.cyan.withOpacity(_isHovering ? 0.7 : 0.4),
+                  color: (isLight ? Colors.purple : Colors.cyan).withOpacity(_isHovering ? 0.6 : 0.3),
                   blurRadius: _isHovering ? 12 : 8,
                   spreadRadius: _isHovering ? 2 : 1,
                 ),

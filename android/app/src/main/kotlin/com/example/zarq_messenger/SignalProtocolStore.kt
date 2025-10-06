@@ -16,18 +16,21 @@ import org.whispersystems.libsignal.state.SignedPreKeyRecord
 import org.whispersystems.libsignal.state.SignedPreKeyStore
 import org.whispersystems.libsignal.ecc.Curve
 import org.whispersystems.libsignal.ecc.ECKeyPair
-
+import org.whispersystems.libsignal.groups.state.SenderKeyRecord
+import org.whispersystems.libsignal.groups.state.SenderKeyStore
+import org.whispersystems.libsignal.groups.SenderKeyName
 import org.whispersystems.libsignal.state.SignalProtocolStore as LibSignalProtocolStore
 
 /**
- * Unified implementation of all four Signal Protocol storage interfaces:
+ * Unified implementation of all Signal Protocol storage interfaces:
  * - IdentityKeyStore: Manages identity keys and trust decisions
  * - PreKeyStore: Manages one-time prekeys
  * - SignedPreKeyStore: Manages signed prekeys
  * - SessionStore: Manages session state between users
+ * - SenderKeyStore: Manages sender keys for group encryption
  */
 class SignalProtocolStore(private val context: Context, userUid: String? = null) :
-    IdentityKeyStore, PreKeyStore, SignedPreKeyStore, SessionStore, LibSignalProtocolStore {
+    IdentityKeyStore, PreKeyStore, SignedPreKeyStore, SessionStore, SenderKeyStore, LibSignalProtocolStore {
 
     companion object {
         private const val TAG = "SignalProtocolStore"
@@ -44,6 +47,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
         private const val PREFIX_SESSION = "session_"
         private const val PREFIX_IDENTITY = "identity_"
         private const val PREFIX_KEY_CHANGE_TIME = "key_change_time_"
+        private const val PREFIX_SENDER_KEY = "sender_key_"
     }
 
     private val prefs = if (userUid != null) {
@@ -54,7 +58,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
     }
 
 
-    private fun getLastKeyChangeTime(address: SignalProtocolAddress): Long {
+    fun getLastKeyChangeTime(address: SignalProtocolAddress): Long {
         val key = PREFIX_KEY_CHANGE_TIME + address.name + "_" + address.deviceId
         return prefs.getLong(key, 0)
     }
@@ -151,7 +155,15 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
             return true
         }
 
-        // 2. Check if key change is old enough (likely legitimate)
+        // 2. CRITICAL: Auto-trust if NO session exists (we deleted stale session)
+        // This allows re-establishment after detecting key change
+        val sessionExists = containsSession(address)
+        if (!sessionExists) {
+            Log.d(TAG, "Auto-trusting new identity - no session exists (likely after key rotation)")
+            return true
+        }
+
+        // 3. Check if key change is old enough (likely legitimate)
         val lastKeyChange = getLastKeyChangeTime(address)
         if (lastKeyChange == 0L) {
             // No previous change recorded, trust it
@@ -222,8 +234,13 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
     override fun removePreKey(preKeyId: Int) {
         try {
             val key = PREFIX_PREKEY + preKeyId
+            val wasPresent = prefs.contains(key)
             prefs.edit().remove(key).apply()
-            Log.d(TAG, "Removed prekey $preKeyId")
+            Log.d(TAG, "Removed prekey $preKeyId (was present: $wasPresent)")
+
+            // Debug: Count remaining prekeys
+            val remainingCount = prefs.all.keys.count { it.startsWith(PREFIX_PREKEY) }
+            Log.d(TAG, "Remaining prekeys after removal: $remainingCount")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to remove prekey $preKeyId", e)
         }
@@ -337,8 +354,19 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
     override fun storeSession(address: SignalProtocolAddress, record: SessionRecord) {
         try {
             val key = PREFIX_SESSION + address.name + "_" + address.deviceId
+
+            // Debug: Check session before storing
+            val sizeBefore = record.serialize()?.size ?: 0
+            Log.d(TAG, "STORE SESSION: $address, size before: $sizeBefore")
+
             val recordB64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
             prefs.edit().putString(key, recordB64).apply()
+
+            // Debug: Verify stored session can be loaded back
+            val loadedRecord = loadSession(address)
+            val sizeAfter = loadedRecord.serialize()?.size ?: 0
+            Log.d(TAG, "STORE SESSION: $address, size after reload: $sizeAfter, corruption: ${sizeBefore != sizeAfter}")
+
             Log.d(TAG, "Stored session for ${address.name}:${address.deviceId}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to store session for ${address.name}:${address.deviceId}", e)
@@ -401,6 +429,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
         }
     }
 
+
     /**
      * Clear all stored data
      */
@@ -410,6 +439,156 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
             Log.d(TAG, "All store data cleared")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to clear store", e)
+        }
+    }
+
+    /**
+     * Export all Signal Protocol state for backup
+     * Returns JSON string containing all keys, sessions, and prekeys
+     */
+    fun exportSignalState(): String {
+        return try {
+            val allData = JSONObject()
+
+            // Export all SharedPreferences entries
+            for ((key, value) in prefs.all) {
+                when (value) {
+                    is String -> allData.put(key, value)
+                    is Int -> allData.put(key, value)
+                    is Long -> allData.put(key, value)
+                    is Boolean -> allData.put(key, value)
+                }
+            }
+
+            val result = allData.toString()
+            Log.d(TAG, "Exported Signal state: ${prefs.all.size} entries")
+            result
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to export Signal state", e)
+            "{}"
+        }
+    }
+
+    /**
+     * Import Signal Protocol state from backup
+     * Accepts JSON string containing all keys, sessions, and prekeys
+     */
+    fun importSignalState(jsonString: String): Boolean {
+        return try {
+            val data = JSONObject(jsonString)
+            val editor = prefs.edit()
+
+            // Clear existing data first
+            editor.clear()
+
+            // Import all entries
+            val keys = data.keys()
+            var count = 0
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val value = data.get(key)
+
+                when (value) {
+                    is String -> editor.putString(key, value)
+                    is Int -> editor.putInt(key, value)
+                    is Long -> editor.putLong(key, value)
+                    is Boolean -> editor.putBoolean(key, value)
+                }
+                count++
+            }
+
+            editor.apply()
+            Log.d(TAG, "Imported Signal state: $count entries")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to import Signal state", e)
+            false
+        }
+    }
+
+    // ===== SENDER KEY STORE IMPLEMENTATION (for Group Encryption) =====
+
+    /**
+     * Store a sender key for a specific sender in a group
+     * Key format: sender_key_{groupId}_{senderName}_{deviceId}
+     */
+    override fun storeSenderKey(senderKeyName: SenderKeyName, record: SenderKeyRecord) {
+        try {
+            val key = PREFIX_SENDER_KEY + senderKeyName.groupId + "_" + senderKeyName.sender.name + "_" + senderKeyName.sender.deviceId
+            val recordB64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
+            prefs.edit().putString(key, recordB64).apply()
+            Log.d(TAG, "Stored sender key for ${senderKeyName.sender.name}:${senderKeyName.sender.deviceId} in group ${senderKeyName.groupId}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to store sender key for ${senderKeyName.sender.name}", e)
+        }
+    }
+
+    /**
+     * Load a sender key for a specific sender in a group
+     */
+    override fun loadSenderKey(senderKeyName: SenderKeyName): SenderKeyRecord {
+        return try {
+            val key = PREFIX_SENDER_KEY + senderKeyName.groupId + "_" + senderKeyName.sender.name + "_" + senderKeyName.sender.deviceId
+            val recordB64 = prefs.getString(key, null)
+
+            if (recordB64 != null) {
+                val recordBytes = Base64.decode(recordB64, Base64.NO_WRAP)
+                SenderKeyRecord(recordBytes)
+            } else {
+                // Return fresh sender key record if none exists
+                Log.d(TAG, "No sender key found for ${senderKeyName.sender.name}:${senderKeyName.sender.deviceId} in group ${senderKeyName.groupId}, creating new record")
+                SenderKeyRecord()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load sender key for ${senderKeyName.sender.name}", e)
+            SenderKeyRecord()
+        }
+    }
+
+    /**
+     * Delete all sender keys for a specific group (used when leaving a group)
+     */
+    fun deleteSenderKeysForGroup(groupId: String) {
+        try {
+            val prefix = PREFIX_SENDER_KEY + groupId + "_"
+            val editor = prefs.edit()
+            var count = 0
+
+            for (key in prefs.all.keys) {
+                if (key.startsWith(prefix)) {
+                    editor.remove(key)
+                    count++
+                }
+            }
+
+            editor.apply()
+            Log.d(TAG, "Deleted $count sender keys for group $groupId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete sender keys for group $groupId", e)
+        }
+    }
+
+    /**
+     * Get all sender keys for debugging purposes
+     */
+    fun getSenderKeyDebugInfo(): Map<String, String> {
+        return try {
+            val result = mutableMapOf<String, String>()
+            for ((key, value) in prefs.all) {
+                if (key.startsWith(PREFIX_SENDER_KEY) && value is String) {
+                    val parts = key.removePrefix(PREFIX_SENDER_KEY).split("_")
+                    if (parts.size >= 3) {
+                        val groupId = parts[0]
+                        val senderUid = parts[1]
+                        val deviceId = parts.getOrNull(2) ?: "unknown"
+                        result["Group $groupId - Sender $senderUid:$deviceId"] = "Stored"
+                    }
+                }
+            }
+            result
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get sender key debug info", e)
+            emptyMap()
         }
     }
 }

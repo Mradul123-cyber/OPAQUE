@@ -1,21 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
-import 'package:zarq_messenger/encryption_test.dart';
+import 'package:zarq_messenger/screens/call_history_screen.dart';
+import 'package:zarq_messenger/screens/customization_screen.dart';
 import 'package:zarq_messenger/services/SignalService.dart';
 import 'package:zarq_messenger/services/database_service.dart';
 import 'package:zarq_messenger/services/navigation_handler.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'dart:async';
 import 'dart:ui';
 import 'dart:convert';
 
-// Import Providers
-import 'SessionEstablishmentTest.dart';
-import 'SignalTestPage.dart';
-import 'backend_prekey_test.dart';
 import 'providers/home_provider.dart';
 import 'providers/chat_provider.dart';
 import 'services/websocket_service.dart';
+import 'services/user_settings_provider.dart';
 
 // Import Screens and Widgets
 import 'expandable_fab.dart';
@@ -24,7 +25,13 @@ import 'setting_screen.dart';
 import 'find_friends_screen.dart';
 import 'chat_screen.dart';
 import 'home_background.dart';
+import 'default_home_background.dart';
+import 'dark_home_background.dart';
+import 'vibrant_home_background.dart';
 import 'create_group_screen.dart';
+import 'widgets/call_aware_screen.dart';
+import 'services/overlay_permission_helper.dart';
+import 'about_screen.dart';
 
 class ConversationInfo {
   final int conversationId;
@@ -33,6 +40,7 @@ class ConversationInfo {
   final String? creatorUid;
   final String? avatarUrl;
   final String? partnerUid;
+  final bool hasUnreadMessages;
 
   ConversationInfo({
     required this.conversationId,
@@ -41,7 +49,9 @@ class ConversationInfo {
     this.creatorUid,
     this.avatarUrl,
     this.partnerUid,
+    this.hasUnreadMessages = false,
   });
+
 
   factory ConversationInfo.fromJson(Map<String, dynamic> json) {
     return ConversationInfo(
@@ -77,20 +87,54 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isDeleteHovering = false;
   bool _isLeaveHovering = false;
 
+  StreamSubscription? _websocketSubscription;
+
+  // Blocked users
+  List<String> _blockedUsers = [];
+
   @override
   void initState() {
     super.initState();
 
+    _loadBlockedUsers();
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkPendingNavigation();
+
+      // Only fetch if not already fetched by _checkPendingNavigation
+      final homeProvider = Provider.of<HomeProvider>(context, listen: false);
+      if (homeProvider.conversations.isEmpty) {
+        homeProvider.fetchInitialConversations();
+      }
+
+      // Request overlay permission for floating call window
+      OverlayPermissionHelper.checkAndRequestPermission(context);
+
+      // Listen for conversation updates
+      final websocketService = Provider.of<WebSocketService>(context, listen: false);
+      _websocketSubscription = websocketService.stream.listen((data) {
+        if (data is Map<String, dynamic>) {
+          if (data['type'] == 'conversation_update') {
+            // print('[HomeScreen] 🔄 Conversation update received, refreshing...');
+            Provider.of<HomeProvider>(context, listen: false).fetchInitialConversations();
+          } else if (data['type'] == 'group_deleted') {
+            // print('[HomeScreen] 🗑️ Group deleted notification received');
+            final conversationId = data['conversationId'];
+            if (conversationId != null) {
+              Provider.of<HomeProvider>(context, listen: false).removeConversation(conversationId);
+            }
+          }
+        }
+      });
     });
+
     _initializeUser();
-    Provider.of<HomeProvider>(context, listen: false).fetchInitialConversations();
     _searchController.addListener(_onSearchChanged);
   }
 
   @override
   void dispose() {
+    _websocketSubscription?.cancel();
     _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
     super.dispose();
@@ -107,22 +151,45 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  /// Load blocked users from SharedPreferences
+  Future<void> _loadBlockedUsers() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final blockedUsers = prefs.getStringList('blocked_users') ?? [];
+
+      setState(() {
+        _blockedUsers = blockedUsers;
+      });
+    } catch (e) {
+      // print('[HomeScreen] Error loading blocked users: $e');
+    }
+  }
+
   Future<void> _checkPendingNavigation() async {
     final targetConversationId = NavigationHandler.getPendingConversationId();
     if (targetConversationId != null) {
-      print('[HomeScreen] Found pending navigation to conversation: $targetConversationId');
+      // print('[HomeScreen] Found pending navigation to conversation: $targetConversationId');
 
-      // Wait a moment for UI to settle
-      await Future.delayed(Duration(milliseconds: 500));
+      // Wait for conversations to load
+      final homeProvider = Provider.of<HomeProvider>(context, listen: false);
 
-      // Find and open the target conversation
+      // If conversations are empty, wait for fetch to complete
+      if (homeProvider.conversations.isEmpty) {
+        // print('[HomeScreen] Waiting for conversations to load...');
+        await homeProvider.fetchInitialConversations();
+      }
+
+      // Small delay for UI to settle
+      await Future.delayed(Duration(milliseconds: 300));
+
+      // Now open the conversation
       await _openConversationById(targetConversationId);
     }
   }
 
   Future<void> _openConversationById(int conversationId) async {
     try {
-      print('[HomeScreen] Attempting to open conversation: $conversationId');
+      // print('[HomeScreen] Attempting to open conversation: $conversationId');
 
       // Get the home provider to access conversations
       final homeProvider = Provider.of<HomeProvider>(context, listen: false);
@@ -130,7 +197,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       // Check if WebSocket is connected
       if (!websocketService.isConnected || websocketService.channel == null) {
-        print('[HomeScreen] WebSocket not connected, cannot open conversation');
+        // print('[HomeScreen] WebSocket not connected, cannot open conversation');
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Still connecting... Please wait a moment.')),
         );
@@ -143,7 +210,7 @@ class _HomeScreenState extends State<HomeScreen> {
         orElse: () => throw Exception('Conversation not found'),
       );
 
-      print('[HomeScreen] Found conversation: ${targetConversation.chatTitle}');
+      // print('[HomeScreen] Found conversation: ${targetConversation.chatTitle}');
 
       // Navigate to ChatScreen using the same method as your onTap
       await Navigator.of(context).push(
@@ -155,14 +222,14 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       );
 
-      print('[HomeScreen] Successfully navigated to conversation: $conversationId');
+      // print('[HomeScreen] Successfully navigated to conversation: $conversationId');
 
     } catch (e) {
-      print('[HomeScreen] Error opening conversation $conversationId: $e');
+      // print('[HomeScreen] Error opening conversation $conversationId: $e');
 
       // If conversation not found in current list, refresh and try again
       if (e.toString().contains('Conversation not found')) {
-        print('[HomeScreen] Conversation not in current list, refreshing...');
+        // print('[HomeScreen] Conversation not in current list, refreshing...');
 
         final homeProvider = Provider.of<HomeProvider>(context, listen: false);
         await homeProvider.fetchInitialConversations();
@@ -183,10 +250,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
             );
-            print('[HomeScreen] Successfully navigated after refresh');
+            // print('[HomeScreen] Successfully navigated after refresh');
           }
         } catch (e2) {
-          print('[HomeScreen] Still could not find conversation after refresh: $e2');
+          // print('[HomeScreen] Still could not find conversation after refresh: $e2');
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Conversation not found or no longer exists'),
@@ -216,37 +283,153 @@ class _HomeScreenState extends State<HomeScreen> {
     await _initializeUser();
   }
 
-  Future<void> _logout(BuildContext context) async {
-    print("[HomeScreen] _logout() triggered at ${DateTime.now()} — stacktrace:\n${StackTrace.current}");
+
+
+  // Show dialog for simple logout (keeps data)
+  void _showLogoutDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          backgroundColor: Colors.grey[900],
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.logout, color: Colors.orange),
+              SizedBox(width: 10),
+              Text('Logout', style: TextStyle(color: Colors.white)),
+            ],
+          ),
+          content: const Text(
+            'You will be logged out but your messages will stay on this phone.\n\nYou can login again anytime to see your messages.',
+            style: TextStyle(color: Colors.white70, fontSize: 15),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                _performLogout(clearData: false);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.orange,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Logout'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // Show dialog for logout with data clear
+  void _showLogoutWithClearDataDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          backgroundColor: Colors.grey[900],
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.warning, color: Colors.redAccent),
+              SizedBox(width: 10),
+              Text('Clear All Data?', style: TextStyle(color: Colors.white)),
+            ],
+          ),
+          content: const Text(
+            '⚠️ All your messages will be deleted from this phone.\n\nYou won\'t be able to see them again!\n\nUse this if:\n• You share this phone with others\n• You want to start fresh\n• You\'re switching to a new phone',
+            style: TextStyle(color: Colors.white70, fontSize: 15),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                _performLogout(clearData: true);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Delete & Logout'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // Perform logout with optional data clearing
+  Future<void> _performLogout({required bool clearData}) async {
+    // print("[HomeScreen] _performLogout triggered (clearData: $clearData) at ${DateTime.now().toUtc()}");
 
     try {
-      // 1. Reset Signal Protocol user context FIRST
-      print("[HomeScreen] Resetting Signal Protocol user context...");
-      final signalResetSuccess = await SignalService.resetUserContext();
-      if (signalResetSuccess) {
-        print("[HomeScreen] Signal Protocol context reset successfully");
-      } else {
-        print("[HomeScreen] Warning: Signal Protocol context reset failed");
+      // 1. Clear FCM token from backend (so no more notifications)
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        try {
+          final token = await user.getIdToken();
+          final url = Uri.parse('http://192.168.29.81:8080/v1/fcm/token');
+          await http.post(
+            url,
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+            },
+            body: json.encode({
+              'fcm_token': '', // Empty string to clear
+              'device_id': 1,
+            }),
+          );
+          // print("[HomeScreen] FCM token cleared from backend");
+        } catch (e) {
+          // print("[HomeScreen] Error clearing FCM token: $e");
+          // Continue with logout even if this fails
+        }
       }
 
-      // 2. Disconnect WebSocket
+      if (clearData) {
+        // 2. Reset Signal Protocol user context (only if clearing data)
+        // print("[HomeScreen] Resetting Signal Protocol user context...");
+        final signalResetSuccess = await SignalService.resetUserContext();
+        if (signalResetSuccess) {
+          // print("[HomeScreen] Signal Protocol context reset successfully");
+        } else {
+          // print("[HomeScreen] Warning: Signal Protocol context reset failed");
+        }
+
+        // 3. Reset database (only if clearing data)
+        final dbService = Provider.of<DatabaseService>(context, listen: false);
+        await dbService.resetDatabase();
+        // print("[HomeScreen] Database reset");
+      } else {
+        // Just reset in-memory state without clearing persistent data
+        // print("[HomeScreen] Keeping Signal Protocol keys and database");
+        await SignalService.resetUserContext(); // Reset in-memory state only
+      }
+
+      // 4. Disconnect WebSocket (always)
       final websocketService = Provider.of<WebSocketService>(context, listen: false);
       websocketService.disconnect();
 
-      // 3. Reset database
-      final dbService = Provider.of<DatabaseService>(context, listen: false);
-      await dbService.resetDatabase();
-
-      // 4. Firebase logout
+      // 5. Firebase logout (always)
       await FirebaseAuth.instance.signOut();
-      print("[HomeScreen] Firebase logout completed");
+      // print("[HomeScreen] Firebase logout completed");
 
     } catch (e) {
-      print("[HomeScreen] Error during logout: $e");
+      // print("[HomeScreen] Error during logout: $e");
       // Continue with navigation even if some cleanup fails
     }
 
-    // 5. Navigate to login screen
+    // 6. Navigate to login screen
     if (context.mounted) {
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (context) => const LoginScreen()),
@@ -254,6 +437,8 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
   }
+
+
 
   void _enterGroupSelectionMode(ConversationInfo conversation) {
     setState(() {
@@ -372,33 +557,143 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Widget _buildAvatar(ConversationInfo convo) {
+  Widget _buildAvatar(ConversationInfo convo, {required String themeMode}) {
     final hasImage = convo.avatarUrl != null && convo.avatarUrl!.isNotEmpty;
     final title = convo.chatTitle;
     final initial = title.isNotEmpty ? title[0].toUpperCase() : '?';
     final colorSeed = title.hashCode;
     final color = Color(colorSeed).withOpacity(1.0).withBlue(200).withGreen(150);
 
-    return CircleAvatar(
-      backgroundColor: hasImage ? Colors.transparent : color,
-      backgroundImage: hasImage ? NetworkImage(convo.avatarUrl!) : null,
-      child: hasImage ? null : Text(initial, style: const TextStyle(
-          color: Colors.white, fontWeight: FontWeight.bold, fontSize: 20)),
+    // Responsive sizing
+    final screenWidth = MediaQuery.of(context).size.width;
+    final avatarSize = (screenWidth * 0.12).clamp(40.0, 56.0);
+    final fontSize = (screenWidth * 0.05).clamp(18.0, 22.0);
+    final progressSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+    final unreadBadgeSize = (screenWidth * 0.03).clamp(10.0, 14.0);
+
+    return Stack(
+      children: [
+        Container(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: Colors.black,
+              width: 2.0,
+            ),
+          ),
+          child: hasImage
+              ? CachedNetworkImage(
+                  imageUrl: convo.avatarUrl!,
+                  imageBuilder: (context, imageProvider) => CircleAvatar(
+                    radius: avatarSize / 2,
+                    backgroundImage: imageProvider,
+                    backgroundColor: Colors.transparent,
+                  ),
+                  placeholder: (context, url) => CircleAvatar(
+                    radius: avatarSize / 2,
+                    backgroundColor: color,
+                    child: SizedBox(
+                      width: progressSize,
+                      height: progressSize,
+                      child: const CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    ),
+                  ),
+                  errorWidget: (context, url, error) => CircleAvatar(
+                    radius: avatarSize / 2,
+                    backgroundColor: color,
+                    child: Text(
+                      initial,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: fontSize,
+                      ),
+                    ),
+                  ),
+                )
+              : CircleAvatar(
+                  radius: avatarSize / 2,
+                  backgroundColor: color,
+                  child: Text(
+                    initial,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: fontSize,
+                    ),
+                  ),
+                ),
+        ),
+        if (convo.hasUnreadMessages)
+          Positioned(
+            right: 0,
+            top: 0,
+            child: Container(
+              width: unreadBadgeSize,
+              height: unreadBadgeSize,
+              decoration: BoxDecoration(
+                color: Colors.green,
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: themeMode == 'light' ? const Color(0xFFF5F5F5) : Colors.white,
+                  width: 2
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 
-  PreferredSizeWidget _buildAppBar() {
+  PreferredSizeWidget _buildAppBar({required String themeMode}) {
     final bool isCreatorOfSelectedGroup = _isGroupSelectionMode &&
         _selectedConversation != null &&
         _selectedConversation!.creatorUid == _currentUserUid;
     final bool currentUserHasImage = _currentUserAvatarUrl != null &&
         _currentUserAvatarUrl!.isNotEmpty;
 
+    // Responsive sizing
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final userAvatarRadius = (screenWidth * 0.075).clamp(25.0, 35.0);
+    final userAvatarFontSize = (screenWidth * 0.045).clamp(16.0, 20.0);
+    final actionButtonSize = (screenWidth * 0.1).clamp(36.0, 44.0);
+    final actionIconSize = (screenWidth * 0.06).clamp(22.0, 26.0);
+    final titleFontSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+
+    // Adapt colors based on theme mode
+    final Color textColor;
+    final Color iconColor;
+    final Color appBarBgColor;
+
+    switch (themeMode) {
+      case 'light':
+        textColor = Colors.black87;
+        iconColor = Colors.black87;
+        appBarBgColor = Colors.white;
+        break;
+      case 'dark':
+        textColor = Colors.white;
+        iconColor = Colors.white;
+        appBarBgColor = const Color(0xFF1E1E1E);
+        break;
+      case 'space':
+      default:
+        textColor = Colors.white;
+        iconColor = Colors.white;
+        appBarBgColor = Colors.transparent; // Original transparent for space theme
+        break;
+    }
+
     return PreferredSize(
       preferredSize: const Size.fromHeight(kToolbarHeight),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         decoration: BoxDecoration(
+          color: _isGroupSelectionMode ? null : appBarBgColor,
           gradient: _isGroupSelectionMode
               ? const LinearGradient(colors: [Colors.green, Colors.teal],
               begin: Alignment.topLeft,
@@ -408,8 +703,12 @@ class _HomeScreenState extends State<HomeScreen> {
         child: AppBar(
           backgroundColor: Colors.transparent,
           elevation: 0,
-          titleTextStyle: Theme.of(context).textTheme.titleLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.bold),
-          iconTheme: const IconThemeData(color: Colors.white),
+          titleTextStyle: Theme.of(context).textTheme.titleLarge?.copyWith(
+            color: textColor,
+            fontWeight: FontWeight.bold,
+            fontSize: titleFontSize,
+          ),
+          iconTheme: IconThemeData(color: _isGroupSelectionMode ? Colors.white : iconColor),
           leading: _isGroupSelectionMode
               ? IconButton(icon: const Icon(Icons.close), onPressed: _exitGroupSelectionMode)
               : MouseRegion(
@@ -424,34 +723,72 @@ class _HomeScreenState extends State<HomeScreen> {
               },
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
-                margin: const EdgeInsets.all(8.0),
+                margin: EdgeInsets.all(screenWidth * 0.02),
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: Colors.white.withOpacity(0.1),
-                  border: Border.all(color: Colors.white.withOpacity(0.3), width: 1.5),
+                  color: themeMode == 'light'
+                      ? const Color(0xFFF0F2F5)
+                      : (themeMode == 'dark'
+                          ? const Color(0xFF2C2C2C)
+                          : Colors.white.withOpacity(0.1)), // Original space theme
+                  border: Border.all(
+                    color: Colors.black,
+                    width: 2.0
+                  ),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.cyanAccent.withOpacity(_isAvatarHovering ? 0.8 : 0.5),
+                      color: Colors.lightBlueAccent.withOpacity(_isAvatarHovering ? 0.6 : 0.3),
                       blurRadius: _isAvatarHovering ? 8 : 5,
                     ),
                   ],
                 ),
-                child: CircleAvatar(
-                  radius: 30,
-                  backgroundColor: Colors.transparent,
-                  backgroundImage: currentUserHasImage ? NetworkImage(_currentUserAvatarUrl!) : null,
-                  child: !currentUserHasImage
-                      ? Text(
-                    _displayName.isNotEmpty ? _displayName[0].toUpperCase() : '?',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 18,
-                      shadows: [Shadow(blurRadius: 3.0, color: Colors.cyanAccent)],
-                    ),
-                  )
-                      : null,
-                ),
+                child: currentUserHasImage
+                    ? CachedNetworkImage(
+                        imageUrl: _currentUserAvatarUrl!,
+                        imageBuilder: (context, imageProvider) => CircleAvatar(
+                          radius: userAvatarRadius,
+                          backgroundImage: imageProvider,
+                          backgroundColor: Colors.transparent,
+                        ),
+                        placeholder: (context, url) => CircleAvatar(
+                          radius: userAvatarRadius,
+                          backgroundColor: Colors.transparent,
+                          child: SizedBox(
+                            width: userAvatarRadius * 0.8,
+                            height: userAvatarRadius * 0.8,
+                            child: const CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            ),
+                          ),
+                        ),
+                        errorWidget: (context, url, error) => CircleAvatar(
+                          radius: userAvatarRadius,
+                          backgroundColor: Colors.transparent,
+                          child: Text(
+                            _displayName.isNotEmpty ? _displayName[0].toUpperCase() : '?',
+                            style: TextStyle(
+                              color: themeMode == 'light' ? Colors.black87 : Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: userAvatarFontSize,
+                              shadows: themeMode == 'space' ? [const Shadow(blurRadius: 3.0, color: Colors.cyanAccent)] : [],
+                            ),
+                          ),
+                        ),
+                      )
+                    : CircleAvatar(
+                        radius: userAvatarRadius,
+                        backgroundColor: Colors.transparent,
+                        child: Text(
+                          _displayName.isNotEmpty ? _displayName[0].toUpperCase() : '?',
+                          style: TextStyle(
+                            color: themeMode == 'light' ? Colors.black87 : Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: userAvatarFontSize,
+                            shadows: themeMode == 'space' ? [const Shadow(blurRadius: 3.0, color: Colors.cyanAccent)] : [],
+                          ),
+                        ),
+                      ),
               ),
             ),
           ),
@@ -473,9 +810,12 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: Tooltip(
                         message: 'Delete Group',
                         child: Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
-                          width: 40,
-                          height: 40,
+                          margin: EdgeInsets.symmetric(
+                            horizontal: screenWidth * 0.03,
+                            vertical: screenHeight * 0.01,
+                          ),
+                          width: actionButtonSize,
+                          height: actionButtonSize,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             gradient: const LinearGradient(
@@ -491,7 +831,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                             ],
                           ),
-                          child: const Icon(Icons.delete_outline, color: Colors.white, size: 24),
+                          child: Icon(Icons.delete_outline, color: Colors.white, size: actionIconSize),
                         ),
                       ),
                     ),
@@ -510,9 +850,12 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: Tooltip(
                         message: 'Leave Group',
                         child: Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
-                          width: 40,
-                          height: 40,
+                          margin: EdgeInsets.symmetric(
+                            horizontal: screenWidth * 0.03,
+                            vertical: screenHeight * 0.01,
+                          ),
+                          width: actionButtonSize,
+                          height: actionButtonSize,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             gradient: const LinearGradient(
@@ -528,14 +871,13 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                             ],
                           ),
-                          child: const Icon(Icons.exit_to_app, color: Colors.white, size: 24),
+                          child: Icon(Icons.exit_to_app, color: Colors.white, size: actionIconSize),
                         ),
                       ),
                     ),
                   ),
                 ),
             ] else ...[
-              // UPDATED: Added Backend PreKey Test option
               PopupMenuButton<String>(
                 icon: const Icon(Icons.more_vert),
                 color: const Color(0xFF1b263b).withOpacity(0.8),
@@ -545,32 +887,32 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
                   PopupMenuItem<String>(
-                    value: 'signal_test',
+                    value: 'settings',
                     child: Row(
                       children: [
-                        Icon(Icons.security, color: Colors.blue.withOpacity(0.8)),
+                        const Icon(Icons.settings, color: Colors.white),
                         const SizedBox(width: 10),
-                        const Text('Signal Protocol Test', style: TextStyle(color: Colors.white)),
+                        const Text('Settings', style: TextStyle(color: Colors.white)),
                       ],
                     ),
                   ),
                   PopupMenuItem<String>(
-                    value: 'backend_test',
+                    value: 'call_history',
                     child: Row(
                       children: [
-                        Icon(Icons.cloud_sync, color: Colors.green.withOpacity(0.8)),
+                        const Icon(Icons.history, color: Colors.green),
                         const SizedBox(width: 10),
-                        const Text('Backend PreKey Test', style: TextStyle(color: Colors.white)),
+                        const Text('Call History', style: TextStyle(color: Colors.white)),
                       ],
                     ),
                   ),
                   PopupMenuItem<String>(
-                    value: 'Encryption_test',
+                    value: 'about',
                     child: Row(
                       children: [
-                        Icon(Icons.cloud_sync, color: Colors.green.withOpacity(0.8)),
+                        const Icon(Icons.info_outline, color: Colors.cyanAccent),
                         const SizedBox(width: 10),
-                        const Text('Encryption Test', style: TextStyle(color: Colors.white)),
+                        const Text('About', style: TextStyle(color: Colors.white)),
                       ],
                     ),
                   ),
@@ -579,36 +921,47 @@ class _HomeScreenState extends State<HomeScreen> {
                     value: 'logout',
                     child: Row(
                       children: [
-                        Icon(Icons.logout, color: Colors.redAccent.withOpacity(0.8)),
+                        const Icon(Icons.logout, color: Colors.orange),
                         const SizedBox(width: 10),
                         const Text('Logout', style: TextStyle(color: Colors.white)),
                       ],
                     ),
                   ),
+                  PopupMenuItem<String>(
+                    value: 'logout_clear',
+                    child: Row(
+                      children: [
+                        Icon(Icons.delete_forever, color: Colors.redAccent.withOpacity(0.8)),
+                        const SizedBox(width: 10),
+                        const Text('Logout & Clear Data', style: TextStyle(color: Colors.white)),
+                      ],
+                    ),
+                  ),
                 ],
-                onSelected: (String result) {
-                  if (result == 'signal_test') {
-                    Navigator.of(context).push(
+                onSelected: (String result) async {
+                  if (result == 'logout') {
+                    _showLogoutDialog(context);
+                  } else if (result == 'logout_clear') {
+                    _showLogoutWithClearDataDialog(context);
+                  } else if (result == 'settings') {
+                    await Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (context) => const SignalTestPage(),
+                        builder: (context) => const SettingsScreen(),
                       ),
                     );
-                  } else if (result == 'backend_test') {
+                    _refreshUserData();
+                  } else if (result == 'call_history') {
                     Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (context) => const BackendPreKeyTest(),
+                        builder: (context) => const CallHistoryScreen(),
                       ),
                     );
-                  }
-                  else if (result == 'Encryption_test'){
+                  } else if (result == 'about') {
                     Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (context) => const EncryptionTest(),
+                        builder: (context) => const AboutScreen(),
                       ),
                     );
-                  }
-                  else if (result == 'logout') {
-                    _logout(context);
                   }
                 },
               ),
@@ -620,41 +973,81 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
 
-  Widget _buildConversationList(List<ConversationInfo> conversations, bool isReady) {
+  Widget _buildConversationList(List<ConversationInfo> conversations, bool isReady, {required String themeMode}) {
+    // Responsive sizing
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final searchPadding = EdgeInsets.fromLTRB(
+      screenWidth * 0.04,
+      screenHeight * 0.01,
+      screenWidth * 0.04,
+      screenHeight * 0.01,
+    );
+    final searchFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final searchIconSize = (screenWidth * 0.06).clamp(20.0, 26.0);
+    final listItemMargin = EdgeInsets.symmetric(
+      horizontal: screenWidth * 0.03,
+      vertical: screenHeight * 0.008,
+    );
+    final listItemTitleSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final badgeFontSize = (screenWidth * 0.025).clamp(9.0, 12.0);
+    final badgeIconSize = (screenWidth * 0.03).clamp(11.0, 14.0);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16.0, 8.0, 16.0, 8.0),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(30.0),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 3, sigmaY: 3),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(30.0),
-                  border: Border.all(color: Colors.white.withOpacity(0.2)),
+          padding: searchPadding,
+          child: Container(
+            decoration: BoxDecoration(
+              color: themeMode == 'light'
+                  ? const Color(0xFFF0F2F5)
+                  : (themeMode == 'dark'
+                      ? const Color(0xFF2C2C2C)
+                      : Colors.white.withOpacity(0.1)), // Original space theme
+              borderRadius: BorderRadius.circular(themeMode == 'space' ? 30.0 : 10.0),
+              border: Border.all(
+                color: themeMode == 'light'
+                    ? Colors.transparent
+                    : (themeMode == 'dark'
+                        ? const Color(0xFF3C3C3C)
+                        : Colors.white.withOpacity(0.2)) // Original space theme
+              ),
+            ),
+            child: TextField(
+              controller: _searchController,
+              style: TextStyle(
+                color: themeMode == 'light' ? Colors.black87 : Colors.white,
+                fontSize: searchFontSize,
+              ),
+              decoration: InputDecoration(
+                hintText: 'Search chats...',
+                hintStyle: TextStyle(
+                  color: themeMode == 'light' ? Colors.grey.shade500 : Colors.white.withOpacity(0.5),
+                  fontSize: searchFontSize,
                 ),
-                child: TextField(
-                  controller: _searchController,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: InputDecoration(
-                    hintText: 'Search chats...',
-                    hintStyle: TextStyle(color: Colors.white.withOpacity(0.5)),
-                    prefixIcon: Icon(Icons.search, color: Colors.white.withOpacity(0.7)),
-                    suffixIcon: _isSearching
-                        ? IconButton(
-                      icon: const Icon(Icons.clear, color: Colors.white70),
-                      onPressed: () {
-                        _searchController.clear();
-                        FocusScope.of(context).unfocus();
-                      },
-                    )
-                        : null,
-                    border: InputBorder.none,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                prefixIcon: Icon(
+                  Icons.search,
+                  color: themeMode == 'light' ? Colors.grey.shade600 : Colors.white.withOpacity(0.7),
+                  size: searchIconSize,
+                ),
+                suffixIcon: _isSearching
+                    ? IconButton(
+                  icon: Icon(
+                    Icons.clear,
+                    color: themeMode == 'light' ? Colors.grey.shade600 : Colors.white70,
+                    size: searchIconSize,
                   ),
+                  onPressed: () {
+                    _searchController.clear();
+                    FocusScope.of(context).unfocus();
+                  },
+                )
+                    : null,
+                border: InputBorder.none,
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: screenWidth * 0.05,
+                  vertical: screenHeight * 0.017,
                 ),
               ),
             ),
@@ -667,7 +1060,10 @@ class _HomeScreenState extends State<HomeScreen> {
               _isSearching
                   ? "No results found for '${_searchController.text}'"
                   : "You have no conversations yet.",
-              style: const TextStyle(color: Colors.white70, fontSize: 16),
+              style: TextStyle(
+                color: themeMode == 'light' ? Colors.grey.shade600 : Colors.white70,
+                fontSize: searchFontSize,
+              ),
             ),
           )
               : ListView.builder(
@@ -676,12 +1072,71 @@ class _HomeScreenState extends State<HomeScreen> {
               final convo = conversations[index];
               final isSelected = _isGroupSelectionMode &&
                   _selectedConversation?.conversationId == convo.conversationId;
-              return Card(
-                color: isSelected ? Colors.teal.withOpacity(0.3) : Colors.transparent,
-                elevation: 0,
+              return Container(
+                margin: listItemMargin,
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? Colors.teal.withOpacity(0.3)
+                      : Colors.lightBlue[50],
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: isSelected
+                        ? Colors.teal
+                        : Colors.lightBlue[200]!,
+                    width: 1.0,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 5,
+                      spreadRadius: 1,
+                    ),
+                  ],
+                ),
                 child: ListTile(
-                  leading: _buildAvatar(convo),
-                  title: Text(convo.chatTitle, style: const TextStyle(color: Colors.white)),
+                  leading: _buildAvatar(convo, themeMode: themeMode),
+                  title: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          convo.chatTitle,
+                          style: TextStyle(
+                            color: Colors.black,
+                            fontWeight: FontWeight.bold,
+                            fontSize: listItemTitleSize,
+                          ),
+                        ),
+                      ),
+                      // Show blocked badge for blocked users
+                      if (!convo.isGroup && convo.partnerUid != null && _blockedUsers.contains(convo.partnerUid))
+                        Container(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: screenWidth * 0.02,
+                            vertical: screenHeight * 0.005,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.red[100],
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.red[300]!, width: 1),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.block, size: badgeIconSize, color: Colors.red[700]),
+                              SizedBox(width: screenWidth * 0.01),
+                              Text(
+                                'Blocked',
+                                style: TextStyle(
+                                  color: Colors.red[900],
+                                  fontSize: badgeFontSize,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
                   onTap: isReady
                       ? () {
                     if (_isGroupSelectionMode) {
@@ -689,6 +1144,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     } else {
                       final websocketService = Provider.of<WebSocketService>(context, listen: false);
                       if (websocketService.isConnected && websocketService.channel != null) {
+                        Provider.of<HomeProvider>(context, listen: false)
+                            .markConversationAsRead(convo.conversationId);
                         Navigator.of(context).push(
                           MaterialPageRoute(
                             builder: (context) => ChatScreen(
@@ -696,7 +1153,10 @@ class _HomeScreenState extends State<HomeScreen> {
                               conversationInfo: convo,
                             ),
                           ),
-                        );
+                        ).then((_) {
+                          // Reload blocked users when coming back from chat
+                          _loadBlockedUsers();
+                        });
                       }
                     }
                   }
@@ -715,11 +1175,15 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget? _buildFab(bool isReady) {
+  Widget? _buildFab(bool isReady, {required String themeMode}) {
     if (_isGroupSelectionMode) return null; // FAB disappears completely
+
+    // Convert themeMode to isLightTheme for ExpandableFab widget
+    final isLightTheme = themeMode == 'light';
 
     return ExpandableFab(
       distance: 112.0,
+      isLightTheme: isLightTheme,
       children: [
         ActionButton(
           onPressed: isReady
@@ -740,6 +1204,7 @@ class _HomeScreenState extends State<HomeScreen> {
           }
               : null,
           icon: const Icon(Icons.person_add, color: Colors.white),
+          isLightTheme: isLightTheme,
         ),
         ActionButton(
           onPressed: isReady
@@ -762,6 +1227,7 @@ class _HomeScreenState extends State<HomeScreen> {
           }
               : null,
           icon: const Icon(Icons.group_add, color: Colors.white),
+          isLightTheme: isLightTheme,
         ),
       ],
     );
@@ -770,22 +1236,363 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return HomeBackground(
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        appBar: _buildAppBar(),
-        body: Consumer2<HomeProvider, WebSocketService>(
-          builder: (context, homeProvider, websocketService, child) {
-            final conversations = _isSearching ? _filteredConversations : homeProvider.conversations;
-            final isReady = websocketService.isConnected;
+    return CallAwareScreen(
+      screenName: 'HomeScreen',
+      child: Consumer<UserSettingsProvider>(
+        builder: (context, userSettings, _) {
+          final homeStyle = userSettings.homeScreenStyle;
 
-            return _buildConversationList(conversations, isReady);
-          },
+          // Choose background based on user's setting
+          Widget backgroundWidget;
+
+          switch (homeStyle) {
+            case 'dark':
+              backgroundWidget = DarkHomeBackground(
+                child: _buildScaffold(themeMode: 'dark'),
+              );
+              break;
+            case 'default':
+              backgroundWidget = DefaultHomeBackground(
+                child: _buildScaffold(themeMode: 'light'),
+              );
+              break;
+            case 'vibrant':
+              backgroundWidget = VibrantHomeBackground(
+                child: _buildScaffold(themeMode: 'space'),
+              );
+              break;
+            case 'current':
+            default:
+              backgroundWidget = HomeBackground(
+                child: _buildScaffold(themeMode: 'space'),
+              );
+              break;
+          }
+
+          return backgroundWidget;
+        },
+      ),
+    );
+  }
+
+  Widget _buildScaffold({required String themeMode}) {
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      appBar: _buildAppBar(themeMode: themeMode),
+      body: Consumer2<HomeProvider, WebSocketService>(
+        builder: (context, homeProvider, websocketService, child) {
+          final conversations = _isSearching ? _filteredConversations : homeProvider.conversations;
+          final isReady = websocketService.isConnected;
+
+          return _buildConversationList(conversations, isReady, themeMode: themeMode);
+        },
+      ),
+      bottomNavigationBar: _isGroupSelectionMode ? null : Consumer<WebSocketService>(
+        builder: (context, websocketService, child) {
+          return _buildBottomNavBar(websocketService.isConnected);
+        },
+      ),
+    );
+  }
+
+  void _showThemePicker() {
+    final userSettings = Provider.of<UserSettingsProvider>(context, listen: false);
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final modalTitleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
         ),
-        floatingActionButton: Consumer<WebSocketService>(
-          builder: (context, websocketService, child) {
-            return _buildFab(websocketService.isConnected) ?? const SizedBox.shrink();
-          },
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(height: screenHeight * 0.015),
+            Container(
+              width: screenWidth * 0.1,
+              height: screenHeight * 0.005,
+              decoration: BoxDecoration(
+                color: Colors.grey[400],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            SizedBox(height: screenHeight * 0.025),
+            Text(
+              'Choose Theme',
+              style: TextStyle(
+                fontSize: modalTitleSize,
+                fontWeight: FontWeight.bold,
+                color: Colors.black,
+              ),
+            ),
+            SizedBox(height: screenHeight * 0.025),
+            _buildThemeOption(
+              title: 'Light Theme',
+              description: 'Clean and modern white background',
+              value: 'default',
+              currentValue: userSettings.homeScreenStyle,
+              icon: Icons.light_mode,
+              onTap: () {
+                userSettings.saveSettings(homeScreenStyle: 'default');
+                Navigator.pop(context);
+              },
+            ),
+            SizedBox(height: screenHeight * 0.02),
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: screenWidth * 0.04),
+              child: Container(
+                padding: EdgeInsets.all(screenWidth * 0.04),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey[300]!, width: 1),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.access_time, color: Colors.grey[600], size: modalTitleSize * 0.9),
+                    SizedBox(width: screenWidth * 0.02),
+                    Text(
+                      'More themes coming soon...',
+                      style: TextStyle(
+                        fontSize: modalTitleSize * 0.75,
+                        color: Colors.grey[600],
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            SizedBox(height: MediaQuery.of(context).padding.bottom + 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildThemeOption({
+    required String title,
+    required String description,
+    required String value,
+    required String currentValue,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    final isSelected = value == currentValue;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    final themeTitleSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final themeDescSize = (screenWidth * 0.03).clamp(11.0, 14.0);
+    final themeIconSize = (screenWidth * 0.06).clamp(22.0, 28.0);
+    final themeIconPadding = (screenWidth * 0.03).clamp(10.0, 14.0);
+
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        margin: EdgeInsets.symmetric(
+          horizontal: screenWidth * 0.04,
+          vertical: screenHeight * 0.008,
+        ),
+        padding: EdgeInsets.all(screenWidth * 0.04),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.lightBlue[50] : Colors.grey[100],
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isSelected ? Colors.lightBlueAccent : Colors.grey[300]!,
+            width: isSelected ? 2 : 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: EdgeInsets.all(themeIconPadding),
+              decoration: BoxDecoration(
+                color: isSelected ? Colors.lightBlueAccent : Colors.grey[400],
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, color: Colors.white, size: themeIconSize),
+            ),
+            SizedBox(width: screenWidth * 0.04),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: themeTitleSize,
+                      fontWeight: FontWeight.bold,
+                      color: isSelected ? Colors.lightBlueAccent : Colors.black87,
+                    ),
+                  ),
+                  SizedBox(height: screenHeight * 0.005),
+                  Text(
+                    description,
+                    style: TextStyle(
+                      fontSize: themeDescSize,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (isSelected)
+              Icon(
+                Icons.check_circle,
+                color: Colors.lightBlueAccent,
+                size: themeIconSize,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomNavBar(bool isReady) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    return Container(
+      padding: EdgeInsets.only(
+        left: screenWidth * 0.02,
+        right: screenWidth * 0.02,
+        top: screenHeight * 0.015,
+        bottom: MediaQuery.of(context).padding.bottom + screenHeight * 0.015,
+      ),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border(
+          top: BorderSide(
+            color: Colors.black,
+            width: 1,
+          ),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, -3),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _buildNavCard(
+            icon: Icons.history,
+            label: 'Calls',
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => const CallHistoryScreen(),
+                ),
+              );
+            },
+          ),
+          _buildNavCard(
+            icon: Icons.person_add,
+            label: 'Friends',
+            onTap: () {
+              if (!isReady) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Still connecting... Please wait a moment.')),
+                );
+                return;
+              }
+              final websocketService = Provider.of<WebSocketService>(context, listen: false);
+              if (websocketService.isConnected && websocketService.channel != null) {
+                Navigator.of(context)
+                    .push(MaterialPageRoute(
+                        builder: (context) => FindFriendsScreen(
+                          channel: websocketService.channel!,
+                        )))
+                    .then((_) => Provider.of<HomeProvider>(context, listen: false)
+                        .fetchInitialConversations());
+              }
+            },
+          ),
+          _buildNavCard(
+            icon: Icons.group_add,
+            label: 'Groups',
+            onTap: () {
+              if (!isReady) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Still connecting... Please wait a moment.')),
+                );
+                return;
+              }
+              final websocketService = Provider.of<WebSocketService>(context, listen: false);
+              if (websocketService.isConnected && websocketService.channel != null) {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => CreateGroupScreen(
+                      channel: websocketService.channel!,
+                      onGroupCreated: () => Provider.of<HomeProvider>(context, listen: false)
+                          .fetchInitialConversations(),
+                    ),
+                  ),
+                );
+              }
+            },
+          ),
+          _buildNavCard(
+            icon: Icons.palette_outlined,
+            label: 'Personalize',
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => const CustomizationScreen(),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNavCard({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final navIconSize = (screenWidth * 0.06).clamp(22.0, 28.0);
+    final navLabelSize = (screenWidth * 0.028).clamp(10.0, 13.0);
+    final navSpacing = (screenHeight * 0.007).clamp(4.0, 8.0);
+
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          margin: EdgeInsets.symmetric(horizontal: screenWidth * 0.005),
+          padding: EdgeInsets.symmetric(vertical: screenHeight * 0.012),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: Colors.black, size: navIconSize),
+              SizedBox(height: navSpacing),
+              Text(
+                label,
+                style: TextStyle(
+                  color: Colors.black87,
+                  fontSize: navLabelSize,
+                  fontWeight: FontWeight.w600,
+                ),
+                textAlign: TextAlign.center,
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+              ),
+            ],
+          ),
         ),
       ),
     );

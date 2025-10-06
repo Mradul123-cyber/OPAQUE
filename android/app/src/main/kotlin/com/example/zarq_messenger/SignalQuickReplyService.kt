@@ -1,7 +1,11 @@
 package com.example.zarq_messenger
 
 import android.app.IntentService
+import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.util.Base64
 import com.google.firebase.auth.FirebaseAuth
@@ -21,23 +25,199 @@ class SignalQuickReplyService : IntentService("SignalQuickReplyService") {
 
 
     override fun onHandleIntent(intent: Intent?) {
-        if (intent == null) {
-            Log.e(TAG, "Received null intent")
-            return
-        }
+        if (intent == null) return
 
         val conversationId = intent.getIntExtra("conversation_id", -1)
-        val replyText = intent.getStringExtra("reply_text")
-        val recipientUid = intent.getStringExtra("recipient_uid")
-        val myUid = intent.getStringExtra("my_uid")
+        val replyText = intent.getStringExtra("reply_text") ?: return
+        val recipientUid = intent.getStringExtra("recipient_uid") ?: return
+        val myUid = intent.getStringExtra("my_uid") ?: return
 
-        if (conversationId == -1 || replyText.isNullOrEmpty() || recipientUid.isNullOrEmpty() || myUid.isNullOrEmpty()) {
-            Log.e(TAG, "Invalid intent data: conversationId=$conversationId, replyText=$replyText, recipientUid=$recipientUid, myUid=$myUid")
-            return
+        Log.d(TAG, "Processing quick reply: $myUid -> $recipientUid")
+
+        runBlocking {
+            try {
+                val currentUser = FirebaseAuth.getInstance().currentUser
+                if (currentUser == null || currentUser.uid != myUid) {
+                    showErrorNotification("Authentication required - open app to reply")
+                    return@runBlocking
+                }
+
+                val recipientDeviceId = getRecipientDeviceId(recipientUid)
+                if (recipientDeviceId == null) {
+                    showErrorNotification("Failed to get recipient device")
+                    return@runBlocking
+                }
+
+                val signalManager = SignalManager(applicationContext)
+
+                if (!signalManager.hasKeys() || !signalManager.isStoreInitialized()) {
+                    showErrorNotification("Encryption not ready - open app to reply")
+                    return@runBlocking
+                }
+
+                val hasSession = signalManager.hasSession(recipientUid, recipientDeviceId)
+
+                val encryptedMessage = if (hasSession) {
+                    signalManager.encryptMessage(
+                        recipientUid = recipientUid,
+                        plaintext = replyText,
+                        deviceId = recipientDeviceId
+                    )
+                } else {
+                    val prekeyBundle = fetchPrekeyBundle(recipientUid, recipientDeviceId)
+                    if (prekeyBundle == null) {
+                        showErrorNotification("Session setup required - open app to reply")
+                        return@runBlocking
+                    }
+
+                    signalManager.encryptMessageWithSessionSetup(
+                        recipientUid = recipientUid,
+                        plaintext = replyText,
+                        prekeyBundle = prekeyBundle,
+                        deviceId = recipientDeviceId
+                    )
+                }
+
+                if (encryptedMessage == null) {
+                    showErrorNotification("Failed to encrypt - open app to reply")
+                    return@runBlocking
+                }
+
+                // CHANGED: Get message ID from server response
+                val (success, messageId) = sendEncryptedMessage(conversationId, encryptedMessage)
+
+                if (success && messageId != null) {
+                    storeLocalSentMessage(conversationId, replyText, myUid, messageId)
+                    showSuccessNotification("Reply sent securely")
+
+                } else {
+                    showErrorNotification("Failed to send message")
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Quick reply failed: ${e.message}", e)
+                showErrorNotification("Open app to reply securely")
+            }
         }
+    }
 
-        Log.d(TAG, "Processing quick reply: $myUid -> $recipientUid, conversation: $conversationId")
+    private suspend fun fetchPrekeyBundle(recipientUid: String, deviceId: Int): Map<String, Any>? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val token = getFirebaseAuthToken() ?: return@withContext null
+                val url = URL("$BASE_URL/v1/prekey_bundle?uid=$recipientUid&device_id=$deviceId")
+                val connection = url.openConnection() as HttpURLConnection
 
+                connection.apply {
+                    requestMethod = "GET"
+                    setRequestProperty("Authorization", "Bearer $token")
+                    setRequestProperty("Accept", "application/json")
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                }
+
+                if (connection.responseCode == 200) {
+                    val response = connection.inputStream.bufferedReader().readText()
+                    val json = JSONObject(response)
+
+                    // Convert JSONObject to Map
+                    val map = mutableMapOf<String, Any>()
+                    json.keys().forEach { key ->
+                        map[key] = json.get(key)
+                    }
+                    map
+                } else {
+                    null
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to fetch prekey bundle: ${e.message}")
+                null
+            }
+        }
+    }
+
+
+    private suspend fun getRecipientDeviceId(recipientUid: String): Int? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val token = getFirebaseAuthToken() ?: return@withContext null
+                val url = URL("$BASE_URL/v1/users/$recipientUid/device")
+                val connection = url.openConnection() as HttpURLConnection
+
+                connection.apply {
+                    requestMethod = "GET"
+                    setRequestProperty("Authorization", "Bearer $token")
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                }
+
+                if (connection.responseCode == 200) {
+                    val response = connection.inputStream.bufferedReader().readText()
+                    val json = JSONObject(response)
+                    json.getInt("device_id")
+                } else {
+                    null
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to get device ID: ${e.message}")
+                null
+            }
+        }
+    }
+
+    private suspend fun sendEncryptedMessage(conversationId: Int, encryptedContent: String): Pair<Boolean, Int?> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val token = getFirebaseAuthToken() ?: return@withContext Pair(false, null)
+                val url = URL("$BASE_URL/v1/messages/send")
+                val connection = url.openConnection() as HttpURLConnection
+
+                val payload = JSONObject().apply {
+                    put("conversation_id", conversationId)
+                    put("content_b64", encryptedContent)
+                    put("message_type", "chat")
+                }
+
+                Log.d(TAG, "Sending payload: $payload")
+
+                connection.apply {
+                    requestMethod = "POST"
+                    setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("Authorization", "Bearer $token")
+                    doOutput = true
+                }
+
+                connection.outputStream.use {
+                    it.write(payload.toString().toByteArray())
+                }
+
+                val responseCode = connection.responseCode
+                Log.d(TAG, "Backend response code: $responseCode")
+
+                if (responseCode in 200..299) {
+                    val response = connection.inputStream.bufferedReader().readText()
+                    Log.d(TAG, "Backend response: $response")
+
+                    // Parse message ID from response
+                    val json = JSONObject(response)
+                    val messageId = json.optInt("message_id", -1)
+
+                    if (messageId != -1) {
+                        Pair(true, messageId)
+                    } else {
+                        Log.e(TAG, "No message_id in response")
+                        Pair(false, null)
+                    }
+                } else {
+                    val errorResponse = connection.errorStream?.bufferedReader()?.readText()
+                    Log.e(TAG, "Backend error: $errorResponse")
+                    Pair(false, null)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to send message: ${e.message}", e)
+                Pair(false, null)
+            }
+        }
     }
 
 
@@ -59,27 +239,28 @@ class SignalQuickReplyService : IntentService("SignalQuickReplyService") {
     /**
      * Store sent message locally for optimistic UI
      */
-    private fun storeLocalSentMessage(conversationId: Int, messageText: String, myUid: String): Long {
-        val sharedPrefs = getSharedPreferences("zarq_sent_messages", MODE_PRIVATE)
-        val messageId = System.currentTimeMillis()
+    private fun storeLocalSentMessage(conversationId: Int, messageText: String, myUid: String, messageId: Int) {
+        val sharedPrefs = getSharedPreferences("zarq_sent_messages_$myUid", MODE_PRIVATE)
 
-        val messageData = mapOf(
-            "id" to messageId,
-            "conversation_id" to conversationId,
-            "content" to messageText,
-            "sender_uid" to myUid,
-            "timestamp" to System.currentTimeMillis(),
-            "type" to "quick_reply"
-        )
+        val messageData = JSONObject().apply {
+            put("conversation_id", conversationId)
+            put("content", messageText)
+            put("sender_uid", myUid)
+            put("message_id", messageId)
+            put("stored_at", System.currentTimeMillis())
+        }
 
-        // Store as JSON string
-        val messageJson = JSONObject(messageData).toString()
+        val key = "msg_${messageId}"
         sharedPrefs.edit()
-            .putString("msg_$messageId", messageJson)
-            .putLong("last_sent_${conversationId}", messageId)
+            .putString(key, messageData.toString())
             .apply()
 
-        return messageId
+        Log.d(TAG, "=== STORED LOCAL MESSAGE ===")
+        Log.d(TAG, "Key: $key")
+        Log.d(TAG, "MessageId: $messageId")
+        Log.d(TAG, "ConversationId: $conversationId")
+        Log.d(TAG, "Content: ${messageText.take(20)}...")
+        Log.d(TAG, "=== END STORED ===")
     }
 
     /**
@@ -118,31 +299,4 @@ class SignalQuickReplyService : IntentService("SignalQuickReplyService") {
         // Could show a brief toast notification here if desired
     }
 
-    private fun updateLocalMessageId(localMessageId: Long, realMessageId: Int, conversationId: Int) {
-        try {
-            val sharedPrefs = getSharedPreferences("zarq_sent_messages", MODE_PRIVATE)
-
-            // Get the existing message data
-            val existingMessageJson = sharedPrefs.getString("msg_$localMessageId", null)
-            if (existingMessageJson != null) {
-                val messageData = JSONObject(existingMessageJson)
-
-                // Update the ID to real database ID
-                messageData.put("id", realMessageId)
-
-                // Remove old entry and add new one with real ID
-                sharedPrefs.edit()
-                    .remove("msg_$localMessageId")  // Remove old timestamp-based entry
-                    .putString("msg_$realMessageId", messageData.toString())  // Add new real-ID entry
-                    .putLong("last_sent_${conversationId}", realMessageId.toLong())  // Update latest ID
-                    .apply()
-
-                Log.d(TAG, "Updated local storage: $localMessageId -> $realMessageId")
-            } else {
-                Log.w(TAG, "Could not find local message with ID: $localMessageId")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error updating local message ID: ${e.message}", e)
-        }
-    }
 }

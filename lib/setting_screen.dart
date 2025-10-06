@@ -9,12 +9,20 @@ import 'package:image_picker/image_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:provider/provider.dart';
-// import 'package:provider/provider.dart'; // No longer needed for now
-// import 'package:zarq_messenger_frontend/services/key_management_service.dart'; // No longer needed for now
-
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:zarq_messenger/screens/backup_management_screen.dart';
+import 'package:zarq_messenger/screens/customization_screen.dart';
 import 'profile_background.dart';
 import 'login_screen.dart';
+import 'about_screen.dart';
+import 'package:provider/provider.dart';
+import 'services/user_settings_provider.dart';
+import 'services/websocket_service.dart';
+import 'services/SignalService.dart';
+import 'services/database_service.dart';
+import 'widgets/call_aware_screen.dart';
+import 'services/overlay_permission_helper.dart';
+import 'services/system_overlay_service.dart';
 
 class Friend {
   final String username;
@@ -39,12 +47,17 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final User? _currentUser = FirebaseAuth.instance.currentUser;
+
   late TextEditingController _nameController;
   bool _isUploading = false;
   String? _avatarUrl;
+  String? _displayName;
   bool _isFriendsListVisible = false;
   bool _isFriendsLoading = false;
   List<Friend> _friendsList = [];
+  final _displayNameController = TextEditingController();
+
+
 
   @override
   void initState() {
@@ -53,11 +66,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
       text: _currentUser?.displayName ?? '',
     );
     _avatarUrl = _currentUser?.photoURL;
+    _fetchProfileData();
+  }
+
+  Future<void> _fetchProfileData() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      final token = await user.getIdToken();
+      final response = await http.get(
+        Uri.parse('http://192.168.29.81:8080/profiles/me'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        setState(() {
+          _displayName = data['display_name'];
+          _displayNameController.text = _displayName ?? '';
+        });
+      }
+    } catch (e) {
+      // print('Error fetching profile data: $e');
+    }
   }
 
   @override
   void dispose() {
     _nameController.dispose();
+    _displayNameController.dispose();
     super.dispose();
   }
 
@@ -217,81 +255,95 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // --- TODO: The Backup/Restore feature is temporarily disabled. ---
-  // This code is commented out because it was designed for the old key system.
-  // It needs to be updated to back up and restore the new Signal Protocol Identity Key.
-  /*
-  Future<void> _triggerBackup() async {
-    // ... old backup logic ...
-  }
+  Future<void> _updateUserDisplayName() async {
+    final newDisplayName = _displayNameController.text.trim();
+    if (newDisplayName.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Display name cannot be empty'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
 
-  Future<void> _triggerRestore() async {
-    // ... old restore logic ...
-  }
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
 
-  Future<void> _triggerDeleteBackup() async {
-    // ... old delete backup logic ...
-  }
-  */
+      final token = await user.getIdToken();
+      final response = await http.post(
+        Uri.parse('http://192.168.29.81:8080/profile/displayname/update'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: json.encode({'displayName': newDisplayName}),
+      );
 
-  Future<String?> _askForPassword({
-    required String title,
-    required String hint,
-  }) async {
-    String? password;
-    await showDialog(
-      context: context,
-      builder: (ctx) {
-        final controller = TextEditingController();
-        return AlertDialog(
-          title: Text(title),
-          content: TextField(
-            controller: controller,
-            obscureText: true,
-            decoration: InputDecoration(hintText: hint),
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        setState(() {
+          _displayName = newDisplayName;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Display name updated successfully!'),
+            backgroundColor: Colors.green,
           ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(ctx);
-              },
-              child: const Text("Cancel"),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                password = controller.text;
-                Navigator.pop(ctx);
-              },
-              child: const Text("OK"),
-            ),
-          ],
         );
-      },
-    );
-    return password;
+        Navigator.of(context).pop();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to update display name: ${response.body}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error updating display name: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
-  void _showEditNameDialog() {
+  void _showEditDisplayNameDialog() {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final dialogTitleSize = (screenWidth * 0.045).clamp(16.0, 20.0);
+    final dialogTextSize = (screenWidth * 0.035).clamp(13.0, 16.0);
+    final borderRadius = (screenWidth * 0.04).clamp(12.0, 18.0);
+
+    _displayNameController.text = _displayName ?? '';
     showDialog(
       context: context,
       builder: (context) {
         return AlertDialog(
           backgroundColor: const Color(0xFF0a1128).withOpacity(0.8),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(15),
+            borderRadius: BorderRadius.circular(borderRadius),
             side: BorderSide(color: Colors.cyanAccent.withOpacity(0.5)),
           ),
-          title: const Text(
+          title: Text(
             'Edit Display Name',
-            style: TextStyle(color: Colors.white),
+            style: TextStyle(color: Colors.white, fontSize: dialogTitleSize),
           ),
           content: TextField(
-            controller: _nameController,
+            controller: _displayNameController,
             autofocus: true,
-            style: const TextStyle(color: Colors.white),
+            maxLength: 30,
+            style: TextStyle(color: Colors.white, fontSize: dialogTextSize),
             decoration: InputDecoration(
-              hintText: "Enter your new name",
-              hintStyle: TextStyle(color: Colors.white.withOpacity(0.5)),
+              hintText: "Enter display name",
+              hintStyle: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: dialogTextSize),
+              helperText: 'Maximum 30 characters',
+              helperStyle: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: dialogTextSize * 0.9),
               enabledBorder: UnderlineInputBorder(
                 borderSide: BorderSide(
                   color: Colors.cyanAccent.withOpacity(0.5),
@@ -305,16 +357,75 @@ class _SettingsScreenState extends State<SettingsScreen> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text(
+              child: Text(
                 'Cancel',
-                style: TextStyle(color: Colors.white70),
+                style: TextStyle(color: Colors.white70, fontSize: dialogTextSize),
+              ),
+            ),
+            TextButton(
+              onPressed: _updateUserDisplayName,
+              child: Text(
+                'Save',
+                style: TextStyle(color: Colors.cyanAccent, fontSize: dialogTextSize),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // ================== BACKUP METHODS ==================
+
+  void _showEditNameDialog() {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final dialogTitleSize = (screenWidth * 0.045).clamp(16.0, 20.0);
+    final dialogTextSize = (screenWidth * 0.035).clamp(13.0, 16.0);
+    final borderRadius = (screenWidth * 0.04).clamp(12.0, 18.0);
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF0a1128).withOpacity(0.8),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(borderRadius),
+            side: BorderSide(color: Colors.cyanAccent.withOpacity(0.5)),
+          ),
+          title: Text(
+            'Edit Display Name',
+            style: TextStyle(color: Colors.white, fontSize: dialogTitleSize),
+          ),
+          content: TextField(
+            controller: _nameController,
+            autofocus: true,
+            style: TextStyle(color: Colors.white, fontSize: dialogTextSize),
+            decoration: InputDecoration(
+              hintText: "Enter your new name",
+              hintStyle: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: dialogTextSize),
+              enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(
+                  color: Colors.cyanAccent.withOpacity(0.5),
+                ),
+              ),
+              focusedBorder: const UnderlineInputBorder(
+                borderSide: BorderSide(color: Colors.cyanAccent),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text(
+                'Cancel',
+                style: TextStyle(color: Colors.white70, fontSize: dialogTextSize),
               ),
             ),
             TextButton(
               onPressed: _updateDisplayName,
-              child: const Text(
+              child: Text(
                 'Save',
-                style: TextStyle(color: Colors.cyanAccent),
+                style: TextStyle(color: Colors.cyanAccent, fontSize: dialogTextSize),
               ),
             ),
           ],
@@ -325,34 +436,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    final outerPadding = (screenWidth * 0.05).clamp(16.0, 24.0);
+    final containerPadding = (screenWidth * 0.06).clamp(20.0, 28.0);
+    final borderRadius1 = (screenWidth * 0.05).clamp(16.0, 24.0);
+    final avatarRadius = (screenWidth * 0.15).clamp(50.0, 70.0);
+    final avatarTextSize = (screenWidth * 0.15).clamp(50.0, 70.0);
+    final displayNameSize = (screenWidth * 0.06).clamp(20.0, 28.0);
+    final usernameSize = (screenWidth * 0.035).clamp(13.0, 16.0);
+    final sectionTitleSize = (screenWidth * 0.045).clamp(16.0, 20.0);
+    final bodyTextSize = (screenWidth * 0.03).clamp(11.0, 14.0);
+    final iconSize1 = (screenWidth * 0.05).clamp(18.0, 24.0);
+    final iconSize2 = (screenWidth * 0.045).clamp(16.0, 20.0);
+    final spacing1 = (screenHeight * 0.025).clamp(16.0, 24.0);
+    final spacing2 = (screenHeight * 0.02).clamp(12.0, 20.0);
+    final spacing3 = (screenHeight * 0.0125).clamp(8.0, 12.0);
+
     final initial = _currentUser?.displayName?.isNotEmpty == true
         ? _currentUser!.displayName![0].toUpperCase()
         : '?';
     final bool currentUserHasImage =
         _avatarUrl != null && _avatarUrl!.isNotEmpty;
 
-    return ProfileBackground(
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        appBar: AppBar(
+    return CallAwareScreen(
+      screenName: 'SettingsScreen',
+      child: ProfileBackground(
+        child: Scaffold(
           backgroundColor: Colors.transparent,
-          elevation: 0,
-          title: const Text('Profile'),
-          centerTitle: true,
-        ),
+          appBar: AppBar(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            title: Text('Profile', style: TextStyle(fontSize: displayNameSize * 0.8)),
+            centerTitle: true,
+          ),
         body: Center(
           child: SingleChildScrollView(
             child: Padding(
-              padding: const EdgeInsets.all(20.0),
+              padding: EdgeInsets.only(
+                left: outerPadding,
+                right: outerPadding,
+                top: outerPadding,
+                bottom: MediaQuery.of(context).padding.bottom + outerPadding,
+              ),
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(20.0),
+                borderRadius: BorderRadius.circular(borderRadius1),
                 child: BackdropFilter(
                   filter: ImageFilter.blur(sigmaX: 12.0, sigmaY: 12.0),
                   child: Container(
-                    padding: const EdgeInsets.all(24.0),
+                    padding: EdgeInsets.all(containerPadding),
                     decoration: BoxDecoration(
                       color: Colors.black.withOpacity(0.25),
-                      borderRadius: BorderRadius.circular(20.0),
+                      borderRadius: BorderRadius.circular(borderRadius1),
                       border: Border.all(color: Colors.white.withOpacity(0.2)),
                     ),
                     child: Column(
@@ -363,23 +499,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           child: Stack(
                             alignment: Alignment.center,
                             children: [
-                              CircleAvatar(
-                                radius: 60,
-                                backgroundColor: Colors.black.withOpacity(0.3),
-                                backgroundImage: currentUserHasImage
-                                    ? NetworkImage(_avatarUrl!)
-                                    : null,
-                                child: !currentUserHasImage
-                                    ? Text(
+                              currentUserHasImage
+                                  ? CachedNetworkImage(
+                                      imageUrl: _avatarUrl!,
+                                      imageBuilder: (context, imageProvider) => CircleAvatar(
+                                        radius: avatarRadius,
+                                        backgroundImage: imageProvider,
+                                        backgroundColor: Colors.black.withOpacity(0.3),
+                                      ),
+                                      placeholder: (context, url) => CircleAvatar(
+                                        radius: avatarRadius,
+                                        backgroundColor: Colors.black.withOpacity(0.3),
+                                        child: const CircularProgressIndicator(
+                                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                        ),
+                                      ),
+                                      errorWidget: (context, url, error) => CircleAvatar(
+                                        radius: avatarRadius,
+                                        backgroundColor: Colors.black.withOpacity(0.3),
+                                        child: Text(
+                                          initial,
+                                          style: TextStyle(
+                                            fontSize: avatarTextSize,
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.w300,
+                                          ),
+                                        ),
+                                      ),
+                                    )
+                                  : CircleAvatar(
+                                      radius: avatarRadius,
+                                      backgroundColor: Colors.black.withOpacity(0.3),
+                                      child: Text(
                                         initial,
-                                        style: const TextStyle(
-                                          fontSize: 60,
+                                        style: TextStyle(
+                                          fontSize: avatarTextSize,
                                           color: Colors.white,
                                           fontWeight: FontWeight.w300,
                                         ),
-                                      )
-                                    : null,
-                              ),
+                                      ),
+                                    ),
                               if (_isUploading)
                                 const CircularProgressIndicator(
                                   color: Colors.cyanAccent,
@@ -389,7 +548,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   bottom: 0,
                                   right: 0,
                                   child: Container(
-                                    padding: const EdgeInsets.all(6),
+                                    padding: EdgeInsets.all(spacing3 * 0.75),
                                     decoration: BoxDecoration(
                                       color: Colors.cyanAccent,
                                       shape: BoxShape.circle,
@@ -398,46 +557,117 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                         width: 2,
                                       ),
                                     ),
-                                    child: const Icon(
+                                    child: Icon(
                                       Icons.camera_alt,
                                       color: Colors.black,
-                                      size: 20,
+                                      size: iconSize2,
                                     ),
                                   ),
                                 ),
                             ],
                           ),
                         ),
-                        const SizedBox(height: 20),
+                        SizedBox(height: spacing1),
+                        // Display Name (from database)
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Text(
-                              _currentUser?.displayName ?? 'No Name',
-                              style: const TextStyle(
-                                fontSize: 24,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
+                            Flexible(
+                              child: Text(
+                                _displayName ?? _currentUser?.displayName ?? 'No Display Name',
+                                style: TextStyle(
+                                  fontSize: displayNameSize,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                                textAlign: TextAlign.center,
                               ),
                             ),
                             IconButton(
-                              icon: const Icon(
+                              icon: Icon(
                                 Icons.edit_outlined,
                                 color: Colors.white70,
-                                size: 20,
+                                size: iconSize2,
                               ),
-                              onPressed: _showEditNameDialog,
+                              onPressed: _showEditDisplayNameDialog,
                             ),
                           ],
                         ),
-                        Text(
-                          _currentUser?.email ?? 'No Email',
-                          style: const TextStyle(
-                            fontSize: 16,
-                            color: Colors.white70,
+                        SizedBox(height: spacing2),
+                        // Username (unique identifier)
+                        Container(
+                          padding: EdgeInsets.symmetric(horizontal: spacing2, vertical: spacing3),
+                          decoration: BoxDecoration(
+                            color: Colors.green[50],
+                            borderRadius: BorderRadius.circular(borderRadius1 * 0.6),
+                            border: Border.all(
+                              color: Colors.green[200]!,
+                              width: 1,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.green.withOpacity(0.2),
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.alternate_email, color: Colors.green[700], size: iconSize2),
+                              SizedBox(width: spacing3),
+                              Text(
+                                _currentUser?.displayName ?? 'username',
+                                style: TextStyle(
+                                  fontSize: usernameSize,
+                                  color: Colors.green[900],
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        const SizedBox(height: 20),
+                        SizedBox(height: spacing3),
+                        Container(
+                          padding: EdgeInsets.symmetric(horizontal: spacing2, vertical: spacing3),
+                          decoration: BoxDecoration(
+                            color: Colors.red[50],
+                            borderRadius: BorderRadius.circular(borderRadius1 * 0.6),
+                            border: Border.all(
+                              color: Colors.red[200]!,
+                              width: 1,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.red.withOpacity(0.2),
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.email, color: Colors.red[700], size: iconSize2),
+                              SizedBox(width: spacing3),
+                              Expanded(
+                                child: Text(
+                                  _currentUser?.email ?? 'No Email',
+                                  style: TextStyle(
+                                    fontSize: usernameSize,
+                                    color: Colors.red[900],
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        SizedBox(height: spacing1),
 
                         // --- TODO: Backup/Restore Buttons are commented out ---
                         // These buttons are disabled until the backup logic is updated
@@ -465,33 +695,95 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         const SizedBox(height: 30),
                         */
                         const Divider(color: Colors.white30),
-                        const SizedBox(height: 20),
-                        _buildFriendsListSection(),
-                        const SizedBox(height: 15),
+                        SizedBox(height: spacing1),
+                        _buildFriendsListSection(
+                          sectionTitleSize: sectionTitleSize,
+                          iconSize1: iconSize1,
+                          bodyTextSize: bodyTextSize,
+                          spacing1: spacing1,
+                          spacing2: spacing2,
+                          spacing3: spacing3,
+                          borderRadius1: borderRadius1,
+                        ),
+                        SizedBox(height: spacing2 * 0.75),
 
-                        // In settings_screen.dart -> _SettingsScreenState -> build()
+                        const Divider(color: Colors.white30),
+                        SizedBox(height: spacing1),
+
+                        // 🚨 NEW CUSTOMIZATION SECTION 🚨
+                        _buildCustomizationSection(
+                          sectionTitleSize: sectionTitleSize,
+                          iconSize1: iconSize1,
+                          bodyTextSize: bodyTextSize,
+                          spacing2: spacing2,
+                          spacing3: spacing3,
+                          borderRadius1: borderRadius1,
+                        ),
+                        SizedBox(height: spacing1),
+
+                        const Divider(color: Colors.white30),
+                        SizedBox(height: spacing1),
+
+                        // 🚨 BACKUP SECTION 🚨
+                        _buildBackupSection(
+                          sectionTitleSize: sectionTitleSize,
+                          iconSize1: iconSize1,
+                          bodyTextSize: bodyTextSize,
+                          spacing2: spacing2,
+                          spacing3: spacing3,
+                          borderRadius1: borderRadius1,
+                        ),
+                        SizedBox(height: spacing1),
+
+                        const Divider(color: Colors.white30),
+                        SizedBox(height: spacing1),
+
+                        // 🚨 CALL SETTINGS SECTION 🚨
+                        _buildCallSettingsSection(
+                          sectionTitleSize: sectionTitleSize,
+                          usernameSize: usernameSize,
+                          spacing2: spacing2,
+                          spacing3: spacing3,
+                        ),
+                        SizedBox(height: spacing1),
+
+                        const Divider(color: Colors.white30),
+                        SizedBox(height: spacing1),
+
+                        // 🚨 ABOUT SECTION 🚨
+                        _buildAboutSection(
+                          sectionTitleSize: sectionTitleSize,
+                          iconSize1: iconSize1,
+                          bodyTextSize: bodyTextSize,
+                          spacing2: spacing2,
+                          spacing3: spacing3,
+                          borderRadius1: borderRadius1,
+                        ),
+                        SizedBox(height: spacing1),
+
+                        const Divider(color: Colors.white30),
+                        SizedBox(height: spacing1),
+
+                        // Logout (keeps data)
                         _buildActionButton(
                           icon: Icons.logout,
                           text: 'Logout',
-                          onTap: () async {
-                            // --- THIS IS THE NEW LOGIC ---
-                            // 1. Get the KeyManagementService
+                          onTap: () => _showLogoutDialog(context),
+                          color: Colors.orange,
+                          buttonHeight: (screenHeight * 0.065).clamp(45.0, 60.0),
+                          borderRadius: borderRadius1 * 0.75,
+                        ),
 
-                            // 2. Sign out from Firebase
-                            await FirebaseAuth.instance.signOut();
+                        SizedBox(height: spacing2),
 
-                            // 3. Navigate back to the login screen
-                            if (mounted) {
-                              Navigator.of(context).pushAndRemoveUntil(
-                                MaterialPageRoute(
-                                  builder: (context) => const LoginScreen(),
-                                ),
-                                (route) => false,
-                              );
-                            }
-                            // -----------------------------
-                          },
+                        // Logout & Clear All Data
+                        _buildActionButton(
+                          icon: Icons.delete_forever,
+                          text: 'Logout & Clear All Data',
+                          onTap: () => _showLogoutWithClearDataDialog(context),
                           color: Colors.redAccent,
+                          buttonHeight: (screenHeight * 0.065).clamp(45.0, 60.0),
+                          borderRadius: borderRadius1 * 0.75,
                         ),
                       ],
                     ),
@@ -502,49 +794,455 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ),
       ),
+      )
     );
   }
 
-  Widget _buildFriendsListSection() {
+
+  Widget _buildBackupSection({
+    required double sectionTitleSize,
+    required double iconSize1,
+    required double bodyTextSize,
+    required double spacing2,
+    required double spacing3,
+    required double borderRadius1,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          "Backup & Restore",
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: sectionTitleSize,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        SizedBox(height: spacing3 * 1.25),
+
+        // Info about backup management
+        Container(
+          padding: EdgeInsets.all(spacing3),
+          decoration: BoxDecoration(
+            color: Colors.blue.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(borderRadius1 * 0.4),
+            border: Border.all(color: Colors.cyanAccent.withOpacity(0.3)),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.info_outline, color: Colors.cyanAccent, size: iconSize1),
+              SizedBox(width: spacing3),
+              Expanded(
+                child: Text(
+                  'Create, restore, and manage your encrypted backups',
+                  style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: spacing2 * 0.75),
+
+        // Manage Backups Button
+        _buildActionButton(
+          icon: Icons.backup,
+          text: 'Manage Backups',
+          onTap: _navigateToBackupManagement,
+          color: Colors.blueAccent,
+          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
+          borderRadius: borderRadius1 * 0.75,
+        ),
+      ],
+    );
+  }
+
+  void _navigateToBackupManagement() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const BackupManagementScreen(),
+      ),
+    );
+  }
+
+  Widget _buildCustomizationSection({
+    required double sectionTitleSize,
+    required double iconSize1,
+    required double bodyTextSize,
+    required double spacing2,
+    required double spacing3,
+    required double borderRadius1,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          "Appearance Settings",
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: sectionTitleSize,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        SizedBox(height: spacing2 * 0.75),
+
+        // Info about customization
+        Container(
+          padding: EdgeInsets.all(spacing3),
+          decoration: BoxDecoration(
+            color: Colors.purple.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(borderRadius1 * 0.4),
+            border: Border.all(color: Colors.cyanAccent.withOpacity(0.3)),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.palette, color: Colors.cyanAccent, size: iconSize1),
+              SizedBox(width: spacing3),
+              Expanded(
+                child: Text(
+                  'Personalize your app appearance and UI',
+                  style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: spacing2 * 0.75),
+
+        // Customization Button
+        _buildActionButton(
+          icon: Icons.palette,
+          text: 'Customization',
+          onTap: _navigateToCustomization,
+          color: Colors.purpleAccent,
+          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
+          borderRadius: borderRadius1 * 0.75,
+        ),
+      ],
+    );
+  }
+
+  void _navigateToCustomization() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const CustomizationScreen(),
+      ),
+    );
+  }
+
+  Widget _buildAboutSection({
+    required double sectionTitleSize,
+    required double iconSize1,
+    required double bodyTextSize,
+    required double spacing2,
+    required double spacing3,
+    required double borderRadius1,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          "About Zarq Messenger",
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: sectionTitleSize,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        SizedBox(height: spacing2 * 0.75),
+
+        // Info about the app
+        Container(
+          padding: EdgeInsets.all(spacing3),
+          decoration: BoxDecoration(
+            color: Colors.cyan.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(borderRadius1 * 0.4),
+            border: Border.all(color: Colors.cyanAccent.withOpacity(0.3)),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.info_outline, color: Colors.cyanAccent, size: iconSize1),
+              SizedBox(width: spacing3),
+              Expanded(
+                child: Text(
+                  'Version, features, and legal information',
+                  style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: spacing2 * 0.75),
+
+        // About Button
+        _buildActionButton(
+          icon: Icons.info,
+          text: 'About',
+          onTap: _navigateToAbout,
+          color: Colors.cyanAccent,
+          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
+          borderRadius: borderRadius1 * 0.75,
+        ),
+      ],
+    );
+  }
+
+  void _navigateToAbout() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const AboutScreen(),
+      ),
+    );
+  }
+
+  // Show dialog for simple logout (keeps data)
+  void _showLogoutDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          backgroundColor: Colors.grey[900],
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.logout, color: Colors.orange),
+              SizedBox(width: 10),
+              Text('Logout', style: TextStyle(color: Colors.white)),
+            ],
+          ),
+          content: const Text(
+            'You will be logged out but your messages will stay on this phone.\n\nYou can login again anytime to see your messages.',
+            style: TextStyle(color: Colors.white70, fontSize: 15),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                _performLogout(clearData: false);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.orange,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Logout'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // Show dialog for logout with data clear
+  void _showLogoutWithClearDataDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          backgroundColor: Colors.grey[900],
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.warning, color: Colors.redAccent),
+              SizedBox(width: 10),
+              Text('Clear All Data?', style: TextStyle(color: Colors.white)),
+            ],
+          ),
+          content: const Text(
+            '⚠️ All your messages will be deleted from this phone.\n\nYou won\'t be able to see them again!\n\nUse this if:\n• You share this phone with others\n• You want to start fresh\n• You\'re switching to a new phone',
+            style: TextStyle(color: Colors.white70, fontSize: 15),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                _performLogout(clearData: true);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Delete & Logout'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // Perform logout with optional data clearing
+  Future<void> _performLogout({required bool clearData}) async {
+    // print("[SettingsScreen] Logout triggered (clearData: $clearData)");
+
+    try {
+      // 1. Clear FCM token from backend (so no more notifications)
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        try {
+          final token = await user.getIdToken();
+          final url = Uri.parse('http://192.168.29.81:8080/v1/fcm/token');
+          await http.post(
+            url,
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+            },
+            body: json.encode({
+              'fcm_token': '', // Empty string to clear
+              'device_id': 1,
+            }),
+          );
+          // print('[SettingsScreen] FCM token cleared from backend');
+        } catch (e) {
+          // print("[SettingsScreen] Error clearing FCM token: $e");
+          // Continue with logout even if this fails
+        }
+      }
+
+      if (clearData) {
+        // 2. Reset Signal Protocol user context (only if clearing data)
+        // print("[SettingsScreen] Resetting Signal Protocol user context...");
+        final signalResetSuccess = await SignalService.resetUserContext();
+        if (signalResetSuccess) {
+          // print("[SettingsScreen] Signal Protocol context reset successfully");
+        } else {
+          // print("[SettingsScreen] Warning: Signal Protocol context reset failed");
+        }
+
+        // 3. Reset database (only if clearing data)
+        final dbService = Provider.of<DatabaseService>(context, listen: false);
+        await dbService.resetDatabase();
+        // print("[SettingsScreen] Database reset");
+      } else {
+        // Just reset in-memory state without clearing persistent data
+        // print("[SettingsScreen] Keeping Signal Protocol keys and database");
+        await SignalService.resetUserContext(); // Reset in-memory state only
+      }
+
+      // 4. Disconnect WebSocket (always)
+      final websocketService = Provider.of<WebSocketService>(context, listen: false);
+      websocketService.disconnect();
+
+      // 5. Firebase logout (always)
+      await FirebaseAuth.instance.signOut();
+      // print("[SettingsScreen] Firebase logout completed");
+
+    } catch (e) {
+      // print('[SettingsScreen] Error during logout: $e');
+      // Continue with navigation even if some cleanup fails
+    }
+
+    // 6. Navigate back to the login screen
+    if (mounted) {
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(
+          builder: (context) => const LoginScreen(),
+        ),
+        (route) => false,
+      );
+    }
+  }
+
+  Widget _buildCallSettingsSection({
+    required double sectionTitleSize,
+    required double usernameSize,
+    required double spacing2,
+    required double spacing3,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          "Call Settings",
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: sectionTitleSize,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        SizedBox(height: spacing3 * 1.25),
+        Text(
+          "Configure call overlay and permissions",
+          style: TextStyle(
+            color: Colors.white70,
+            fontSize: usernameSize,
+          ),
+        ),
+        SizedBox(height: spacing2 * 0.75),
+
+        // Overlay Permission Button
+        _buildActionButton(
+          icon: Icons.window,
+          text: 'Enable Floating Call Overlay',
+          onTap: () async {
+            await OverlayPermissionHelper.requestPermission(context);
+          },
+          color: Colors.tealAccent,
+          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
+          borderRadius: (MediaQuery.of(context).size.width * 0.05).clamp(16.0, 24.0) * 0.75,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildFriendsListSection({
+    required double sectionTitleSize,
+    required double iconSize1,
+    required double bodyTextSize,
+    required double spacing1,
+    required double spacing2,
+    required double spacing3,
+    required double borderRadius1,
+  }) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         Material(
           color: Colors.white.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(15),
+          borderRadius: BorderRadius.circular(borderRadius1 * 0.75),
           child: InkWell(
             onTap: _toggleFriendsList,
-            borderRadius: BorderRadius.circular(15),
+            borderRadius: BorderRadius.circular(borderRadius1 * 0.75),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              padding: EdgeInsets.symmetric(horizontal: spacing2, vertical: spacing3),
               child: Row(
                 children: [
-                  const Icon(Icons.people, color: Colors.cyanAccent),
-                  const SizedBox(width: 12),
-                  const Text(
+                  Icon(Icons.people, color: Colors.cyanAccent, size: iconSize1),
+                  SizedBox(width: spacing3),
+                  Text(
                     "My Friends",
                     style: TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
+                      fontSize: sectionTitleSize * 0.85,
                     ),
                   ),
                   const Spacer(),
                   if (_friendsList.isNotEmpty)
                     Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
+                      padding: EdgeInsets.symmetric(
+                        horizontal: spacing3,
+                        vertical: spacing3 * 0.5,
                       ),
                       decoration: BoxDecoration(
                         color: Colors.cyanAccent.withOpacity(0.3),
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(borderRadius1 * 0.5),
                       ),
                       child: Text(
                         _friendsList.length.toString(),
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.bold,
-                          fontSize: 12,
+                          fontSize: bodyTextSize,
                         ),
                       ),
                     ),
@@ -553,6 +1251,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ? Icons.expand_less
                         : Icons.expand_more,
                     color: Colors.white70,
+                    size: iconSize1,
                   ),
                 ],
               ),
@@ -565,26 +1264,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: SizedBox(
             height: _isFriendsListVisible ? null : 0,
             child: _isFriendsLoading
-                ? const Padding(
-                    padding: EdgeInsets.all(20.0),
-                    child: Center(
+                ? Padding(
+                    padding: EdgeInsets.all(spacing1),
+                    child: const Center(
                       child: CircularProgressIndicator(
                         color: Colors.cyanAccent,
                       ),
                     ),
                   )
                 : _friendsList.isEmpty && _isFriendsListVisible
-                ? const Padding(
-                    padding: EdgeInsets.all(20.0),
+                ? Padding(
+                    padding: EdgeInsets.all(spacing1),
                     child: Center(
                       child: Text(
                         "You haven't added any friends yet.",
-                        style: TextStyle(color: Colors.white70),
+                        style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
                       ),
                     ),
                   )
                 : ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 200),
+                    constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.25),
                     child: ListView.builder(
                       shrinkWrap: true,
                       itemCount: _friendsList.length,
@@ -600,23 +1299,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           friend.username.hashCode,
                         ).withOpacity(1.0);
                         return ListTile(
-                          leading: CircleAvatar(
-                            backgroundColor: hasImage
-                                ? Colors.transparent
-                                : color,
-                            backgroundImage: hasImage
-                                ? NetworkImage(friend.avatarUrl!)
-                                : null,
-                            child: hasImage
-                                ? null
-                                : Text(
+                          leading: hasImage
+                              ? CachedNetworkImage(
+                                  imageUrl: friend.avatarUrl!,
+                                  imageBuilder: (context, imageProvider) => CircleAvatar(
+                                    backgroundImage: imageProvider,
+                                    backgroundColor: Colors.transparent,
+                                  ),
+                                  placeholder: (context, url) => CircleAvatar(
+                                    backgroundColor: color,
+                                    child: SizedBox(
+                                      width: iconSize1,
+                                      height: iconSize1,
+                                      child: const CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                      ),
+                                    ),
+                                  ),
+                                  errorWidget: (context, url, error) => CircleAvatar(
+                                    backgroundColor: color,
+                                    child: Text(
+                                      initial,
+                                      style: const TextStyle(color: Colors.white),
+                                    ),
+                                  ),
+                                )
+                              : CircleAvatar(
+                                  backgroundColor: color,
+                                  child: Text(
                                     initial,
                                     style: const TextStyle(color: Colors.white),
                                   ),
-                          ),
+                                ),
                           title: Text(
                             friend.username,
-                            style: const TextStyle(color: Colors.white),
+                            style: TextStyle(color: Colors.white, fontSize: bodyTextSize),
                           ),
                         );
                       },
@@ -633,21 +1351,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required String text,
     required VoidCallback onTap,
     required Color color,
+    required double buttonHeight,
+    required double borderRadius,
   }) {
+    final iconSize = (MediaQuery.of(context).size.width * 0.05).clamp(18.0, 24.0);
+    final textSize = (MediaQuery.of(context).size.width * 0.04).clamp(14.0, 18.0);
+
     return ElevatedButton.icon(
       onPressed: onTap,
-      icon: Icon(icon, color: Colors.black87),
+      icon: Icon(icon, color: Colors.black87, size: iconSize),
       label: Text(
         text,
-        style: const TextStyle(
+        style: TextStyle(
           color: Colors.black87,
           fontWeight: FontWeight.bold,
+          fontSize: textSize,
         ),
       ),
       style: ElevatedButton.styleFrom(
         backgroundColor: color,
-        minimumSize: const Size(double.infinity, 50),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        minimumSize: Size(double.infinity, buttonHeight),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(borderRadius)),
         shadowColor: color,
         elevation: 8,
       ),

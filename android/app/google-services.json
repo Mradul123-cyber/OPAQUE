@@ -14,6 +14,43 @@
       },
       "oauth_client": [
         {
+          "client_id": "463692732659-7ls1hptonq30tpov102sof6vnnjrihnd.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.zarq_messenger",
+            "certificate_hash": "bf7567fa9404a7ec0658ad0d31da6d580deab9d8"
+          }
+        },
+        {
+          "client_id": "463692732659-ubbqoobj13731lf6pav6ib6gem81bj88.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDysX-_VI4BJjviLhDtouZX10mJIiXOQ7c"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "463692732659-ubbqoobj13731lf6pav6ib6gem81bj88.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:463692732659:android:d41c5adad5b876d03cff86",
+        "android_client_info": {
+          "package_name": "com.example.zarq_messenger.zarq_messenger_new"
+        }
+      },
+      "oauth_client": [
+        {
           "client_id": "463692732659-ubbqoobj13731lf6pav6ib6gem81bj88.apps.googleusercontent.com",
           "client_type": 3
         }

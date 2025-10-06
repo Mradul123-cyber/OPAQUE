@@ -2,12 +2,20 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/services.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'SignalService.dart';
 import 'database_service.dart';
+import 'global_call_manager.dart';
+import 'webrtc_service.dart';
 import 'package:zarq_messenger/message_model.dart';
+import 'key_rotation_service.dart';
 import 'sent_message_service.dart';
+import 'navigation_handler.dart';
+import 'group_encryption_service.dart';
 
 // Message queue item for reliable delivery
 class QueuedMessage {
@@ -41,7 +49,7 @@ class QueuedMessage {
     );
   }
 
-  bool get isExpired => DateTime.now().difference(timestamp) > timeout;
+  bool get isExpired => DateTime.now().toUtc().difference(timestamp) > timeout;
   bool get hasRetriesLeft => attemptCount < maxAttempts;
 }
 
@@ -52,8 +60,12 @@ class WebSocketService with ChangeNotifier {
   StreamSubscription? _streamSubscription;
   Timer? _reconnectTimer;
   int _reconnectAttempts = 0;
-  static const int _maxReconnectAttempts = 5;
+  static const int _maxReconnectAttempts = 10;  // ✅ Increased from 5 to 10
   bool _isReconnecting = false;
+
+  // ✅ Network connectivity monitoring
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  bool _wasDisconnectedDueToNetwork = false;
 
   // Heartbeat system
   Timer? _heartbeatTimer;
@@ -75,34 +87,52 @@ class WebSocketService with ChangeNotifier {
   StreamSubscription? _sentMessageSubscription;
   final Set<int> _localSentMessageIds = {};
 
+  // Global call manager for routing call signals
+  GlobalCallManager? _globalCallManager;
+
   Stream<dynamic> get stream => _streamController.stream;
   WebSocketChannel? get channel => _channel;
   bool get isConnected => _isConnected;
 
+  DateTime? _lastStatusSyncTime;
+  final _statusSyncDebounce = Duration(seconds: 5);
+
+  final Map<int, DateTime> _lastMarkReadTimePerMessage = {};
+  final _markReadDebounce = Duration(seconds: 10);
+
+  // Set global call manager
+  void setGlobalCallManager(GlobalCallManager callManager) {
+    _globalCallManager = callManager;
+    // Setup callback for sending call signals
+    _globalCallManager?.onSendSignal = (signalData) {
+      final message = jsonEncode(signalData);
+      _channel?.sink.add(message);
+      // print('[WebSocketService] Sent call signal: ${signalData['type']}');
+    };
+  }
+
+
   Future<void> connect(String? token) async {
     if (token == null) {
-      print("[WebSocketService] Connection attempted with no token.");
+      // print("[WebSocketService] Connection attempted with no token.");
       return;
     }
 
     if (_isConnected && _channel != null && token == _lastToken) {
-      print("[WebSocketService] Already connected. No action needed.");
       return;
     }
 
     if (_isReconnecting) {
-      print("[WebSocketService] Reconnection already in progress, skipping");
       return;
     }
 
     if (_channel != null) {
-      print("[WebSocketService] A new connection was requested. Disconnecting the old one first...");
       await disconnect();
     }
 
     _lastToken = token;
     _isReconnecting = true;
-    print("[WebSocketService] Attempting to connect... (Attempt: ${_reconnectAttempts + 1})");
+    // print("[WebSocketService] Connecting... (Attempt: ${_reconnectAttempts + 1})");
 
     _initializeSentMessageListener();
 
@@ -116,12 +146,16 @@ class WebSocketService with ChangeNotifier {
       _isConnected = true;
       _isReconnecting = false;
       _reconnectAttempts = 0;
+      _wasDisconnectedDueToNetwork = false;
       notifyListeners();
-      print("[WebSocketService] Connection established successfully (channel opened).");
+      // print("[WebSocketService] ✅ Connection established");
 
       // Start heartbeat and queue processing
       _startHeartbeat();
       _startQueueProcessor();
+
+      // ✅ Start monitoring network connectivity
+      _startConnectivityMonitoring();
 
       if (!completer.isCompleted) completer.complete();
 
@@ -131,15 +165,14 @@ class WebSocketService with ChangeNotifier {
           _streamController.add(message);
         },
         onDone: () {
-          print("[WebSocketService] onDone called at ${DateTime.now()} — channel closed.");
+          // print("[WebSocketService] Connection closed");
           if (!completer.isCompleted) {
             completer.completeError(Exception("Connection closed before it could be established."));
           }
           _handleDisconnection();
         },
         onError: (error, stack) {
-          print("[WebSocketService] onError called at ${DateTime.now()}: $error");
-          print("[WebSocketService] onError stack: $stack");
+          // print("[WebSocketService] Connection error: $error");
           if (!completer.isCompleted) {
             completer.completeError(error);
           }
@@ -150,7 +183,7 @@ class WebSocketService with ChangeNotifier {
 
       _streamSubscription = subscription;
     } catch (e, st) {
-      print("[WebSocketService] Failed to connect: $e\n$st");
+      // print("[WebSocketService] Failed to connect: $e");
       _isReconnecting = false;
       if (!completer.isCompleted) completer.completeError(e);
       _handleDisconnection();
@@ -162,7 +195,6 @@ class WebSocketService with ChangeNotifier {
   // HEARTBEAT SYSTEM
   void _startHeartbeat() {
     _stopHeartbeat();
-    print("[WebSocketService] Starting heartbeat system");
 
     _heartbeatTimer = Timer.periodic(_heartbeatInterval, (timer) {
       _sendPing();
@@ -179,12 +211,11 @@ class WebSocketService with ChangeNotifier {
 
   void _sendPing() {
     if (!_isConnected || _channel == null) {
-      print("[WebSocketService] Cannot send ping - not connected");
       return;
     }
 
     if (_waitingForPong) {
-      print("[WebSocketService] Previous ping still waiting for pong - connection may be dead");
+      // print("[WebSocketService] Previous ping still waiting for pong - connection may be dead");
       _handleSilentDisconnection();
       return;
     }
@@ -192,36 +223,33 @@ class WebSocketService with ChangeNotifier {
     try {
       final pingMessage = {
         'type': 'ping',
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'timestamp': DateTime.now().toUtc().millisecondsSinceEpoch,
       };
 
       _channel!.sink.add(jsonEncode(pingMessage));
       _waitingForPong = true;
 
-      print("[WebSocketService] Ping sent, waiting for pong...");
-
       // Set timeout for pong response
       _heartbeatTimeoutTimer = Timer(_heartbeatTimeout, () {
         if (_waitingForPong) {
-          print("[WebSocketService] Pong timeout - connection appears dead");
+          // print("[WebSocketService] Pong timeout - connection appears dead");
           _handleSilentDisconnection();
         }
       });
     } catch (e) {
-      print("[WebSocketService] Error sending ping: $e");
+      // print("[WebSocketService] Error sending ping: $e");
       _handleSilentDisconnection();
     }
   }
 
   void _handlePong() {
-    print("[WebSocketService] Pong received - connection alive");
     _waitingForPong = false;
-    _lastPongReceived = DateTime.now();
+    _lastPongReceived = DateTime.now().toUtc();
     _heartbeatTimeoutTimer?.cancel();
   }
 
   void _handleSilentDisconnection() {
-    print("[WebSocketService] Silent disconnection detected via heartbeat");
+    // print("[WebSocketService] Silent disconnection detected via heartbeat");
     _waitingForPong = false;
     _heartbeatTimeoutTimer?.cancel();
 
@@ -232,7 +260,6 @@ class WebSocketService with ChangeNotifier {
   // MESSAGE QUEUE SYSTEM
   void _startQueueProcessor() {
     _stopQueueProcessor();
-    print("[WebSocketService] Starting message queue processor");
 
     _queueProcessTimer = Timer.periodic(_queueProcessInterval, (timer) {
       _processMessageQueue();
@@ -247,8 +274,6 @@ class WebSocketService with ChangeNotifier {
   Future<void> _processMessageQueue() async {
     if (_messageQueue.isEmpty || !_isConnected) return;
 
-    print("[WebSocketService] Processing message queue (${_messageQueue.length} items)");
-
     final expiredMessages = <String>[];
     final retryMessages = <String>[];
 
@@ -257,7 +282,7 @@ class WebSocketService with ChangeNotifier {
       final queuedMsg = entry.value;
 
       if (queuedMsg.isExpired) {
-        print("[WebSocketService] Message $messageId expired after ${queuedMsg.attemptCount} attempts");
+        // print("[WebSocketService] Message $messageId expired after ${queuedMsg.attemptCount} attempts");
         expiredMessages.add(messageId);
 
         // Complete with failure
@@ -288,18 +313,16 @@ class WebSocketService with ChangeNotifier {
     if (queuedMsg == null || !_isConnected || _channel == null) return;
 
     try {
-      print("[WebSocketService] Retrying message $messageId (attempt ${queuedMsg.attemptCount + 1})");
-
       _channel!.sink.add(jsonEncode(queuedMsg.data));
 
       // Update attempt count
       _messageQueue[messageId] = queuedMsg.copyWith(
         attemptCount: queuedMsg.attemptCount + 1,
-        timestamp: DateTime.now(),
+        timestamp: DateTime.now().toUtc(),
       );
 
     } catch (e) {
-      print("[WebSocketService] Error retrying message $messageId: $e");
+      // print("[WebSocketService] Error retrying message $messageId: $e");
     }
   }
 
@@ -321,31 +344,29 @@ class WebSocketService with ChangeNotifier {
             'conversation_id': messageData['conversation_id'],
           });
 
-          print("[WebSocketService] Message $messageId marked as failed");
+          // print("[WebSocketService] Message $messageId marked as failed");
         }
       }
     } catch (e) {
-      print("[WebSocketService] Error updating failed message status: $e");
+      // print("[WebSocketService] Error updating failed message status: $e");
     }
   }
 
   // RELIABLE MESSAGE SENDING
   Future<bool> sendMessageReliably(Map<String, dynamic> messageData) async {
     if (!_isConnected || _channel == null) {
-      print("[WebSocketService] Cannot send message reliably - not connected");
+      // print("[WebSocketService] Cannot send message reliably - not connected");
       return false;
     }
 
     final messageId = messageData['message_id']?.toString() ??
-        'msg_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(1000)}';
-
-    print("[WebSocketService] Sending message reliably: $messageId");
+        'msg_${DateTime.now().toUtc()..millisecondsSinceEpoch}_${Random().nextInt(1000)}';
 
     // Add to queue immediately
     final queuedMessage = QueuedMessage(
       id: messageId,
       data: messageData,
-      timestamp: DateTime.now(),
+      timestamp: DateTime.now().toUtc(),
     );
 
     _messageQueue[messageId] = queuedMessage;
@@ -357,13 +378,11 @@ class WebSocketService with ChangeNotifier {
     try {
       // Send immediately
       _channel!.sink.add(jsonEncode(messageData));
-      print("[WebSocketService] Message sent to WebSocket: $messageId");
 
       // Wait for confirmation or timeout
       final delivered = await completer.future.timeout(
         queuedMessage.timeout,
         onTimeout: () {
-          print("[WebSocketService] Message delivery timeout: $messageId");
           return false;
         },
       );
@@ -371,7 +390,7 @@ class WebSocketService with ChangeNotifier {
       return delivered;
 
     } catch (e) {
-      print("[WebSocketService] Error sending message reliably: $e");
+      // print("[WebSocketService] Error sending message reliably: $e");
       _messageCompleters.remove(messageId);
       return false;
     } finally {
@@ -382,8 +401,6 @@ class WebSocketService with ChangeNotifier {
   }
 
   void _confirmMessageDelivery(String messageId) {
-    print("[WebSocketService] Confirming delivery for message: $messageId");
-
     // Remove from queue
     _messageQueue.remove(messageId);
 
@@ -397,41 +414,36 @@ class WebSocketService with ChangeNotifier {
     try {
       return [];
     } catch (e) {
-      print("[WebSocketService] Error loading sent messages: $e");
+      // print("[WebSocketService] Error loading sent messages: $e");
       return [];
     }
   }
 
+
   Future<void> syncMessageStatuses(int conversationId) async {
-    print("[WebSocketService] 🔍 syncMessageStatuses CALLED for conversation $conversationId");
+
+    if (_lastStatusSyncTime != null &&
+        DateTime.now().difference(_lastStatusSyncTime!) < _statusSyncDebounce) {
+      return;
+    }
+
+    _lastStatusSyncTime = DateTime.now();
+
     try {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) {
-        print("[WebSocketService] ❌ No current user for status sync");
         return;
       }
 
-      print("[WebSocketService] ✅ User authenticated: ${currentUser.uid}");
-      print("[WebSocketService] Syncing message statuses for conversation $conversationId");
-
       final dbService = DatabaseService.instance;
       final messages = await dbService.getMessages(conversationId);
-
-      final myMessages = messages.where((msg) => msg.senderUid == currentUser.uid).toList();
-      print("[WebSocketService] 🔍 Found ${myMessages.length} messages from current user:");
-      for (final msg in myMessages) {
-        print("[WebSocketService]   Message ID: ${msg.id}, Status: ${msg.status}, Content: '${msg.content}'");
-      }
 
       final sentMessages = messages.where((msg) =>
       msg.senderUid == currentUser.uid &&
           msg.status == MessageStatus.sent
       ).toList();
 
-      print("[WebSocketService] 🔍 Messages needing status sync: ${sentMessages.length}");
-
       if (sentMessages.isEmpty) {
-        print("[WebSocketService] No sent messages needing status sync");
         return;
       }
 
@@ -444,20 +456,16 @@ class WebSocketService with ChangeNotifier {
         };
 
         await sendMessageReliably(statusMessage);
-        print("[WebSocketService] Requested status for message ${message.id}");
       }
 
-      print("[WebSocketService] Requested status updates for ${sentMessages.length} messages");
-
     } catch (e) {
-      print("[WebSocketService] Error syncing message statuses: $e");
+      // print("[WebSocketService] Error syncing message statuses: $e");
     }
   }
 
   void _initializeSentMessageListener() {
     _sentMessageSubscription?.cancel();
     _sentMessageSubscription = SentMessageService.sentMessageStream.listen((message) {
-      print("[WebSocketService] Received local sent message: ${message.content}");
       _handleLocalSentMessage(message);
     });
   }
@@ -472,40 +480,35 @@ class WebSocketService with ChangeNotifier {
         'conversation_id': sentMessage.conversationId,
       });
 
-      print("[WebSocketService] Broadcasted local sent message to UI");
-
     } catch (e) {
-      print("[WebSocketService] Error handling local sent message: $e");
+      // print("[WebSocketService] Error handling local sent message: $e");
     }
   }
 
   void _handleIncomingMessage(dynamic rawMessage) {
     try {
-      print("[WebSocketService] === RAW INCOMING MESSAGE ===");
-      print("[WebSocketService] Raw: $rawMessage");
-
       final messageData = jsonDecode(rawMessage.toString());
       final messageType = messageData['type'] ?? '';
 
-      print("[WebSocketService] PARSED MESSAGE TYPE: $messageType");
-      print("[WebSocketService] Full parsed data: $messageData");
+      // DEBUG: Log all incoming messages
+      // print("[WebSocketService] 📥 Incoming message - Type: $messageType, Data: $messageData");
 
       switch (messageType) {
         case 'pong':
           _handlePong();
           break;
         case 'new_message':
-          print("[WebSocketService] *** PROCESSING NEW MESSAGE ***");
           _handleNewMessage(messageData);
           break;
         case 'message_status':
-          print("[WebSocketService] Message status update: $messageData");
           _handleMessageStatus(messageData);
           break;
-        case 'message_deleted':  // ADD THIS CASE
-          print("[WebSocketService] Message deletion: $messageData");
-          _handleMessageDeletion(messageData);
-          break;    
+        case 'message_deleted':
+          _handleMessageDeletion(messageData); // Fire and forget - async processing
+          break;
+        case 'attachment_uploaded':
+          _handleAttachmentUploaded(messageData);
+          break;
         case 'message_ack':
         // Server acknowledges message receipt
           final ackMessageId = messageData['message_id']?.toString();
@@ -516,37 +519,99 @@ class WebSocketService with ChangeNotifier {
         case 'typing':
           _handleTypingIndicator(messageData);
           break;
+        case 'presence_status':
+          _handlePresenceStatus(messageData);
+          break;
+        case 'conversation_update':
+          _handleConversationUpdate(messageData);
+          break;
+        case 'group_deleted':
+          _handleGroupDeleted(messageData);
+          break;
+        case 'call_offer':
+        case 'call_answer':
+        case 'ice_candidate':
+        case 'call_rejected':
+        case 'call_ended':
+        case 'call_failed':
+          // Route call signals to global call manager
+          _handleCallSignaling(messageData);
+          // Also forward to stream for backward compatibility (chat_screen)
+          _streamController.add(messageData);
+          break;
         default:
-          print("[WebSocketService] Unknown message type: $messageType");
-          print("[WebSocketService] Unknown message data: $messageData");
+          // print("[WebSocketService] Unknown message type: $messageType");
       }
     } catch (e, st) {
-      print("[WebSocketService] Error handling message: $e\n$st");
+      // print("[WebSocketService] Error handling message: $e");
     }
   }
 
-  void _handleMessageDeletion(Map<String, dynamic> deletionData) {
-  _streamController.add({
-    'type': 'message_deleted',
-    'message_id': deletionData['message_id'],
-    'deletion_type': deletionData['deletion_type'],
-    'conversation_id': deletionData['conversation_id'],
-  });
-}
+  Future<void> _handleMessageDeletion(Map<String, dynamic> deletionData) async {
+    try {
+      final messageId = deletionData['message_id'] as int?;
+      final deletionType = deletionData['deletion_type'] as String?;
+      final conversationId = deletionData['conversation_id'] as int?;
+
+      if (messageId == null || deletionType == null || conversationId == null) {
+        // print('[WebSocketService] Invalid deletion data: $deletionData');
+        return;
+      }
+
+      final dbService = DatabaseService.instance;
+
+      // Update local database immediately
+      if (deletionType == 'delete_for_everyone') {
+        await dbService.markMessageAsDeletedForEveryone(messageId);
+        // print('[WebSocketService] ✅ Marked message $messageId as deleted for everyone in local DB');
+      } else if (deletionType == 'delete_for_me') {
+        await dbService.markMessageAsDeletedForMe(messageId);
+        // print('[WebSocketService] ✅ Marked message $messageId as deleted for me in local DB');
+      }
+
+      // Also notify UI via stream (for real-time updates if chat is open)
+      _streamController.add({
+        'type': 'message_deleted',
+        'message_id': messageId,
+        'deletion_type': deletionType,
+        'conversation_id': conversationId,
+      });
+
+    } catch (e) {
+      // print('[WebSocketService] Error handling message deletion: $e');
+    }
+  }
+
+  void _handleAttachmentUploaded(Map<String, dynamic> attachmentData) {
+    // print('[WebSocketService] Attachment uploaded notification: $attachmentData');
+
+    // Forward ALL data to UI via stream (including encryption metadata!)
+    _streamController.add(attachmentData);
+  }
+
+  final Set<int> _processedMessageIds = {};
+
+  // ✅ PERFORMANCE FIX: Track recently processed status updates to prevent duplicates
+  final Map<String, DateTime> _recentStatusUpdates = {}; // "messageId_status" -> timestamp
 
   Future<void> _handleNewMessage(Map<String, dynamic> messageData) async {
     try {
-      print("[WebSocketService] Processing new message...");
-
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) {
-        print("[WebSocketService] No authenticated user, ignoring message");
         return;
       }
 
       final messageId = messageData['message_id'] is int
           ? messageData['message_id'] as int
           : int.tryParse(messageData['message_id']?.toString() ?? '') ?? -1;
+
+      // Skip if already processed
+      if (_processedMessageIds.contains(messageId)) {
+        // print('[DEBUG] Message $messageId already processed, skipping');
+        return;
+      }
+      _processedMessageIds.add(messageId);
+
       final conversationId = messageData['conversation_id'] is int
           ? messageData['conversation_id'] as int
           : int.tryParse(messageData['conversation_id']?.toString() ?? '') ?? -1;
@@ -555,48 +620,180 @@ class WebSocketService with ChangeNotifier {
       final contentB64 = messageData['content_b64'] as String?;
       final createdAt = messageData['created_at'] as String?;
       final senderUsername = messageData['sender_username'] as String? ?? 'Unknown';
+      final messageType = messageData['message_type'] as String? ?? 'chat';
+      final isGroup = messageData['is_group'] as bool? ?? false;
+
+      // print('[WebSocketService] DEBUG: Received message - conversationId: $conversationId, isGroup: $isGroup');
+
+      // Extract attachment metadata
+      final attachmentId = messageData['attachment_id'] as int?;
+      final attachmentType = messageData['attachment_type'] as String?;
+      final hasAttachment = (messageData['has_attachment'] as int?) == 1 || attachmentId != null;
+
+      if (attachmentId != null) {
+        // print('[WebSocketService] Message has attachment: id=$attachmentId, type=$attachmentType');
+      }
 
       if (messageId <= 0 || conversationId <= 0 || senderUid == null || contentB64 == null) {
-        print("[WebSocketService] Missing required message fields");
         return;
       }
 
-      if (senderUid == currentUser.uid) {
-        print("[WebSocketService] Ignoring own message");
-        return;
+      if (senderUid == currentUser.uid && messageData['from_offline_queue'] != true) {
+        return; // Only skip if not from offline queue
       }
-
-      print("[WebSocketService] Decrypting message from $senderUid...");
 
       String decryptedContent;
-      try {
-        print("[WebSocketService] Attempting Signal Protocol decryption...");
-        final result = await _signalChannel.invokeMethod('decryptMessage', {
-          'myUid': currentUser.uid,
-          'senderUid': senderUid,
-          'ciphertextB64': contentB64,
-          'senderDeviceId': senderDeviceId,
-        });
 
-        if (result == null) {
-          print("[WebSocketService] Decryption returned null");
-          throw Exception('Decryption returned null');
-        }
-
-        decryptedContent = result as String;
-        print("[WebSocketService] ✅ Signal decryption successful: '$decryptedContent'");
-      } catch (e) {
-        print("[WebSocketService] ❌ Signal decryption failed: $e");
-
+      // IMPORTANT: Check if this is a quick reply message BEFORE attempting decryption
+      // Quick replies are encrypted for recipient, so we need to get plaintext from local storage
+      bool isQuickReply = false;
+      if (senderUid == currentUser.uid && messageData['from_offline_queue'] == true) {
         try {
-          final base64Decoded = utf8.decode(base64Decode(contentB64));
-          print("[WebSocketService] Base64 decode result: '$base64Decoded'");
-          decryptedContent = base64Decoded;
-          print("[WebSocketService] ✅ Using base64 decoded content");
-        } catch (e2) {
-          print("[WebSocketService] ❌ Base64 decode also failed: $e2");
-          print("[WebSocketService] Saving encrypted content as-is for debugging");
-          decryptedContent = "ENCRYPTED: $contentB64";
+          final result = await _signalChannel.invokeMethod('getLocalSentMessage', {
+            'messageId': messageId,
+          });
+          if (result != null) {
+            isQuickReply = true;
+            decryptedContent = result as String;
+            // print("[WebSocketService] ✅ Retrieved quick reply message $messageId from local storage");
+
+            // Save to database and skip decryption
+            await _saveMessageToDatabase(
+              messageId: messageId,
+              conversationId: conversationId,
+              senderUid: senderUid,
+              username: senderUsername,
+              content: decryptedContent,
+              createdAt: createdAt ?? DateTime.now().toUtc().toIso8601String(),
+              attachmentId: attachmentId,
+              attachmentType: attachmentType,
+              hasAttachment: hasAttachment,
+            );
+
+            _streamController.add({
+              'type': 'local_message_saved',
+              'message_id': messageId,
+              'conversation_id': conversationId,
+            });
+
+            await _markMessageAsDelivered(messageId, conversationId);
+            return; // Done processing quick reply
+          }
+        } catch (e) {
+          // print("[WebSocketService] Error retrieving quick reply: $e");
+        }
+      }
+
+      // Check if message is deleted - skip decryption
+      if (messageType == 'deleted') {
+        try {
+          decryptedContent = utf8.decode(base64Decode(contentB64));
+          // print("[WebSocketService] ✅ Deleted message, skipped decryption");
+        } catch (e) {
+          decryptedContent = "This message was deleted";
+        }
+      } else if (isGroup) {
+        // GROUP MESSAGE DECRYPTION - Use Sender Keys
+        try {
+          // print("[WebSocketService] 🔐 Decrypting group message from $senderUid:$senderDeviceId");
+
+          final groupDecrypted = await GroupEncryptionService.decryptGroupMessage(
+            senderUid: senderUid,
+            senderDeviceId: senderDeviceId,
+            groupId: conversationId.toString(),
+            ciphertext: contentB64,
+          );
+
+          if (groupDecrypted == null) {
+            throw Exception('Group decryption returned null');
+          }
+
+          decryptedContent = groupDecrypted;
+          // print("[WebSocketService] ✅ Group message decrypted successfully");
+
+        } catch (e) {
+          // print("[WebSocketService] ❌ Group decryption failed: $e");
+          // print("[WebSocketService] 🔄 Attempting to fetch missing sender key...");
+
+          // Try to fetch and process sender keys for this group
+          try {
+            final keysFetched = await GroupEncryptionService.fetchAndProcessGroupSenderKeys(
+              groupId: conversationId.toString(),
+            );
+
+            if (keysFetched) {
+              // print("[WebSocketService] ✅ Fetched sender keys, retrying decryption...");
+
+              // Retry decryption
+              final retryDecrypted = await GroupEncryptionService.decryptGroupMessage(
+                senderUid: senderUid,
+                senderDeviceId: senderDeviceId,
+                groupId: conversationId.toString(),
+                ciphertext: contentB64,
+              );
+
+              if (retryDecrypted != null) {
+                decryptedContent = retryDecrypted;
+                // print("[WebSocketService] ✅ Group message decrypted after fetching keys");
+              } else {
+                throw Exception('Decryption still failed after fetching keys');
+              }
+            } else {
+              throw Exception('Failed to fetch sender keys');
+            }
+          } catch (retryError) {
+            // print("[WebSocketService] ❌ Retry decryption failed: $retryError");
+            // SECURITY: Do NOT fallback to plaintext!
+            // This group message cannot be decrypted - skip saving it (don't clutter UI)
+            // print("[WebSocketService] ⚠️ Group message cannot be decrypted - skipping save to keep UI clean");
+            return; // Skip saving undecryptable group messages
+          }
+        }
+      } else {
+        // 1-ON-1 MESSAGE DECRYPTION - Use Signal Protocol
+        try {
+          final result = await _signalChannel.invokeMethod('decryptMessage', {
+            'myUid': currentUser.uid,
+            'senderUid': senderUid,
+            'ciphertextB64': contentB64,
+            'senderDeviceId': senderDeviceId,
+          });
+
+          if (result == null) {
+            throw Exception('Decryption returned null');
+          }
+
+          decryptedContent = result as String;
+          // print("[WebSocketService] ✅ Signal decryption successful");
+
+          // Add threshold check after successful decryption
+          final currentUserDeviceId = await SignalService.getDeviceId();
+          if (currentUserDeviceId != null) {
+            await KeyRotationService.checkThresholdAfterKeyConsumption(
+              currentUserUid: currentUser.uid,
+              deviceId: currentUserDeviceId,
+            );
+          }
+
+        } catch (e) {
+          // print("[WebSocketService] ❌ Signal decryption failed: $e");
+
+          // CRITICAL: Reset stale session to force re-establishment
+          // This handles the case when sender reinstalled with new keys
+          try {
+            await SignalService.resetSessionDueToDecryptionFailure(
+              senderUid: senderUid,
+              senderDeviceId: senderDeviceId,
+            );
+            // print("[WebSocketService] 🔄 Stale session reset - will re-establish on next message");
+          } catch (resetError) {
+            // print("[WebSocketService] ⚠️ Session reset failed: $resetError");
+          }
+
+          // SECURITY: Do NOT fallback to plaintext!
+          // This message cannot be decrypted - skip saving it (don't clutter UI)
+          // print("[WebSocketService] ⚠️ Message cannot be decrypted - skipping save to keep UI clean");
+          return; // Skip saving undecryptable messages
         }
       }
 
@@ -606,7 +803,10 @@ class WebSocketService with ChangeNotifier {
         senderUid: senderUid,
         username: senderUsername,
         content: decryptedContent,
-        createdAt: createdAt ?? DateTime.now().toIso8601String(),
+        createdAt: createdAt ?? DateTime.now().toUtc().toIso8601String(),
+        attachmentId: attachmentId,
+        attachmentType: attachmentType,
+        hasAttachment: hasAttachment,
       );
 
       _streamController.add({
@@ -615,13 +815,10 @@ class WebSocketService with ChangeNotifier {
         'conversation_id': conversationId,
       });
 
-      print("[WebSocketService] Notified UI about new message: $messageId");
-
       await _markMessageAsDelivered(messageId, conversationId);
-      print("[WebSocketService] Message saved to database and marked as delivered");
 
     } catch (e, st) {
-      print("[WebSocketService] Error processing new message: $e\n$st");
+      // print("[WebSocketService] Error processing new message: $e");
     }
   }
 
@@ -632,15 +829,35 @@ class WebSocketService with ChangeNotifier {
     required String username,
     required String content,
     required String createdAt,
+    int? attachmentId,
+    String? attachmentType,
+    bool hasAttachment = false,
   }) async {
     try {
       final dbService = DatabaseService.instance;
+      final currentUser = FirebaseAuth.instance.currentUser;
 
       // Check if current user has deleted this message
       final isDeleted = await dbService.isMessageDeletedForMe(messageId);
       if (isDeleted) {
-        print("[WebSocketService] Skipping save - message $messageId was deleted by current user");
         return;
+      }
+
+      // NEW: Check if this is a quick reply message BEFORE creating Message object
+      bool isQuickReply = false;
+      if (currentUser != null && senderUid == currentUser.uid) {
+        try {
+          const platform = MethodChannel('com.zarq/signal');
+          final result = await platform.invokeMethod('getLocalSentMessage', {
+            'messageId': messageId,
+          });
+          isQuickReply = result != null;
+          if (isQuickReply) {
+            // print("[WebSocketService] Message $messageId is a quick reply");
+          }
+        } catch (e) {
+          // print("[WebSocketService] Error checking quick reply: $e");
+        }
       }
 
       final message = Message(
@@ -648,16 +865,20 @@ class WebSocketService with ChangeNotifier {
         conversationId: conversationId,
         username: username,
         content: content,
-        timestamp: DateTime.parse(createdAt),
+        timestamp: DateTime.parse(createdAt).toUtc(),
         senderUid: senderUid,
         status: MessageStatus.sent,
+        isQuickReply: isQuickReply,
+        attachmentId: attachmentId,
+        attachmentType: attachmentType,
+        hasAttachment: hasAttachment,
       );
+
       await dbService.insertMessage(message);
-      print("[WebSocketService] Message saved to database: ${message.content}");
 
       _notifyUIAboutNewMessage(message, conversationId);
     } catch (e, st) {
-      print("[WebSocketService] Error saving message to database: $e\n$st");
+      // print("[WebSocketService] Error saving message to database: $e");
     }
   }
 
@@ -670,21 +891,35 @@ class WebSocketService with ChangeNotifier {
   }
 
   void _handleMessageStatus(Map<String, dynamic> statusData) {
-    print("[WebSocketService] Message status update: $statusData");
-
     try {
       final messageId = statusData['message_id'] as int?;
       final newStatus = statusData['status'] as String?;
       final conversationId = statusData['conversation_id'] as int?;
 
       if (messageId != null && newStatus != null) {
+        // ✅ PERFORMANCE FIX: Check if we recently processed this exact status update
+        final statusKey = '${messageId}_$newStatus';
+        final lastUpdate = _recentStatusUpdates[statusKey];
+
+        if (lastUpdate != null && DateTime.now().difference(lastUpdate) < Duration(seconds: 5)) {
+          // print("[WebSocketService] ⏭️ Skipping duplicate status update for message $messageId ($newStatus)");
+          return;
+        }
+
+        // Track this status update
+        _recentStatusUpdates[statusKey] = DateTime.now();
+
+        // Clean up old entries (keep only last 2 minutes)
+        _recentStatusUpdates.removeWhere((key, time) =>
+          DateTime.now().difference(time) > Duration(minutes: 2)
+        );
+
         MessageStatus? status;
         try {
           status = MessageStatus.values.firstWhere(
                 (s) => s.toString().split('.').last == newStatus,
           );
         } catch (e) {
-          print("[WebSocketService] Unknown status: $newStatus");
           return;
         }
 
@@ -696,10 +931,9 @@ class WebSocketService with ChangeNotifier {
           'status': newStatus,
           'conversation_id': conversationId,
         });
-        print("[WebSocketService] Sent message_status_update event to UI for message $messageId");
       }
     } catch (e) {
-      print("[WebSocketService] Error handling status update: $e");
+      // print("[WebSocketService] Error handling status update: $e");
     }
   }
 
@@ -707,9 +941,8 @@ class WebSocketService with ChangeNotifier {
     try {
       final dbService = DatabaseService.instance;
       await dbService.updateMessageStatus(messageId, status);
-      print("[WebSocketService] Updated message $messageId status to $status");
     } catch (e) {
-      print("[WebSocketService] Error updating message status: $e");
+      // print("[WebSocketService] Error updating message status: $e");
     }
   }
 
@@ -718,8 +951,9 @@ class WebSocketService with ChangeNotifier {
     required String status,
     required int conversationId,
   }) async {
+    // print('[DEBUG] sendStatusUpdate called for message $messageId, status: $status');
+    // print('[DEBUG] Stack: ${StackTrace.current}');
     if (!_isConnected || _channel == null) {
-      print("[WebSocketService] Cannot send status update - not connected");
       return;
     }
 
@@ -732,13 +966,74 @@ class WebSocketService with ChangeNotifier {
       };
 
       await sendMessageReliably(statusMessage);
-      print("[WebSocketService] Sent status update: $statusMessage");
     } catch (e) {
-      print("[WebSocketService] Error sending status update: $e");
+      // print("[WebSocketService] Error sending status update: $e");
+    }
+  }
+
+  // Send typing indicator
+  void sendTypingIndicator({
+    required int conversationId,
+    required bool isTyping,
+  }) {
+    if (!_isConnected || _channel == null) {
+      // print("[WebSocketService] ❌ Cannot send typing - not connected (isConnected=$_isConnected, channel=${_channel != null})");
+      return;
+    }
+
+    try {
+      final typingMessage = {
+        'type': 'typing',
+        'conversation_id': conversationId,
+        'is_typing': isTyping,
+      };
+
+      _channel!.sink.add(jsonEncode(typingMessage));
+      // print("[WebSocketService] ✅ Sent typing indicator: conversationId=$conversationId, isTyping=$isTyping");
+    } catch (e) {
+      // print("[WebSocketService] ❌ Error sending typing indicator: $e");
+    }
+  }
+
+  // Query user presence status
+  void queryPresenceStatus(String targetUid) {
+    if (!_isConnected || _channel == null) {
+      return;
+    }
+
+    try {
+      final presenceQuery = {
+        'type': 'presence_query',
+        'target_uid': targetUid,
+      };
+
+      _channel!.sink.add(jsonEncode(presenceQuery));
+      // print("[WebSocketService] Queried presence for $targetUid");
+    } catch (e) {
+      // print("[WebSocketService] Error querying presence: $e");
     }
   }
 
   Future<void> _markMessageAsDelivered(int messageId, int conversationId) async {
+    // Check if we already marked this message as delivered recently
+    final prefs = await SharedPreferences.getInstance();
+    final deliveredKey = 'delivered_$messageId';
+    final lastDeliveredTimestamp = prefs.getInt(deliveredKey);
+
+    if (lastDeliveredTimestamp != null) {
+      final lastDelivered = DateTime.fromMillisecondsSinceEpoch(lastDeliveredTimestamp);
+      if (DateTime.now().difference(lastDelivered) < Duration(hours: 1)) {
+        // print('[DEBUG] Skipping delivered status for message $messageId - already sent recently');
+        return;
+      }
+    }
+
+    // Mark as delivered
+    await prefs.setInt(deliveredKey, DateTime.now().millisecondsSinceEpoch);
+
+    // ✅ FIX: Update local database before sending to backend
+    await DatabaseService.instance.updateMessageStatus(messageId, MessageStatus.delivered);
+
     await sendStatusUpdate(
       messageId: messageId,
       status: 'delivered',
@@ -749,7 +1044,6 @@ class WebSocketService with ChangeNotifier {
   Future<void> markMessagesAsRead(int conversationId) async {
     try {
       final dbService = DatabaseService.instance;
-
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return;
 
@@ -759,7 +1053,27 @@ class WebSocketService with ChangeNotifier {
           (msg.status == MessageStatus.sent || msg.status == MessageStatus.delivered)
       ).toList();
 
+      if (unreadMessages.isEmpty) return;
+
+      final prefs = await SharedPreferences.getInstance();
+      final now = DateTime.now();
+
       for (final message in unreadMessages) {
+        // Check persistent debounce
+        final lastReadKey = 'last_read_${message.id}';
+        final lastReadTimestamp = prefs.getInt(lastReadKey);
+
+        if (lastReadTimestamp != null) {
+          final lastRead = DateTime.fromMillisecondsSinceEpoch(lastReadTimestamp);
+          if (now.difference(lastRead) < _markReadDebounce) {
+            // print('[DEBUG] Skipping message ${message.id} - already marked read recently');
+            continue;
+          }
+        }
+
+        // Store timestamp
+        await prefs.setInt(lastReadKey, now.millisecondsSinceEpoch);
+
         await dbService.updateMessageStatus(message.id, MessageStatus.read);
 
         await sendStatusUpdate(
@@ -769,22 +1083,276 @@ class WebSocketService with ChangeNotifier {
         );
       }
 
-      if (unreadMessages.isNotEmpty) {
-        print("[WebSocketService] Marked ${unreadMessages.length} messages as read");
-      }
+      // print("[WebSocketService] Marked ${unreadMessages.length} messages as read");
     } catch (e) {
-      print("[WebSocketService] Error marking messages as read: $e");
+      // print("[WebSocketService] Error marking messages as read: $e");
+    }
+  }
+
+  Future<void> _handleCallSignaling(Map<String, dynamic> messageData) async {
+    if (_globalCallManager == null) {
+      // print('[WebSocketService] ❌ GlobalCallManager not set, ignoring call signal');
+      return;
+    }
+
+    final type = messageData['type'] as String;
+    // print('[WebSocketService] 📞 Handling call signal: $type');
+    // print('[WebSocketService] 📞 Full message data: $messageData');
+
+    switch (type) {
+      case 'call_offer':
+        final callerUid = messageData['sender_uid'] as String?;
+        final callerName = messageData['sender_username'] as String?;
+        final callTypeStr = messageData['callType'] as String?;
+        var sdp = messageData['sdp'] as String?;
+        final conversationId = messageData['conversation_id'] as int?;
+        final avatarUrl = messageData['avatar_url'] as String?;
+        final encrypted = messageData['encrypted'] as bool?;
+        final senderDeviceId = messageData['sender_device_id'] as int?;
+
+        // print('[WebSocketService] 📞 call_offer details:');
+        // print('  - callerUid: $callerUid');
+        // print('  - callerName: $callerName');
+        // print('  - callType: $callTypeStr');
+        // print('  - conversationId: $conversationId');
+        // print('  - encrypted: $encrypted');
+        // print('  - sdp length: ${sdp?.length}');
+
+        // Decrypt SDP if encrypted
+        if (encrypted == true && sdp != null && callerUid != null) {
+          // print('[WebSocketService] 🔓 Decrypting call_offer SDP...');
+          final decryptedSdp = await SignalService.decryptMessage(
+            senderUid: callerUid,
+            ciphertextB64: sdp,
+            deviceId: senderDeviceId ?? 1,
+          );
+          if (decryptedSdp != null) {
+            sdp = decryptedSdp;
+            // print('[WebSocketService] ✅ Successfully decrypted call_offer SDP');
+          } else {
+            // print('[WebSocketService] ⚠️ Failed to decrypt SDP');
+          }
+        }
+
+        if (callerUid != null && callerName != null && callTypeStr != null && sdp != null && conversationId != null) {
+          final callType = callTypeStr == 'video' ? CallType.video : CallType.voice;
+
+          // Check if this is a renegotiation (offer during active call)
+          final isInCall = _globalCallManager!.isInCall;
+          final activeCallUid = _globalCallManager!.activeCall?.callerUid;
+          final isRenegotiation = isInCall && activeCallUid == callerUid;
+
+          if (isRenegotiation) {
+            // This is a renegotiation (e.g., screen sharing in voice call)
+            // print('[WebSocketService] 🔄 Received renegotiation offer from $callerName (screen share?)');
+            await _globalCallManager!.handleRenegotiationOffer(sdp);
+            // print('[WebSocketService] ✅ Renegotiation handled');
+          } else {
+            // This is a new incoming call
+            // print('[WebSocketService] ✅ All required fields present, calling setIncomingCall');
+
+            final callInfo = CallInfo(
+              callerUid: callerUid,
+              callerName: callerName,
+              callType: callType,
+              sdp: sdp,
+              conversationId: conversationId,
+              avatarUrl: avatarUrl,
+            );
+
+            // Check if we should auto-answer this call (from notification)
+            final shouldAutoAnswer = NavigationHandler.shouldAutoAnswer(callerUid);
+
+            if (shouldAutoAnswer) {
+              // print('[WebSocketService] 🎯 Auto-answering call from notification - skipping incoming call dialog!');
+              // print('[WebSocketService] 🎯 Setting incoming call and immediately accepting...');
+
+              // Set the incoming call (required for acceptance)
+              _globalCallManager!.setIncomingCall(callInfo);
+
+              // Immediately accept without showing dialog
+              Future.delayed(const Duration(milliseconds: 300), () async {
+                // print('[WebSocketService] 🎯 Executing auto-accept now...');
+                await _globalCallManager!.acceptIncomingCall();
+                // print('[WebSocketService] ✅ Auto-accept completed!');
+              });
+            } else {
+              // Normal flow - show incoming call dialog
+              // print('[WebSocketService] ✅ Showing incoming call dialog for $callerName');
+              _globalCallManager!.setIncomingCall(callInfo);
+            }
+
+            // print('[WebSocketService] ✅ Incoming ${callType.name} call from $callerName (autoAnswer: $shouldAutoAnswer)');
+          }
+        } else {
+          // print('[WebSocketService] ❌ Missing required fields for call_offer');
+        }
+        break;
+
+      case 'call_answer':
+        final sdp = messageData['sdp'] as String?;
+        final avatarUrl = messageData['avatar_url'] as String?;
+        final encrypted = messageData['encrypted'] as bool?;
+        final senderUid = messageData['sender_uid'] as String?;
+        final senderDeviceId = messageData['sender_device_id'] as int?;
+
+        if (sdp != null) {
+          _globalCallManager!.handleCallAnswer(
+            sdp,
+            avatarUrl: avatarUrl,
+            encrypted: encrypted,
+            senderUid: senderUid,
+            senderDeviceId: senderDeviceId,
+          );
+          // print('[WebSocketService] Received call answer (encrypted: $encrypted)');
+        }
+        break;
+
+      case 'ice_candidate':
+        _globalCallManager!.handleIceCandidate(messageData);
+        // print('[WebSocketService] Received ICE candidate');
+        break;
+
+      case 'call_rejected':
+        _globalCallManager!.handleCallRejected();
+        // print('[WebSocketService] Call was rejected');
+        break;
+
+      case 'call_ended':
+        _globalCallManager!.handleCallEnded();
+        // print('[WebSocketService] Call ended by remote');
+        break;
+
+      case 'call_failed':
+        final reason = messageData['reason'] as String?;
+        _globalCallManager!.handleCallFailed(reason ?? 'unknown');
+        // print('[WebSocketService] Call failed: $reason');
+        break;
     }
   }
 
   void _handleTypingIndicator(Map<String, dynamic> typingData) {
-    print("[WebSocketService] Typing indicator: $typingData");
+    // print("[WebSocketService] 📨 Typing indicator received: $typingData");
+    // Forward to stream so chat_screen can handle it
+    _streamController.add(typingData);
+  }
+
+  void _handlePresenceStatus(Map<String, dynamic> presenceData) {
+    // print("[WebSocketService] 👤 Presence status received: $presenceData");
+    // Forward to stream so chat_screen can handle it
+    _streamController.add(presenceData);
+  }
+
+  void _handleConversationUpdate(Map<String, dynamic> updateData) {
+    // print("[WebSocketService] 🔄 Conversation update received: $updateData");
+
+    // Debug all fields
+    // print("[WebSocketService] 🔍 key_rotation_required: ${updateData['key_rotation_required']}");
+    // print("[WebSocketService] 🔍 conversation_id: ${updateData['conversation_id']}");
+    // print("[WebSocketService] 🔍 reason: ${updateData['reason']}");
+
+    // Check if key rotation is required
+    if (updateData['key_rotation_required'] == true) {
+      final conversationId = updateData['conversation_id'];
+      final reason = updateData['reason'] ?? 'unknown';
+      // print("[WebSocketService] 🔐 Key rotation required for conversation $conversationId (reason: $reason)");
+
+      // Trigger automatic key re-establishment
+      _handleKeyRotation(conversationId, reason);
+    } else {
+      // print("[WebSocketService] ⚠️ No key rotation required or key_rotation_required is not true");
+    }
+
+    // Forward to stream so home_screen can refresh conversations
+    _streamController.add(updateData);
+  }
+
+  Future<void> _handleKeyRotation(dynamic conversationId, String reason) async {
+    try {
+      // print("[WebSocketService] 🔄 Auto re-establishing keys for conversation $conversationId");
+
+      // Re-establish group encryption after rotation
+      final reEstablished = await GroupEncryptionService.setupGroupEncryption(
+        groupId: conversationId.toString(),
+      );
+
+      if (reEstablished) {
+        // print("[WebSocketService] ✅ Keys re-established successfully after rotation ($reason)");
+      } else {
+        // print("[WebSocketService] ⚠️ Failed to re-establish keys after rotation");
+      }
+    } catch (e) {
+      // print("[WebSocketService] ❌ Error during key rotation: $e");
+    }
+  }
+
+  void _handleGroupDeleted(Map<String, dynamic> deleteData) {
+    // print("[WebSocketService] 🗑️ Group deleted: $deleteData");
+    // Forward to stream so home_screen can remove the group
+    _streamController.add(deleteData);
+  }
+
+  // ✅ CONNECTIVITY MONITORING
+  void _startConnectivityMonitoring() {
+    _stopConnectivityMonitoring();
+
+    // print("[WebSocketService] 📡 Starting connectivity monitoring");
+
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen(
+      _onConnectivityChanged,
+      onError: (error) {
+        // print("[WebSocketService] ❌ Connectivity monitoring error: $error");
+      },
+    );
+  }
+
+  void _stopConnectivityMonitoring() {
+    _connectivitySubscription?.cancel();
+    _connectivitySubscription = null;
+  }
+
+  Future<void> _onConnectivityChanged(List<ConnectivityResult> results) async {
+    final hasConnection = results.any((result) =>
+        result == ConnectivityResult.wifi ||
+        result == ConnectivityResult.mobile ||
+        result == ConnectivityResult.ethernet);
+
+    // print("[WebSocketService] 📡 Connectivity changed: $results (hasConnection: $hasConnection)");
+
+    if (!hasConnection) {
+      // Lost network connection
+      // print("[WebSocketService] ⚠️ Network connection lost");
+      _wasDisconnectedDueToNetwork = true;
+
+      // If currently connected, the connection will naturally fail and trigger _handleDisconnection
+      // No need to manually disconnect here
+
+    } else if (_wasDisconnectedDueToNetwork && !_isConnected) {
+      // Network came back and we were previously disconnected due to network
+      // print("[WebSocketService] ✅ Network connection restored - triggering immediate reconnection");
+      _wasDisconnectedDueToNetwork = false;
+
+      // Reset reconnect attempts for fresh start
+      _reconnectAttempts = 0;
+
+      // Get fresh token and reconnect immediately
+      try {
+        final user = FirebaseAuth.instance.currentUser;
+        if (user != null) {
+          final freshToken = await user.getIdToken(true);
+          // print("[WebSocketService] 🔄 Reconnecting with fresh token after network restoration");
+          await connect(freshToken);
+        }
+      } catch (e) {
+        // print("[WebSocketService] ❌ Failed to reconnect after network restoration: $e");
+      }
+    }
   }
 
   void _handleDisconnection() {
     if (!_isConnected && !_isReconnecting) return;
 
-    print("[WebSocketService] ⚠️ DISCONNECTION DETECTED ⚠️ at ${DateTime.now()}");
+    // print("[WebSocketService] ⚠️ DISCONNECTION DETECTED ⚠️");
     _isConnected = false;
     _isReconnecting = false;
 
@@ -802,36 +1370,53 @@ class WebSocketService with ChangeNotifier {
       final delays = [1, 2, 5, 10, 30];
       final delaySec = delays.length >= _reconnectAttempts ? delays[_reconnectAttempts - 1] : 30;
 
-      print("[WebSocketService] Attempting reconnect in ${delaySec}s (attempt $_reconnectAttempts/$_maxReconnectAttempts)");
+      // print("[WebSocketService] Attempting reconnect in ${delaySec}s (attempt $_reconnectAttempts/$_maxReconnectAttempts)");
 
       _reconnectTimer = Timer(Duration(seconds: delaySec), () async {
         try {
-          await connect(_lastToken);
+          // Refresh token before reconnecting (in case old token expired)
+          final user = FirebaseAuth.instance.currentUser;
+          if (user != null) {
+            final freshToken = await user.getIdToken(true); // Force refresh
+            // print("[WebSocketService] Got fresh token for reconnection");
+            await connect(freshToken);
+          } else {
+            // print("[WebSocketService] No user logged in, cannot reconnect");
+          }
         } catch (e) {
-          print("[WebSocketService] Reconnection attempt failed: $e");
+          // print("[WebSocketService] Reconnection attempt failed: $e");
         }
       });
     } else if (_reconnectAttempts >= _maxReconnectAttempts) {
-      print("[WebSocketService] Max reconnection attempts reached. Manual intervention required.");
+      // print("[WebSocketService] Max reconnection attempts reached. Manual intervention required.");
     }
   }
 
   Future<void> reconnect() async {
     _reconnectAttempts = 0;
-    if (_lastToken != null) {
-      await connect(_lastToken);
+    try {
+      // Refresh token before manual reconnect
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        final freshToken = await user.getIdToken(true); // Force refresh
+        // print("[WebSocketService] Manual reconnect with fresh token");
+        await connect(freshToken);
+      } else {
+        // print("[WebSocketService] No user logged in for manual reconnect");
+      }
+    } catch (e) {
+      // print("[WebSocketService] Manual reconnect failed: $e");
     }
   }
 
   Future<void> disconnect() async {
-    print("[WebSocketService] Disconnect() called at ${DateTime.now()} — stacktrace:\n${StackTrace.current}");
-
     _lastToken = null;
     _isReconnecting = false;
 
-    // Stop all timers
+    // Stop all timers and monitoring
     _stopHeartbeat();
     _stopQueueProcessor();
+    _stopConnectivityMonitoring();
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
 
@@ -841,7 +1426,7 @@ class WebSocketService with ChangeNotifier {
     try {
       await _channel?.sink.close(1000, 'Normal closure');
     } catch (e) {
-      print("[WebSocketService] Error closing WebSocket: $e");
+      // print("[WebSocketService] Error closing WebSocket: $e");
     }
     _channel = null;
 
@@ -855,6 +1440,7 @@ class WebSocketService with ChangeNotifier {
   void dispose() {
     _stopHeartbeat();
     _stopQueueProcessor();
+    _stopConnectivityMonitoring();
     _reconnectTimer?.cancel();
     _sentMessageSubscription?.cancel();
     disconnect();

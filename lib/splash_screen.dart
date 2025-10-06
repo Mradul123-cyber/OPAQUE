@@ -23,7 +23,7 @@ class _SplashScreenState extends State<SplashScreen> {
     final token = prefs.getString('jwt_token');
 
 // ADD THIS LINE
-  print('CHECKING FOR TOKEN... FOUND: $token');
+  // print('CHECKING FOR TOKEN... FOUND: $token');
     // Wait a moment to show the splash screen
     await Future.delayed(const Duration(seconds: 1));
 
