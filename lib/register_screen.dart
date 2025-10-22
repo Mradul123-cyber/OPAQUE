@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'dart:async';
 import 'package:zarq_messenger/starfield_background.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
+import 'screens/phone_otp_verification_screen.dart';
 
 
 class RegisterScreen extends StatefulWidget {
@@ -30,7 +31,7 @@ class RegisterScreen extends StatefulWidget {
 class _RegisterScreenState extends State<RegisterScreen> {
   bool _isLoading = false;
   // Define the backend URL once to avoid repetition and potential typos.
-  final String backendBaseUrl = 'http://192.168.29.81:8080';
+  final String backendBaseUrl = 'https://api.zarqmessenger.com';
 
   // Phone number with country code (e.g., +919876543210)
   String _completePhoneNumber = '';
@@ -179,7 +180,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
     });
   }
 
-  Future<void> _completeRegistration() async {
+  // Navigate to Phone OTP Verification
+  void _proceedToOTPVerification() {
     if (_completePhoneNumber.isEmpty || !_isPhoneValid) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please enter a valid phone number.'), backgroundColor: Colors.red),
@@ -187,7 +189,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return;
     }
 
-    // ✅ FIX: Validate username for Google users
+    // ✅ Validate username for Google users
     if (_isGoogleSignIn() && (_isUsernameAvailable != true || _usernameController.text.trim().isEmpty)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please choose an available username.'), backgroundColor: Colors.red),
@@ -195,6 +197,27 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return;
     }
 
+    // Navigate to OTP verification screen
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PhoneOtpVerificationScreen(
+          phoneNumber: _completePhoneNumber,
+          user: widget.user,
+          displayName: widget.displayName,
+          avatarUrl: widget.avatarUrl,
+          username: widget.username,
+          onVerified: () {
+            // After OTP is verified, complete registration
+            Navigator.pop(context); // Pop OTP screen
+            _completeRegistration();
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _completeRegistration() async {
     setState(() { _isLoading = true; });
     // print("[RegisterFlow] Starting registration completion for new user: ${widget.user.uid}");
 
@@ -617,14 +640,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           const Center(child: CircularProgressIndicator())
                         else
                           ElevatedButton(
-                            onPressed: _completeRegistration,
+                            onPressed: _proceedToOTPVerification,
                             style: ElevatedButton.styleFrom(
                               padding: EdgeInsets.symmetric(
                                 vertical: textFieldVerticalPadding.clamp(12.0, 18.0),
                               ),
                             ),
                             child: Text(
-                              'Complete Registration',
+                              'Verify Phone & Continue',
                               style: TextStyle(fontSize: subtitleFontSize.clamp(14.0, 18.0)),
                             ),
                           ),

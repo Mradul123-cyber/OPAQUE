@@ -26,6 +26,17 @@
     native <methods>;
 }
 
+# ===== SQLCIPHER PROTECTION =====
+# Keep SQLCipher classes and native methods
+-keep class net.sqlcipher.** { *; }
+-keep class net.sqlcipher.database.** { *; }
+-dontwarn net.sqlcipher.**
+
+# Keep all SQLCipher native methods
+-keepclasseswithmembernames class net.sqlcipher.** {
+    native <methods>;
+}
+
 # ===== ROOM DATABASE PROTECTION =====
 # (Room not added yet - will add these rules when we implement Room later)
 # -keep class * extends androidx.room.RoomDatabase
@@ -72,3 +83,53 @@
 # Ignore missing Play Core classes
 -dontwarn com.google.android.play.core.**
 -keep class com.google.android.play.core.** { *; }
+
+# ===== RAZORPAY PAYMENT GATEWAY PROTECTION =====
+# Official Razorpay Android SDK ProGuard rules
+# Reference: https://razorpay.com/docs/payments/payment-gateway/android-integration/
+
+# Keep all Razorpay classes
+-keep class com.razorpay.** { *; }
+-dontwarn com.razorpay.**
+
+# Keep JavaScript interface methods
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+
+# Keep JavaScript interface attribute
+-keepattributes JavascriptInterface
+
+# Prevent inlining of methods (required for Razorpay)
+-optimizations !method/inlining/*
+
+# Keep payment callback methods
+-keepclasseswithmembers class * {
+    public void onPayment*(...);
+}
+
+# Keep our payment handler and callback interface
+-keep class com.zarq.messenger.RazorpayPaymentHandler { *; }
+-keep class com.zarq.messenger.RazorpayPaymentHandler$** { *; }
+
+# Keep MainActivity payment listener implementation
+-keep class com.zarq.messenger.MainActivity {
+    public void onPaymentSuccess(...);
+    public void onPaymentError(...);
+}
+
+# ===== WORKMANAGER PLUGIN PROTECTION =====
+# Keep workmanager plugin classes for background tasks
+-keep class be.tramckrijte.workmanager.** { *; }
+-keep class androidx.work.** { *; }
+-dontwarn be.tramckrijte.workmanager.**
+-dontwarn androidx.work.**
+
+# Keep our custom alarm receiver and workers
+-keep class com.zarq.messenger.AutoBackupAlarmReceiver { *; }
+-keep class com.zarq.messenger.BackupNotificationHelper { *; }
+
+# Keep WorkManager ListenableWorker implementations
+-keep class * extends androidx.work.ListenableWorker {
+    public <init>(...);
+}

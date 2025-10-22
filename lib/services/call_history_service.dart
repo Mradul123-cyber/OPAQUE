@@ -85,7 +85,7 @@ class CallLogModel {
 }
 
 class CallHistoryService {
-  static const String baseUrl = 'http://192.168.29.81:8080'; // Update with your server URL
+  static const String baseUrl = 'https://api.zarqmessenger.com'; // Update with your server URL
 
   static Future<List<CallLogModel>> getCallHistory({int limit = 50}) async {
     try {

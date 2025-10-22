@@ -5,7 +5,7 @@ import 'SignalService.dart';
 import 'device_service.dart';
 
 class GroupEncryptionService {
-  static const String baseUrl = 'http://192.168.29.81:8080';
+  static const String baseUrl = 'https://api.zarqmessenger.com';
 
   /// Distribute your sender key to the group
   /// Call this when:

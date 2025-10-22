@@ -105,14 +105,18 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer> {
         ? _currentPosition.inMilliseconds / _totalDuration.inMilliseconds
         : 0.0;
 
-    return Container(
-      constraints: const BoxConstraints(maxWidth: 280),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: widget.isSentByMe ? Colors.blue[700] : Colors.grey[800],
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          constraints: const BoxConstraints(maxWidth: 280),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: widget.isSentByMe ? Colors.blue[700] : Colors.grey[800],
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           // Play/Pause button
@@ -190,9 +194,11 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer> {
             ),
           ),
 
-          const SizedBox(width: 8),
-        ],
+            const SizedBox(width: 8),
+          ],
+        ),
       ),
+      ],
     );
   }
 }

@@ -133,7 +133,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
     try {
       final url = Uri.parse(
-          'http://192.168.29.81:8080/groups/${widget.groupId}/info');
+          'https://api.zarqmessenger.com/groups/${widget.groupId}/info');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -191,7 +191,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
     try {
       final url = Uri.parse(
-          'http://192.168.29.81:8080/groups/${widget.groupId}/members/remove');
+          'https://api.zarqmessenger.com/groups/${widget.groupId}/members/remove');
       final response = await http.post(
         url,
         headers: {
@@ -279,7 +279,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     final token = await user.getIdToken();
 
     try {
-      final url = Uri.parse('http://192.168.29.81:8080/friends/list');
+      final url = Uri.parse('https://api.zarqmessenger.com/friends/list');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -344,7 +344,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
     try {
       final url = Uri.parse(
-          'http://192.168.29.81:8080/groups/${widget.groupId}/members/add');
+          'https://api.zarqmessenger.com/groups/${widget.groupId}/members/add');
       final response = await http.post(
         url,
         headers: {
@@ -394,7 +394,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
     try {
       final url = Uri.parse(
-          'http://192.168.29.81:8080/groups/${widget.groupId}/members/role');
+          'https://api.zarqmessenger.com/groups/${widget.groupId}/members/role');
       final response = await http.post(
         url,
         headers: {
@@ -534,7 +534,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
     try {
       final token = await user.getIdToken();
-      final url = Uri.parse('http://192.168.29.81:8080/groups/${widget.groupId}/leave');
+      final url = Uri.parse('https://api.zarqmessenger.com/groups/${widget.groupId}/leave');
       final response = await http.post(
         url,
         headers: {
@@ -611,7 +611,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
     try {
       final token = await user.getIdToken();
-      final url = Uri.parse('http://192.168.29.81:8080/groups/${widget.groupId}/delete');
+      final url = Uri.parse('https://api.zarqmessenger.com/groups/${widget.groupId}/delete');
       final response = await http.post(
         url,
         headers: {
@@ -713,7 +713,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
     try {
       final token = await user.getIdToken();
-      final url = Uri.parse('http://192.168.29.81:8080/groups/${widget.groupId}/update');
+      final url = Uri.parse('https://api.zarqmessenger.com/groups/${widget.groupId}/update');
 
       final response = await http.post(
         url,
@@ -815,7 +815,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       // Update group avatar via backend API
       final token = await user.getIdToken();
       final updateUrl = Uri.parse(
-          'http://192.168.29.81:8080/groups/${widget.groupId}/avatar');
+          'https://api.zarqmessenger.com/groups/${widget.groupId}/avatar');
       final updateResponse = await http.post(
         updateUrl,
         headers: {
@@ -1036,7 +1036,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     if (user == null) return;
 
     final token = await user.getIdToken();
-    final url = Uri.parse('http://192.168.29.81:8080/friends/request');
+    final url = Uri.parse('https://api.zarqmessenger.com/friends/request');
 
     try {
       final response = await http.post(
@@ -1100,7 +1100,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       // Start or get conversation
       final token = await user.getIdToken();
       final response = await http.post(
-        Uri.parse('http://192.168.29.81:8080/conversations/start'),
+        Uri.parse('https://api.zarqmessenger.com/conversations/start'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',

@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:zarq_messenger/screens/call_history_screen.dart';
 import 'package:zarq_messenger/screens/customization_screen.dart';
 import 'package:zarq_messenger/services/SignalService.dart';
@@ -24,14 +25,13 @@ import 'login_screen.dart';
 import 'setting_screen.dart';
 import 'find_friends_screen.dart';
 import 'chat_screen.dart';
-import 'home_background.dart';
-import 'default_home_background.dart';
-import 'dark_home_background.dart';
-import 'vibrant_home_background.dart';
 import 'create_group_screen.dart';
 import 'widgets/call_aware_screen.dart';
 import 'services/overlay_permission_helper.dart';
 import 'about_screen.dart';
+import 'screens/ai_chat_screen.dart';
+// import 'screens/tasks_screen.dart';
+// import 'screens/moments_main_screen.dart';
 
 class ConversationInfo {
   final int conversationId;
@@ -41,6 +41,8 @@ class ConversationInfo {
   final String? avatarUrl;
   final String? partnerUid;
   final bool hasUnreadMessages;
+  final DateTime? lastMessageTimestamp; // For sorting
+  final int unreadCount; // Number of unread messages
 
   ConversationInfo({
     required this.conversationId,
@@ -50,6 +52,8 @@ class ConversationInfo {
     this.avatarUrl,
     this.partnerUid,
     this.hasUnreadMessages = false,
+    this.lastMessageTimestamp,
+    this.unreadCount = 0,
   });
 
 
@@ -61,6 +65,9 @@ class ConversationInfo {
       creatorUid: json['creatorUid'] as String?,
       avatarUrl: json['avatarUrl'] as String?,
       partnerUid: json['partnerUid'] as String?,
+      lastMessageTimestamp: json['lastMessageTimestamp'] != null
+          ? DateTime.parse(json['lastMessageTimestamp'] as String)
+          : null,
     );
   }
 }
@@ -92,6 +99,11 @@ class _HomeScreenState extends State<HomeScreen> {
   // Blocked users
   List<String> _blockedUsers = [];
 
+  // AI button position
+  double _aiButtonX = 0.0;
+  double _aiButtonY = 0.0;
+  bool _aiButtonPositionLoaded = false;
+
   @override
   void initState() {
     super.initState();
@@ -99,6 +111,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadBlockedUsers();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadAIButtonPosition();
       _checkPendingNavigation();
 
       // Only fetch if not already fetched by _checkPendingNavigation
@@ -162,6 +175,67 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     } catch (e) {
       // print('[HomeScreen] Error loading blocked users: $e');
+    }
+  }
+
+  /// Load AI button position from SharedPreferences
+  Future<void> _loadAIButtonPosition() async {
+    try {
+      print('[HomeScreen] Loading AI button position...');
+      final prefs = await SharedPreferences.getInstance();
+      final x = prefs.getDouble('ai_button_x');
+      final y = prefs.getDouble('ai_button_y');
+      print('[HomeScreen] Loaded position: x=$x, y=$y');
+
+      if (mounted) {
+        setState(() {
+          if (x != null && y != null) {
+            _aiButtonX = x;
+            _aiButtonY = y;
+            print('[HomeScreen] Using saved position: $_aiButtonX, $_aiButtonY');
+          } else {
+            // Set default position on first load
+            final screenWidth = MediaQuery.of(context).size.width;
+            final screenHeight = MediaQuery.of(context).size.height;
+            final bottomPadding = MediaQuery.of(context).padding.bottom;
+            final buttonSize = (screenWidth * 0.16).clamp(60.0, 72.0);
+
+            // Calculate bottom nav height: icon (22-28) + spacing (4-8) + label (10-13) + vertical padding (screenHeight * 0.012 * 2)
+            // Plus the EdgeInsets padding: top (screenHeight * 0.015) + bottom (bottomPadding + screenHeight * 0.015)
+            final navIconSize = (screenWidth * 0.06).clamp(22.0, 28.0);
+            final navLabelSize = (screenWidth * 0.028).clamp(10.0, 13.0);
+            final navSpacing = (screenHeight * 0.007).clamp(4.0, 8.0);
+            final navVerticalPadding = screenHeight * 0.012;
+            final navContainerPadding = screenHeight * 0.015;
+
+            final bottomNavHeight = navIconSize + navSpacing + navLabelSize + (navVerticalPadding * 2) + navContainerPadding + bottomPadding + navContainerPadding;
+
+            _aiButtonX = screenWidth - buttonSize - 16.0;
+            _aiButtonY = screenHeight - bottomNavHeight - buttonSize - 16.0; // 16px gap above bottom nav
+            print('[HomeScreen] Set default position: $_aiButtonX, $_aiButtonY (screen: $screenWidth x $screenHeight, bottom: $bottomPadding, bottomNavHeight: $bottomNavHeight, buttonSize: $buttonSize)');
+          }
+          _aiButtonPositionLoaded = true;
+          print('[HomeScreen] AI button position loaded: $_aiButtonPositionLoaded');
+        });
+      }
+    } catch (e) {
+      print('[HomeScreen] ERROR loading AI button position: $e');
+      if (mounted) {
+        setState(() {
+          _aiButtonPositionLoaded = true;
+        });
+      }
+    }
+  }
+
+  /// Save AI button position to SharedPreferences
+  Future<void> _saveAIButtonPosition(double x, double y) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('ai_button_x', x);
+      await prefs.setDouble('ai_button_y', y);
+    } catch (e) {
+      // print('[HomeScreen] Error saving AI button position: $e');
     }
   }
 
@@ -377,7 +451,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (user != null) {
         try {
           final token = await user.getIdToken();
-          final url = Uri.parse('http://192.168.29.81:8080/v1/fcm/token');
+          final url = Uri.parse('https://api.zarqmessenger.com/v1/fcm/token');
           await http.post(
             url,
             headers: {
@@ -510,7 +584,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (user == null) return;
     final token = await user.getIdToken();
     try {
-      final url = Uri.parse('http://192.168.29.81:8080/groups/delete/$conversationId');
+      final url = Uri.parse('https://api.zarqmessenger.com/groups/delete/$conversationId');
       final response = await http.delete(url, headers: {'Authorization': 'Bearer $token'});
       if (mounted) {
         if (response.statusCode == 200) {
@@ -536,7 +610,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (user == null) return;
     final token = await user.getIdToken();
     try {
-      final url = Uri.parse('http://192.168.29.81:8080/groups/leave/$conversationId');
+      final url = Uri.parse('https://api.zarqmessenger.com/groups/leave/$conversationId');
       final response = await http.post(url, headers: {'Authorization': 'Bearer $token'});
       if (mounted) {
         if (response.statusCode == 200) {
@@ -557,7 +631,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Widget _buildAvatar(ConversationInfo convo, {required String themeMode}) {
+  Widget _buildAvatar(ConversationInfo convo) {
     final hasImage = convo.avatarUrl != null && convo.avatarUrl!.isNotEmpty;
     final title = convo.chatTitle;
     final initial = title.isNotEmpty ? title[0].toUpperCase() : '?';
@@ -638,7 +712,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 color: Colors.green,
                 shape: BoxShape.circle,
                 border: Border.all(
-                  color: themeMode == 'light' ? const Color(0xFFF5F5F5) : Colors.white,
+                  color: const Color(0xFFF5F5F5),
                   width: 2
                 ),
               ),
@@ -648,7 +722,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  PreferredSizeWidget _buildAppBar({required String themeMode}) {
+  PreferredSizeWidget _buildAppBar({required bool isDarkTheme}) {
     final bool isCreatorOfSelectedGroup = _isGroupSelectionMode &&
         _selectedConversation != null &&
         _selectedConversation!.creatorUid == _currentUserUid;
@@ -664,29 +738,10 @@ class _HomeScreenState extends State<HomeScreen> {
     final actionIconSize = (screenWidth * 0.06).clamp(22.0, 26.0);
     final titleFontSize = (screenWidth * 0.05).clamp(18.0, 24.0);
 
-    // Adapt colors based on theme mode
-    final Color textColor;
-    final Color iconColor;
-    final Color appBarBgColor;
-
-    switch (themeMode) {
-      case 'light':
-        textColor = Colors.black87;
-        iconColor = Colors.black87;
-        appBarBgColor = Colors.white;
-        break;
-      case 'dark':
-        textColor = Colors.white;
-        iconColor = Colors.white;
-        appBarBgColor = const Color(0xFF1E1E1E);
-        break;
-      case 'space':
-      default:
-        textColor = Colors.white;
-        iconColor = Colors.white;
-        appBarBgColor = Colors.transparent; // Original transparent for space theme
-        break;
-    }
+    // Theme colors
+    final Color textColor = isDarkTheme ? Colors.white : Colors.black87;
+    final Color iconColor = isDarkTheme ? Colors.white : Colors.black87;
+    final Color appBarBgColor = isDarkTheme ? const Color(0xFF0a1128) : Colors.white;
 
     return PreferredSize(
       preferredSize: const Size.fromHeight(kToolbarHeight),
@@ -726,11 +781,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 margin: EdgeInsets.all(screenWidth * 0.02),
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: themeMode == 'light'
-                      ? const Color(0xFFF0F2F5)
-                      : (themeMode == 'dark'
-                          ? const Color(0xFF2C2C2C)
-                          : Colors.white.withOpacity(0.1)), // Original space theme
+                  color: const Color(0xFFF0F2F5),
                   border: Border.all(
                     color: Colors.black,
                     width: 2.0
@@ -768,10 +819,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: Text(
                             _displayName.isNotEmpty ? _displayName[0].toUpperCase() : '?',
                             style: TextStyle(
-                              color: themeMode == 'light' ? Colors.black87 : Colors.white,
+                              color: Colors.black87,
                               fontWeight: FontWeight.bold,
                               fontSize: userAvatarFontSize,
-                              shadows: themeMode == 'space' ? [const Shadow(blurRadius: 3.0, color: Colors.cyanAccent)] : [],
                             ),
                           ),
                         ),
@@ -782,10 +832,9 @@ class _HomeScreenState extends State<HomeScreen> {
                         child: Text(
                           _displayName.isNotEmpty ? _displayName[0].toUpperCase() : '?',
                           style: TextStyle(
-                            color: themeMode == 'light' ? Colors.black87 : Colors.white,
+                            color: Colors.black87,
                             fontWeight: FontWeight.bold,
                             fontSize: userAvatarFontSize,
-                            shadows: themeMode == 'space' ? [const Shadow(blurRadius: 3.0, color: Colors.cyanAccent)] : [],
                           ),
                         ),
                       ),
@@ -973,7 +1022,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
 
-  Widget _buildConversationList(List<ConversationInfo> conversations, bool isReady, {required String themeMode}) {
+  Widget _buildConversationList(List<ConversationInfo> conversations, bool isReady, bool isDarkTheme) {
     // Responsive sizing
     final screenWidth = MediaQuery.of(context).size.width;
     final screenHeight = MediaQuery.of(context).size.height;
@@ -993,6 +1042,16 @@ class _HomeScreenState extends State<HomeScreen> {
     final badgeFontSize = (screenWidth * 0.025).clamp(9.0, 12.0);
     final badgeIconSize = (screenWidth * 0.03).clamp(11.0, 14.0);
 
+    // Theme colors
+    final Color searchBgColor = isDarkTheme ? const Color(0xFF1E1E1E) : const Color(0xFFF0F2F5);
+    final Color searchTextColor = isDarkTheme ? Colors.white : Colors.black87;
+    final Color searchHintColor = isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade500;
+    final Color searchIconColor = isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600;
+    final Color cardBgColor = isDarkTheme ? const Color(0xFF1E1E1E) : Colors.lightBlue[50]!;
+    final Color cardBorderColor = isDarkTheme ? Colors.cyanAccent.withOpacity(0.3) : Colors.lightBlue[200]!;
+    final Color titleColor = isDarkTheme ? Colors.white : Colors.black;
+    final Color noResultsColor = isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1000,42 +1059,34 @@ class _HomeScreenState extends State<HomeScreen> {
           padding: searchPadding,
           child: Container(
             decoration: BoxDecoration(
-              color: themeMode == 'light'
-                  ? const Color(0xFFF0F2F5)
-                  : (themeMode == 'dark'
-                      ? const Color(0xFF2C2C2C)
-                      : Colors.white.withOpacity(0.1)), // Original space theme
-              borderRadius: BorderRadius.circular(themeMode == 'space' ? 30.0 : 10.0),
+              color: searchBgColor,
+              borderRadius: BorderRadius.circular(10.0),
               border: Border.all(
-                color: themeMode == 'light'
-                    ? Colors.transparent
-                    : (themeMode == 'dark'
-                        ? const Color(0xFF3C3C3C)
-                        : Colors.white.withOpacity(0.2)) // Original space theme
+                color: Colors.transparent
               ),
             ),
             child: TextField(
               controller: _searchController,
               style: TextStyle(
-                color: themeMode == 'light' ? Colors.black87 : Colors.white,
+                color: searchTextColor,
                 fontSize: searchFontSize,
               ),
               decoration: InputDecoration(
                 hintText: 'Search chats...',
                 hintStyle: TextStyle(
-                  color: themeMode == 'light' ? Colors.grey.shade500 : Colors.white.withOpacity(0.5),
+                  color: searchHintColor,
                   fontSize: searchFontSize,
                 ),
                 prefixIcon: Icon(
                   Icons.search,
-                  color: themeMode == 'light' ? Colors.grey.shade600 : Colors.white.withOpacity(0.7),
+                  color: searchIconColor,
                   size: searchIconSize,
                 ),
                 suffixIcon: _isSearching
                     ? IconButton(
                   icon: Icon(
                     Icons.clear,
-                    color: themeMode == 'light' ? Colors.grey.shade600 : Colors.white70,
+                    color: searchIconColor,
                     size: searchIconSize,
                   ),
                   onPressed: () {
@@ -1061,7 +1112,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ? "No results found for '${_searchController.text}'"
                   : "You have no conversations yet.",
               style: TextStyle(
-                color: themeMode == 'light' ? Colors.grey.shade600 : Colors.white70,
+                color: noResultsColor,
                 fontSize: searchFontSize,
               ),
             ),
@@ -1077,12 +1128,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 decoration: BoxDecoration(
                   color: isSelected
                       ? Colors.teal.withOpacity(0.3)
-                      : Colors.lightBlue[50],
+                      : cardBgColor,
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
                     color: isSelected
                         ? Colors.teal
-                        : Colors.lightBlue[200]!,
+                        : cardBorderColor,
                     width: 1.0,
                   ),
                   boxShadow: [
@@ -1094,14 +1145,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                 ),
                 child: ListTile(
-                  leading: _buildAvatar(convo, themeMode: themeMode),
+                  leading: _buildAvatar(convo),
                   title: Row(
                     children: [
                       Expanded(
                         child: Text(
                           convo.chatTitle,
                           style: TextStyle(
-                            color: Colors.black,
+                            color: titleColor,
                             fontWeight: FontWeight.bold,
                             fontSize: listItemTitleSize,
                           ),
@@ -1137,30 +1188,85 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                     ],
                   ),
-                  onTap: isReady
-                      ? () {
+                  trailing: convo.unreadCount > 0
+                      ? Container(
+                          width: (screenWidth * 0.08).clamp(28.0, 36.0),
+                          height: (screenWidth * 0.08).clamp(28.0, 36.0),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: Colors.black,
+                              width: 2.0,
+                            ),
+                          ),
+                          child: Center(
+                            child: Text(
+                              convo.unreadCount > 99 ? '99+' : '${convo.unreadCount}',
+                              style: TextStyle(
+                                color: Colors.black,
+                                fontSize: (screenWidth * 0.035).clamp(11.0, 14.0),
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 0.5,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        )
+                      : null,
+                  onTap: () async {
                     if (_isGroupSelectionMode) {
                       _exitGroupSelectionMode();
                     } else {
                       final websocketService = Provider.of<WebSocketService>(context, listen: false);
-                      if (websocketService.isConnected && websocketService.channel != null) {
-                        Provider.of<HomeProvider>(context, listen: false)
-                            .markConversationAsRead(convo.conversationId);
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (context) => ChatScreen(
-                              channel: websocketService.channel!,
-                              conversationInfo: convo,
-                            ),
+
+                      // 🚀 OFFLINE MODE: Try to get or create WebSocket channel
+                      WebSocketChannel? channel = websocketService.channel;
+
+                      if (channel == null) {
+                        // Try to connect with current user's token
+                        final user = FirebaseAuth.instance.currentUser;
+                        if (user != null) {
+                          try {
+                            final token = await user.getIdToken();
+                            await websocketService.connect(token);
+                            channel = websocketService.channel;
+                          } catch (e) {
+                            // Offline mode - can't connect
+                            print('[HomeScreen] ⚠️ Could not connect WebSocket (offline?): $e');
+                          }
+                        }
+                      }
+
+                      // Mark conversation as read
+                      Provider.of<HomeProvider>(context, listen: false)
+                          .markConversationAsRead(convo.conversationId);
+
+                      // Navigate to chat screen (works online and offline!)
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (context) => ChatScreen(
+                            channel: channel, // Can be null in offline mode
+                            conversationInfo: convo,
                           ),
-                        ).then((_) {
-                          // Reload blocked users when coming back from chat
-                          _loadBlockedUsers();
-                        });
+                        ),
+                      ).then((_) {
+                        // Reload blocked users when coming back from chat
+                        _loadBlockedUsers();
+                      });
+
+                      // Show offline indicator if no channel
+                      if (channel == null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('📴 Offline mode - Viewing cached messages'),
+                            duration: Duration(seconds: 2),
+                            backgroundColor: Colors.orange,
+                          ),
+                        );
                       }
                     }
-                  }
-                      : null,
+                  },
                   onLongPress: () {
                     if (convo.isGroup) {
                       _enterGroupSelectionMode(convo);
@@ -1175,11 +1281,10 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget? _buildFab(bool isReady, {required String themeMode}) {
+  Widget? _buildFab(bool isReady) {
     if (_isGroupSelectionMode) return null; // FAB disappears completely
 
-    // Convert themeMode to isLightTheme for ExpandableFab widget
-    final isLightTheme = themeMode == 'light';
+    const isLightTheme = true; // Always light theme
 
     return ExpandableFab(
       distance: 112.0,
@@ -1236,228 +1341,121 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return CallAwareScreen(
-      screenName: 'HomeScreen',
-      child: Consumer<UserSettingsProvider>(
-        builder: (context, userSettings, _) {
-          final homeStyle = userSettings.homeScreenStyle;
+    return Consumer<UserSettingsProvider>(
+      builder: (context, userSettings, child) {
+        final isDarkTheme = userSettings.homeScreenStyle == 'dark';
 
-          // Choose background based on user's setting
-          Widget backgroundWidget;
+        return CallAwareScreen(
+          screenName: 'HomeScreen',
+          child: Scaffold(
+            backgroundColor: isDarkTheme ? const Color(0xFF121212) : Colors.white,
+            appBar: _buildAppBar(isDarkTheme: isDarkTheme),
+        body: Builder(
+          builder: (context) {
+            print('[HomeScreen] Building body, _isGroupSelectionMode: $_isGroupSelectionMode');
+            return Stack(
+              children: [
+                // Main conversation list
+                Consumer2<HomeProvider, WebSocketService>(
+                  builder: (context, homeProvider, websocketService, child) {
+                    final conversations = _isSearching ? _filteredConversations : homeProvider.conversations;
+                    final isReady = websocketService.isConnected;
 
-          switch (homeStyle) {
-            case 'dark':
-              backgroundWidget = DarkHomeBackground(
-                child: _buildScaffold(themeMode: 'dark'),
-              );
-              break;
-            case 'default':
-              backgroundWidget = DefaultHomeBackground(
-                child: _buildScaffold(themeMode: 'light'),
-              );
-              break;
-            case 'vibrant':
-              backgroundWidget = VibrantHomeBackground(
-                child: _buildScaffold(themeMode: 'space'),
-              );
-              break;
-            case 'current':
-            default:
-              backgroundWidget = HomeBackground(
-                child: _buildScaffold(themeMode: 'space'),
-              );
-              break;
-          }
-
-          return backgroundWidget;
-        },
-      ),
-    );
-  }
-
-  Widget _buildScaffold({required String themeMode}) {
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      appBar: _buildAppBar(themeMode: themeMode),
-      body: Consumer2<HomeProvider, WebSocketService>(
-        builder: (context, homeProvider, websocketService, child) {
-          final conversations = _isSearching ? _filteredConversations : homeProvider.conversations;
-          final isReady = websocketService.isConnected;
-
-          return _buildConversationList(conversations, isReady, themeMode: themeMode);
-        },
-      ),
-      bottomNavigationBar: _isGroupSelectionMode ? null : Consumer<WebSocketService>(
-        builder: (context, websocketService, child) {
-          return _buildBottomNavBar(websocketService.isConnected);
-        },
-      ),
-    );
-  }
-
-  void _showThemePicker() {
-    final userSettings = Provider.of<UserSettingsProvider>(context, listen: false);
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-    final modalTitleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(height: screenHeight * 0.015),
-            Container(
-              width: screenWidth * 0.1,
-              height: screenHeight * 0.005,
-              decoration: BoxDecoration(
-                color: Colors.grey[400],
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            SizedBox(height: screenHeight * 0.025),
-            Text(
-              'Choose Theme',
-              style: TextStyle(
-                fontSize: modalTitleSize,
-                fontWeight: FontWeight.bold,
-                color: Colors.black,
-              ),
-            ),
-            SizedBox(height: screenHeight * 0.025),
-            _buildThemeOption(
-              title: 'Light Theme',
-              description: 'Clean and modern white background',
-              value: 'default',
-              currentValue: userSettings.homeScreenStyle,
-              icon: Icons.light_mode,
-              onTap: () {
-                userSettings.saveSettings(homeScreenStyle: 'default');
-                Navigator.pop(context);
-              },
-            ),
-            SizedBox(height: screenHeight * 0.02),
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: screenWidth * 0.04),
-              child: Container(
-                padding: EdgeInsets.all(screenWidth * 0.04),
-                decoration: BoxDecoration(
-                  color: Colors.grey[100],
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.grey[300]!, width: 1),
+                    return _buildConversationList(conversations, isReady, isDarkTheme);
+                  },
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.access_time, color: Colors.grey[600], size: modalTitleSize * 0.9),
-                    SizedBox(width: screenWidth * 0.02),
-                    Text(
-                      'More themes coming soon...',
-                      style: TextStyle(
-                        fontSize: modalTitleSize * 0.75,
-                        color: Colors.grey[600],
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            SizedBox(height: MediaQuery.of(context).padding.bottom + 16),
-          ],
-        ),
-      ),
-    );
-  }
 
-  Widget _buildThemeOption({
-    required String title,
-    required String description,
-    required String value,
-    required String currentValue,
-    required IconData icon,
-    required VoidCallback onTap,
-  }) {
-    final isSelected = value == currentValue;
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-
-    final themeTitleSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final themeDescSize = (screenWidth * 0.03).clamp(11.0, 14.0);
-    final themeIconSize = (screenWidth * 0.06).clamp(22.0, 28.0);
-    final themeIconPadding = (screenWidth * 0.03).clamp(10.0, 14.0);
-
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        margin: EdgeInsets.symmetric(
-          horizontal: screenWidth * 0.04,
-          vertical: screenHeight * 0.008,
-        ),
-        padding: EdgeInsets.all(screenWidth * 0.04),
-        decoration: BoxDecoration(
-          color: isSelected ? Colors.lightBlue[50] : Colors.grey[100],
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected ? Colors.lightBlueAccent : Colors.grey[300]!,
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: Row(
-          children: [
-            Container(
-              padding: EdgeInsets.all(themeIconPadding),
-              decoration: BoxDecoration(
-                color: isSelected ? Colors.lightBlueAccent : Colors.grey[400],
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Icon(icon, color: Colors.white, size: themeIconSize),
-            ),
-            SizedBox(width: screenWidth * 0.04),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: TextStyle(
-                      fontSize: themeTitleSize,
-                      fontWeight: FontWeight.bold,
-                      color: isSelected ? Colors.lightBlueAccent : Colors.black87,
-                    ),
-                  ),
-                  SizedBox(height: screenHeight * 0.005),
-                  Text(
-                    description,
-                    style: TextStyle(
-                      fontSize: themeDescSize,
-                      color: Colors.grey[600],
-                    ),
+                // Floating AI button (only show when not in group selection mode) - MUST be after conversation list to appear on top
+                if (!_isGroupSelectionMode) ...[
+                  Builder(
+                    builder: (context) {
+                      print('[HomeScreen] Building AI button in Stack');
+                      return _buildFloatingAIButton(isDarkTheme);
+                    },
                   ),
                 ],
+              ],
+            );
+          },
+        ),
+            bottomNavigationBar: _isGroupSelectionMode ? null : Consumer<WebSocketService>(
+              builder: (context, websocketService, child) {
+                return _buildBottomNavBar(websocketService.isConnected, isDarkTheme);
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildFloatingAIButton(bool isDarkTheme) {
+    print('[HomeScreen] _buildFloatingAIButton called');
+
+    final bottomPadding = MediaQuery.of(context).padding.bottom;
+
+    // Adjust this number to move button up/down
+    // Higher number = button goes UP (away from bottom)
+    final bottomPosition = 50.0 - bottomPadding;
+
+    // Theme colors
+    final Color buttonBgColor = isDarkTheme ? const Color(0xFF1E1E1E) : Colors.white;
+    final Color buttonTextColor = isDarkTheme ? Colors.cyanAccent : Colors.black;
+    final Color buttonBorderColor = isDarkTheme ? Colors.cyanAccent : Colors.black;
+
+    return Positioned(
+      right: 16,
+      bottom: bottomPosition,
+      child: GestureDetector(
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (context) => const AIChatScreen(),
+            ),
+          );
+        },
+        child: Container(
+          width: 60,
+          height: 60,
+          decoration: BoxDecoration(
+            color: buttonBgColor,
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: buttonBorderColor,
+              width: 2.5,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.2),
+                blurRadius: 12,
+                spreadRadius: 1,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Center(
+            child: Text(
+              'AI',
+              style: TextStyle(
+                color: buttonTextColor,
+                fontSize: 24,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 1,
               ),
             ),
-            if (isSelected)
-              Icon(
-                Icons.check_circle,
-                color: Colors.lightBlueAccent,
-                size: themeIconSize,
-              ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildBottomNavBar(bool isReady) {
+  Widget _buildBottomNavBar(bool isReady, bool isDarkTheme) {
     final screenWidth = MediaQuery.of(context).size.width;
     final screenHeight = MediaQuery.of(context).size.height;
+
+    // Theme colors
+    final Color navBgColor = isDarkTheme ? const Color(0xFF0a1128) : Colors.white;
+    final Color navBorderColor = isDarkTheme ? Colors.cyanAccent.withOpacity(0.3) : Colors.black;
 
     return Container(
       padding: EdgeInsets.only(
@@ -1467,10 +1465,10 @@ class _HomeScreenState extends State<HomeScreen> {
         bottom: MediaQuery.of(context).padding.bottom + screenHeight * 0.015,
       ),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: navBgColor,
         border: Border(
           top: BorderSide(
-            color: Colors.black,
+            color: navBorderColor,
             width: 1,
           ),
         ),
@@ -1488,6 +1486,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _buildNavCard(
             icon: Icons.history,
             label: 'Calls',
+            isDarkTheme: isDarkTheme,
             onTap: () {
               Navigator.of(context).push(
                 MaterialPageRoute(
@@ -1499,6 +1498,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _buildNavCard(
             icon: Icons.person_add,
             label: 'Friends',
+            isDarkTheme: isDarkTheme,
             onTap: () {
               if (!isReady) {
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -1521,6 +1521,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _buildNavCard(
             icon: Icons.group_add,
             label: 'Groups',
+            isDarkTheme: isDarkTheme,
             onTap: () {
               if (!isReady) {
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -1543,8 +1544,9 @@ class _HomeScreenState extends State<HomeScreen> {
             },
           ),
           _buildNavCard(
-            icon: Icons.palette_outlined,
+            icon: Icons.palette,
             label: 'Personalize',
+            isDarkTheme: isDarkTheme,
             onTap: () {
               Navigator.of(context).push(
                 MaterialPageRoute(
@@ -1558,9 +1560,11 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+
   Widget _buildNavCard({
     required IconData icon,
     required String label,
+    required bool isDarkTheme,
     required VoidCallback onTap,
   }) {
     final screenWidth = MediaQuery.of(context).size.width;
@@ -1568,6 +1572,10 @@ class _HomeScreenState extends State<HomeScreen> {
     final navIconSize = (screenWidth * 0.06).clamp(22.0, 28.0);
     final navLabelSize = (screenWidth * 0.028).clamp(10.0, 13.0);
     final navSpacing = (screenHeight * 0.007).clamp(4.0, 8.0);
+
+    // Theme colors
+    final Color iconColor = isDarkTheme ? Colors.cyanAccent : Colors.black;
+    final Color textColor = isDarkTheme ? Colors.white : Colors.black87;
 
     return Expanded(
       child: GestureDetector(
@@ -1578,12 +1586,12 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, color: Colors.black, size: navIconSize),
+              Icon(icon, color: iconColor, size: navIconSize),
               SizedBox(height: navSpacing),
               Text(
                 label,
                 style: TextStyle(
-                  color: Colors.black87,
+                  color: textColor,
                   fontSize: navLabelSize,
                   fontWeight: FontWeight.w600,
                 ),

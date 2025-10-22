@@ -6,6 +6,21 @@ import 'package:flutter/services.dart';
 class BackupNotificationService {
   static const MethodChannel _channel = MethodChannel('com.zarq/backup');
 
+  /// Show progress notification during auto-backup
+  static Future<void> showProgressNotification(String status, int progress) async {
+    if (!Platform.isAndroid) return;
+
+    try {
+      await _channel.invokeMethod('showBackupProgressNotification', {
+        'status': status,
+        'progress': progress, // 0-100
+      });
+      debugPrint('[BackupNotification] Progress notification: $status ($progress%)');
+    } catch (e) {
+      debugPrint('[BackupNotification] Error showing progress notification: $e');
+    }
+  }
+
   /// Show success notification after backup completes
   static Future<void> showSuccessNotification(String backupType) async {
     if (!Platform.isAndroid) return; // iOS notifications can be added later
@@ -83,6 +98,20 @@ class BackupNotificationService {
       }
     } catch (e) {
       debugPrint('[BackupNotification] Error in battery optimization check: $e');
+    }
+  }
+
+  /// Request battery optimization exemption (for auto-backup reliability)
+  static Future<bool> requestBatteryOptimizationExemption() async {
+    if (!Platform.isAndroid) return true;
+
+    try {
+      final result = await _channel.invokeMethod('requestBatteryOptimizationExemption');
+      debugPrint('[BackupNotification] Battery optimization exemption result: $result');
+      return result as bool? ?? false;
+    } catch (e) {
+      debugPrint('[BackupNotification] Error requesting battery optimization exemption: $e');
+      return false;
     }
   }
 }

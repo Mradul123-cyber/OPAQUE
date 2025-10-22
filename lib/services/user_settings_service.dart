@@ -48,7 +48,7 @@ class UserSettings {
 }
 
 class UserSettingsService {
-  final String _baseUrl = 'http://192.168.29.81:8080';
+  final String _baseUrl = 'https://api.zarqmessenger.com';
 
   Future<String> _getToken() async {
     final token = await FirebaseAuth.instance.currentUser?.getIdToken();

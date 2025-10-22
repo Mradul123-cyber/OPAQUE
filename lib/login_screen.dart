@@ -152,23 +152,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
       // print("[Login Screen] -> SUCCESS: Google Sign-In successful for ${user.email}");
 
-      // Check if email verification is enabled and if email is verified
-      if (ENABLE_EMAIL_VERIFICATION && !user.emailVerified) {
-        // Google emails are pre-verified, but just in case
-        // print("[Login Screen] -> Email not verified (unlikely for Google)");
-        if (mounted) {
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute(
-              builder: (context) => EmailVerificationScreen(
-                user: user,
-                username: user.displayName ?? 'User',
-              ),
-            ),
-          );
-        }
-        return;
-      }
-
+      // Google users don't need email verification - already verified by Google
+      // Google automatically sets emailVerified = true, so we skip verification
       if (mounted) {
         // Navigate to AuthGate which will check if profile exists
         Navigator.of(context).pushReplacement(

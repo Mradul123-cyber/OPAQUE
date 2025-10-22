@@ -9,13 +9,43 @@ class ChatProvider with ChangeNotifier {
   List<String> _onlineUsers = [];
   int? _currentConversationId;
 
+  // Persistent message cache: conversationId -> List<Message>
+  // Keeps messages in memory for instant loading
+  final Map<int, List<Message>> _messageCache = {};
+
+  // Track last load time for each conversation
+  final Map<int, DateTime> _lastLoadTime = {};
+
+  // Cache expiry duration (5 minutes)
+  static const Duration _cacheExpiry = Duration(minutes: 5);
+
   List<Message> get messages => _messages;
   List<String> get onlineUsers => _onlineUsers;
   int? get currentConversationId => _currentConversationId;
 
+  /// Check if cached messages exist and are fresh
+  bool hasCachedMessages(int conversationId) {
+    if (!_messageCache.containsKey(conversationId)) return false;
+
+    final lastLoad = _lastLoadTime[conversationId];
+    if (lastLoad == null) return false;
+
+    // Cache is valid if loaded within last 5 minutes
+    final isExpired = DateTime.now().difference(lastLoad) > _cacheExpiry;
+    return !isExpired;
+  }
+
+  /// Get cached messages for instant display
+  List<Message>? getCachedMessages(int conversationId) {
+    if (hasCachedMessages(conversationId)) {
+      return List.from(_messageCache[conversationId]!);
+    }
+    return null;
+  }
+
   /// This is now the primary way to update the UI.
   /// It replaces the entire list with a new one, ensuring no duplicates.
-  void setMessages(List<Message> messages) {
+  void setMessages(List<Message> messages, {int? conversationId}) {
     // Preserve messages that are actively being processed or available for retry
     final pendingMessages = _messages.where((msg) =>
     msg.status == MessageStatus.sending ||
@@ -30,6 +60,13 @@ class ChatProvider with ChangeNotifier {
     ).toList();
 
     _messages = [...filteredDbMessages, ...pendingMessages];
+
+    // Update cache for this conversation
+    if (conversationId != null) {
+      _messageCache[conversationId] = List.from(_messages);
+      _lastLoadTime[conversationId] = DateTime.now();
+    }
+
     notifyListeners();
   }
 
@@ -83,7 +120,20 @@ class ChatProvider with ChangeNotifier {
 
   void clearMessages() {
     _messages.clear();
+    // Note: Don't clear _messageCache here - we want to keep it for instant loading
     notifyListeners();
+  }
+
+  /// Clear cache for a specific conversation (use when user logs out or deletes conversation)
+  void clearConversationCache(int conversationId) {
+    _messageCache.remove(conversationId);
+    _lastLoadTime.remove(conversationId);
+  }
+
+  /// Clear all cached messages (use on logout)
+  void clearAllCache() {
+    _messageCache.clear();
+    _lastLoadTime.clear();
   }
 
   void setOnlineUsers(List<String> users) {
@@ -159,5 +209,17 @@ class ChatProvider with ChangeNotifier {
   void removeMessageByContent(String content) {
     _messages.removeWhere((message) => message.content == content && message.senderUid == FirebaseAuth.instance.currentUser?.uid);
     // Don't call notifyListeners() here since we'll add the message right after
+  }
+
+  /// Update a message by replacing it with a new version (for reactions, edits, etc.)
+  void updateMessage(Message updatedMessage) {
+    final index = _messages.indexWhere((msg) => msg.id == updatedMessage.id);
+    if (index != -1) {
+      // Create a new list to ensure Flutter detects the change
+      final newMessages = List<Message>.from(_messages);
+      newMessages[index] = updatedMessage;
+      _messages = newMessages;
+      notifyListeners();
+    }
   }
 }

@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -7,6 +8,7 @@ import 'package:restart_app/restart_app.dart';
 import '../services/backup_service.dart';
 import '../services/backup_settings_provider.dart';
 import '../services/backup_notification_service.dart';
+import '../services/auto_backup_manager.dart';
 import '../widgets/call_aware_screen.dart';
 import 'backup_info_screen.dart';
 import 'package:provider/provider.dart';
@@ -18,23 +20,67 @@ class BackupManagementScreen extends StatefulWidget {
   State<BackupManagementScreen> createState() => _BackupManagementScreenState();
 }
 
-class _BackupManagementScreenState extends State<BackupManagementScreen> {
+class _BackupManagementScreenState extends State<BackupManagementScreen> with SingleTickerProviderStateMixin {
   final BackupService _backupService = BackupService();
   List<FileSystemEntity> _backupsList = [];
   bool _isLoading = false;
   double _backupProgress = 0.0;
   String _backupStatus = '';
   bool _isBackupInProgress = false;
+  bool _backupCancellationRequested = false;
   bool _isGoogleDriveSignedIn = false;
   String? _googleDriveEmail;
   bool _isBatteryOptimizationDisabled = true;
+  bool _highlightNextBackup = false;
+  late AnimationController _highlightController;
+  late Animation<Color?> _highlightAnimation;
+  static const MethodChannel _backupChannel = MethodChannel('com.zarq/backup');
 
   @override
   void initState() {
     super.initState();
     _loadBackupsList();
-    _checkGoogleDriveStatus();
+    _loadCachedGoogleDriveStatus(); // Load cached state for instant UI (no verification needed)
     _checkBatteryOptimization();
+    // Note: We don't verify Google Drive status here - it will be checked when user actually uses it
+
+    // Initialize animation controller for highlight effect
+    _highlightController = AnimationController(
+      duration: const Duration(milliseconds: 800),
+      vsync: this,
+    );
+
+    _highlightAnimation = ColorTween(
+      begin: Colors.cyanAccent.withOpacity(0.3),
+      end: Colors.cyanAccent.withOpacity(0.1),
+    ).animate(CurvedAnimation(
+      parent: _highlightController,
+      curve: Curves.easeInOut,
+    ));
+
+    // Set up MethodChannel handler for notification cancel action
+    _backupChannel.setMethodCallHandler(_handleBackupChannelMethod);
+  }
+
+  /// Handle method calls from native Android (e.g., cancel from notification)
+  Future<dynamic> _handleBackupChannelMethod(MethodCall call) async {
+    if (call.method == 'cancelBackup') {
+      debugPrint('[BackupManagement] Cancel backup called from notification');
+      if (_isBackupInProgress && !_backupCancellationRequested) {
+        _cancelBackup();
+      }
+      return true;
+    }
+    return null;
+  }
+
+  @override
+  void dispose() {
+    _highlightController.dispose();
+    // DON'T remove the handler here - backup operations continue in background
+    // The handler needs to remain active so notification cancel button works
+    // _backupChannel.setMethodCallHandler(null);
+    super.dispose();
   }
 
   Future<void> _checkBatteryOptimization() async {
@@ -44,13 +90,79 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
     });
   }
 
+  Future<void> _requestBatteryOptimizationExemption() async {
+    try {
+      // Open battery settings via MethodChannel
+      await _backupChannel.invokeMethod('requestBatteryOptimizationExemption');
+
+      // Show guidance message
+      _showSnackbar(
+        'Tap Battery → Set to "Unrestricted" & enable "Allow background activity"',
+        isError: false,
+      );
+
+      // Recheck status after a delay (user might come back from settings)
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) {
+          _checkBatteryOptimization();
+        }
+      });
+    } catch (e) {
+      debugPrint('[BackupManagement] Error opening battery settings: $e');
+      _showSnackbar('Failed to open battery settings', isError: true);
+    }
+  }
+
+  /// Load cached Google Drive status from SharedPreferences for instant UI display
+  Future<void> _loadCachedGoogleDriveStatus() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cachedSignedIn = prefs.getBool('google_drive_signed_in') ?? false;
+      final cachedEmail = prefs.getString('google_drive_email');
+
+      if (mounted) {
+        setState(() {
+          _isGoogleDriveSignedIn = cachedSignedIn;
+          _googleDriveEmail = cachedEmail;
+        });
+      }
+
+      debugPrint('[BackupManagement] Loaded cached Google Drive status: signed_in=$cachedSignedIn, email=$cachedEmail');
+    } catch (e) {
+      debugPrint('[BackupManagement] Error loading cached Google Drive status: $e');
+    }
+  }
+
+  /// Update Google Drive cache (helper method to avoid code duplication)
+  Future<void> _updateGoogleDriveCache(bool isSignedIn, String? email) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('google_drive_signed_in', isSignedIn);
+      if (email != null) {
+        await prefs.setString('google_drive_email', email);
+      } else {
+        await prefs.remove('google_drive_email');
+      }
+      debugPrint('[BackupManagement] Updated Google Drive cache: signed_in=$isSignedIn, email=$email');
+    } catch (e) {
+      debugPrint('[BackupManagement] Error updating Google Drive cache: $e');
+    }
+  }
+
+  /// Check actual Google Drive status and update cache
   Future<void> _checkGoogleDriveStatus() async {
     final isSignedIn = await _backupService.isSignedInToGoogleDrive();
     final email = await _backupService.getGoogleDriveAccountEmail();
-    setState(() {
-      _isGoogleDriveSignedIn = isSignedIn;
-      _googleDriveEmail = email;
-    });
+
+    // Save to cache
+    await _updateGoogleDriveCache(isSignedIn, email);
+
+    if (mounted) {
+      setState(() {
+        _isGoogleDriveSignedIn = isSignedIn;
+        _googleDriveEmail = email;
+      });
+    }
   }
 
   Future<void> _loadBackupsList() async {
@@ -59,38 +171,43 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
     try {
       // Request storage permission first (needed after reinstall)
       final storageStatus = await Permission.manageExternalStorage.status;
+      debugPrint('[BackupManagement] Storage permission status: ${storageStatus.isGranted}');
 
       if (!storageStatus.isGranted) {
-        // print('[BackupManagement] Storage permission not granted, requesting...');
+        debugPrint('[BackupManagement] Storage permission not granted, requesting...');
         final result = await Permission.manageExternalStorage.request();
 
         if (!result.isGranted) {
-          // print('[BackupManagement] Storage permission denied');
+          debugPrint('[BackupManagement] Storage permission denied');
           _showSnackbar('Storage permission required to access backups', isError: true);
           setState(() => _isLoading = false);
           return;
         }
-        // print('[BackupManagement] Storage permission granted');
+        debugPrint('[BackupManagement] Storage permission granted');
       }
 
       final downloadsDir = Directory('/storage/emulated/0/Download/Zarq_Backups');
+      debugPrint('[BackupManagement] Checking backups directory: ${downloadsDir.path}');
+
       if (await downloadsDir.exists()) {
-        // print('[BackupManagement] Found backups directory, listing files...');
+        debugPrint('[BackupManagement] Found backups directory, listing files...');
         final backups = await downloadsDir.list().toList();
+        debugPrint('[BackupManagement] Raw file list: ${backups.map((f) => f.path).join(", ")}');
+
         backups.sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
 
-        // print('[BackupManagement] Found ${backups.length} backup files');
+        debugPrint('[BackupManagement] Found ${backups.length} backup files');
         setState(() {
           _backupsList = backups;
         });
       } else {
-        // print('[BackupManagement] Backups directory does not exist');
+        debugPrint('[BackupManagement] Backups directory does not exist');
         setState(() {
           _backupsList = [];
         });
       }
     } catch (e) {
-      // print('[BackupManagement] Error loading backups: $e');
+      debugPrint('[BackupManagement] Error loading backups: $e');
     } finally {
       setState(() => _isLoading = false);
     }
@@ -172,47 +289,223 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
       return;
     }
 
+    if (!mounted) return;
+
     setState(() {
       _isBackupInProgress = true;
+      _backupCancellationRequested = false;
       _backupProgress = 0.0;
       _backupStatus = 'Initializing backup...';
     });
 
     try {
+      // Show initial notification (persists even if user leaves screen)
+      await BackupNotificationService.showProgressNotification('Starting backup...', 0);
+
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        throw Exception('Backup cancelled by user');
+      }
+
       // Simulate progress steps
       await _updateProgress(0.2, 'Collecting messages...');
-      final backupData = await _backupService.createLocalBackup();
+      await BackupNotificationService.showProgressNotification('Collecting messages...', 20);
+
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        throw Exception('Backup cancelled by user');
+      }
+
+      // Local backup: Messages only (no media) to prevent Out of Memory errors
+      final backupData = await _backupService.createLocalBackup(
+        includeMedia: false, // WhatsApp approach: Media stays on device
+      );
 
       await _updateProgress(0.5, 'Encrypting backup...');
+      await BackupNotificationService.showProgressNotification('Encrypting backup...', 50);
+
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        throw Exception('Backup cancelled by user');
+      }
+
       final encryptedFile = await _backupService.encryptBackup(backupData, passphrase);
 
-      await _updateProgress(0.8, 'Saving backup file...');
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        throw Exception('Backup cancelled by user');
+      }
+
+      // File operations should complete even if widget is disposed
+      debugPrint('[BackupManagement] Preparing to copy encrypted file from: ${encryptedFile.path}');
+
+      await BackupNotificationService.showProgressNotification('Saving to local storage...', 70);
+
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        throw Exception('Backup cancelled by user');
+      }
+
       final downloadsDir = Directory('/storage/emulated/0/Download/Zarq_Backups');
+      debugPrint('[BackupManagement] Target directory: ${downloadsDir.path}');
+
       if (!await downloadsDir.exists()) {
+        debugPrint('[BackupManagement] Directory does not exist, creating...');
         await downloadsDir.create(recursive: true);
+        debugPrint('[BackupManagement] Directory created successfully');
+      } else {
+        debugPrint('[BackupManagement] Directory already exists');
       }
 
       final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
       final backupPath = '${downloadsDir.path}/backup_$timestamp.encrypted';
-      await encryptedFile.copy(backupPath);
+      debugPrint('[BackupManagement] Copying file to: $backupPath');
 
-      await _updateProgress(1.0, 'Backup completed!');
+      await BackupNotificationService.showProgressNotification('Finalizing...', 90);
 
-      _showSnackbar('Backup created successfully!', isError: false);
-      await _loadBackupsList();
+      final copiedFile = await encryptedFile.copy(backupPath);
+      debugPrint('[BackupManagement] File copied successfully to: ${copiedFile.path}');
+
+      // Verify file exists
+      final fileExists = await File(backupPath).exists();
+      final fileSize = await File(backupPath).length();
+      debugPrint('[BackupManagement] Verification - File exists: $fileExists, Size: $fileSize bytes');
+
+      // Check cancellation before showing success
+      if (_backupCancellationRequested) {
+        throw Exception('Backup cancelled by user');
+      }
+
+      // Show success notification (visible even if user left screen)
+      await BackupNotificationService.showSuccessNotification('Local');
+
+      // Only update UI if still mounted
+      if (mounted) {
+        await _updateProgress(1.0, 'Backup completed!');
+        _showSnackbar('Backup created successfully!', isError: false);
+        await _loadBackupsList();
+      } else {
+        debugPrint('[BackupManagement] Widget disposed, but backup saved successfully to: $backupPath');
+      }
     } catch (e) {
-      // print('[BackupManagement] Backup error: $e');
-      _showSnackbar('Backup failed: $e', isError: true);
+      debugPrint('[BackupManagement] Backup error: $e');
+
+      // Handle cancellation differently from errors
+      if (e.toString().contains('cancelled by user')) {
+        debugPrint('[BackupManagement] Backup cancelled by user');
+
+        // Show cancellation notification
+        await BackupNotificationService.showFailureNotification(
+          'Local',
+          'Backup cancelled',
+        );
+
+        if (mounted) {
+          _showSnackbar('Backup cancelled', isError: false);
+        }
+      } else {
+        // Show failure notification (visible even if user left screen)
+        await BackupNotificationService.showFailureNotification(
+          'Local',
+          e.toString().length > 100 ? 'Backup error occurred' : e.toString(),
+        );
+
+        if (mounted) {
+          _showSnackbar('Backup failed: $e', isError: true);
+        }
+      }
     } finally {
-      setState(() {
-        _isBackupInProgress = false;
-        _backupProgress = 0.0;
-        _backupStatus = '';
-      });
+      if (mounted) {
+        setState(() {
+          _isBackupInProgress = false;
+          _backupCancellationRequested = false;
+          _backupProgress = 0.0;
+          _backupStatus = '';
+        });
+      }
     }
   }
 
   Future<void> _createGoogleDriveBackup() async {
+    // Check cache - if not signed in, prompt user
+    if (!_isGoogleDriveSignedIn) {
+      _showSnackbar('Please sign in to Google Drive first', isError: true);
+      return;
+    }
+
+    // Optimistic execution: Trust cache and try to create backup
+    // getDriveApi() inside createGoogleDriveBackup() will handle auth if needed
+
+    final screenWidth = MediaQuery.of(context).size.width;
+    final borderRadius = (screenWidth * 0.0375).clamp(12.0, 18.0);
+    final titleSize = (screenWidth * 0.045).clamp(16.0, 20.0);
+    final bodySize = (screenWidth * 0.035).clamp(13.0, 16.0);
+    final subtitleSize = (screenWidth * 0.03).clamp(11.0, 14.0);
+    final iconSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+
+    // Show media inclusion options dialog
+    final mediaOption = await showDialog<int?>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF0a1128),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(borderRadius),
+          side: BorderSide(color: Colors.cyanAccent.withOpacity(0.3)),
+        ),
+        title: Text('Include Media Files', style: TextStyle(color: Colors.white, fontSize: titleSize)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Choose which media files to include in backup:',
+              style: TextStyle(color: Colors.white70, fontSize: subtitleSize),
+            ),
+            SizedBox(height: 16),
+            ListTile(
+              leading: Icon(Icons.check_circle, color: Colors.green, size: iconSize),
+              title: Text('All Media', style: TextStyle(color: Colors.white, fontSize: bodySize)),
+              subtitle: Text('Include all photos, videos, audio', style: TextStyle(color: Colors.white70, fontSize: subtitleSize)),
+              onTap: () => Navigator.pop(context, null), // null = all media
+            ),
+            ListTile(
+              leading: Icon(Icons.calendar_today, color: Colors.cyanAccent, size: iconSize),
+              title: Text('Last 7 Days', style: TextStyle(color: Colors.white, fontSize: bodySize)),
+              subtitle: Text('Only recent media (smaller backup)', style: TextStyle(color: Colors.white70, fontSize: subtitleSize)),
+              onTap: () => Navigator.pop(context, 7),
+            ),
+            ListTile(
+              leading: Icon(Icons.calendar_today, color: Colors.cyanAccent, size: iconSize),
+              title: Text('Last 15 Days', style: TextStyle(color: Colors.white, fontSize: bodySize)),
+              subtitle: Text('Recent media from past 2 weeks', style: TextStyle(color: Colors.white70, fontSize: subtitleSize)),
+              onTap: () => Navigator.pop(context, 15),
+            ),
+            ListTile(
+              leading: Icon(Icons.calendar_today, color: Colors.cyanAccent, size: iconSize),
+              title: Text('Last 30 Days', style: TextStyle(color: Colors.white, fontSize: bodySize)),
+              subtitle: Text('Recent media from past month', style: TextStyle(color: Colors.white70, fontSize: subtitleSize)),
+              onTap: () => Navigator.pop(context, 30),
+            ),
+            ListTile(
+              leading: Icon(Icons.cancel, color: Colors.orange, size: iconSize),
+              title: Text('No Media', style: TextStyle(color: Colors.white, fontSize: bodySize)),
+              subtitle: Text('Messages only (smallest backup)', style: TextStyle(color: Colors.white70, fontSize: subtitleSize)),
+              onTap: () => Navigator.pop(context, -1), // -1 = no media
+            ),
+          ],
+        ),
+      ),
+    );
+
+    // Determine the actual media filter value based on user selection
+    int? excludeMediaDays;
+    if (mediaOption == -1) {
+      // No media: use 0 days to exclude all media (all media is older than 0 days)
+      excludeMediaDays = 0;
+    } else {
+      // null, 7, 15, 30: use as-is
+      excludeMediaDays = mediaOption;
+    }
+
     final passphrase = await _askForPassword(
       title: 'Create Google Drive Backup',
       hint: 'Enter a strong passphrase',
@@ -223,51 +516,173 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
       return;
     }
 
+    if (!mounted) return;
+
     setState(() {
       _isBackupInProgress = true;
+      _backupCancellationRequested = false;
       _backupProgress = 0.0;
       _backupStatus = 'Initializing backup...';
     });
 
     try {
-      await _updateProgress(0.1, 'Collecting messages...');
-      final backupData = await _backupService.createLocalBackup();
+      // Show initial notification (persists even if user leaves screen)
+      await BackupNotificationService.showProgressNotification('Starting backup...', 0);
 
-      await _updateProgress(0.3, 'Encrypting backup...');
-      final encryptedFile = await _backupService.encryptBackup(backupData, passphrase);
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        throw Exception('Backup cancelled by user');
+      }
 
-      await _updateProgress(0.5, 'Connecting to Google Drive...');
-      await Future.delayed(const Duration(milliseconds: 500));
+      await _updateProgress(0.1, 'Connecting to Google Drive...');
+      await BackupNotificationService.showProgressNotification('Connecting to Google Drive...', 10);
 
-      await _updateProgress(0.6, 'Uploading to Google Drive...');
-      final fileId = await _backupService.uploadToGoogleDrive(encryptedFile);
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        throw Exception('Backup cancelled by user');
+      }
+
+      // IMPORTANT: Pass cancellation checker to backup service
+      // The service will check this before each major operation
+      final fileId = await _backupService.createGoogleDriveBackup(
+        passphrase: passphrase,
+        excludeMediaOlderThanDays: excludeMediaDays,
+        shouldCancel: () => _backupCancellationRequested, // Check cancellation at each step
+        onMediaProgress: (current, total, fileName) {
+          // CRITICAL: Check cancellation during media upload
+          if (_backupCancellationRequested) {
+            debugPrint('[BackupManagement] Cancellation detected during media upload, aborting...');
+            // Note: The backup service needs to check for cancellation internally
+            // This callback just updates UI, actual cancellation happens in service
+            return;
+          }
+
+          // Calculate progress
+          final mediaProgress = 0.3 + (current / total) * 0.6; // 30-90% for media upload
+          final mediaStatus = 'Uploading media $current/$total: $fileName';
+          final notificationProgress = (mediaProgress * 100).toInt();
+
+          // CRITICAL: Update notification even if widget is disposed
+          // User needs to see progress even after navigating away
+          BackupNotificationService.showProgressNotification(
+            'Uploading media files ($current/$total)',
+            notificationProgress,
+          );
+
+          debugPrint('[BackupManagement] Media upload: $current/$total - $fileName');
+
+          // Update UI state only if widget is still mounted
+          if (mounted) {
+            setState(() {
+              _backupProgress = mediaProgress;
+              _backupStatus = mediaStatus;
+            });
+          }
+        },
+      );
 
       if (fileId == null) {
         throw Exception('Failed to upload to Google Drive');
       }
 
-      await _updateProgress(1.0, 'Backup uploaded!');
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        throw Exception('Backup cancelled by user');
+      }
 
-      _showSnackbar('Backup uploaded to Google Drive successfully!', isError: false);
-      await _checkGoogleDriveStatus();
+      await _updateProgress(0.95, 'Finalizing...');
+      await BackupNotificationService.showProgressNotification('Finalizing...', 95);
+
+      // Check cancellation before showing success
+      if (_backupCancellationRequested) {
+        throw Exception('Backup cancelled by user');
+      }
+
+      // Show success notification (visible even if user left screen)
+      await BackupNotificationService.showSuccessNotification('Google Drive');
+
+      if (mounted) {
+        await _updateProgress(1.0, 'Backup uploaded with media!');
+        _showSnackbar('Backup uploaded to Google Drive successfully!', isError: false);
+
+        // Update cache after successful backup
+        _updateGoogleDriveCache(_isGoogleDriveSignedIn, _googleDriveEmail);
+      } else {
+        debugPrint('[BackupManagement] Widget disposed, but backup uploaded successfully');
+      }
     } catch (e) {
-      // print('[BackupManagement] Google Drive backup error: $e');
-      _showSnackbar('Google Drive backup failed: $e', isError: true);
+      debugPrint('[BackupManagement] Google Drive backup error: $e');
+
+      // Handle cancellation differently from errors
+      if (e.toString().contains('cancelled by user') || e.toString().contains('upload cancelled')) {
+        debugPrint('[BackupManagement] Google Drive backup cancelled by user');
+
+        // Show cancellation notification
+        await BackupNotificationService.showFailureNotification(
+          'Google Drive',
+          'Backup cancelled',
+        );
+
+        if (mounted) {
+          _showSnackbar('Backup cancelled', isError: false);
+        }
+      } else {
+        // Show failure notification (visible even if user left screen)
+        await BackupNotificationService.showFailureNotification(
+          'Google Drive',
+          e.toString().length > 100 ? 'Backup error occurred' : e.toString(),
+        );
+
+        if (mounted) {
+          _showSnackbar('Google Drive backup failed: $e', isError: true);
+        }
+      }
     } finally {
-      setState(() {
-        _isBackupInProgress = false;
-        _backupProgress = 0.0;
-        _backupStatus = '';
-      });
+      if (mounted) {
+        setState(() {
+          _isBackupInProgress = false;
+          _backupCancellationRequested = false;
+          _backupProgress = 0.0;
+          _backupStatus = '';
+        });
+      }
     }
   }
 
   Future<void> _updateProgress(double progress, String status) async {
+    if (!mounted) {
+      debugPrint('[BackupManagement] Widget disposed, skipping UI update: $status');
+      return;
+    }
     setState(() {
       _backupProgress = progress;
       _backupStatus = status;
     });
     await Future.delayed(const Duration(milliseconds: 300));
+  }
+
+  void _cancelBackup() {
+    debugPrint('[BackupManagement] ⚠️ CANCEL BUTTON PRESSED - Setting cancellation flag to TRUE');
+
+    // CRITICAL: Only call setState if widget is still mounted
+    // This can be called from notification when user has navigated away
+    if (mounted) {
+      setState(() {
+        _backupCancellationRequested = true;
+        _backupStatus = 'Cancelling...';
+      });
+    } else {
+      // Widget disposed, just set flag directly (no UI update needed)
+      _backupCancellationRequested = true;
+      debugPrint('[BackupManagement] Widget disposed, setting cancellation flag without setState');
+    }
+
+    debugPrint('[BackupManagement] ⚠️ Cancellation flag is now: $_backupCancellationRequested');
+
+    // Notify through notification (works even if widget is disposed)
+    BackupNotificationService.showProgressNotification('Cancelling...', (_backupProgress * 100).toInt());
+
+    debugPrint('[BackupManagement] Backup/Restore cancellation requested');
   }
 
   Future<void> _restoreBackup(String filePath) async {
@@ -281,35 +696,101 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
       return;
     }
 
+    if (!mounted) return;
+
     setState(() {
       _isBackupInProgress = true;
+      _backupCancellationRequested = false;
       _backupProgress = 0.0;
       _backupStatus = 'Preparing restore...';
     });
 
     try {
+      // Show initial notification
+      await BackupNotificationService.showProgressNotification('Starting restore...', 0);
+
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        debugPrint('[BackupManagement] Local restore cancelled at start');
+        throw Exception('Restore cancelled by user');
+      }
+
       await _updateProgress(0.1, 'Loading backup file...');
+      await BackupNotificationService.showProgressNotification('Loading backup file...', 10);
       final encryptedFile = File(filePath);
 
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        debugPrint('[BackupManagement] Local restore cancelled after loading file');
+        throw Exception('Restore cancelled by user');
+      }
+
       await _updateProgress(0.2, 'Reading encrypted data...');
+      await BackupNotificationService.showProgressNotification('Reading encrypted data...', 20);
       await Future.delayed(const Duration(milliseconds: 500));
+
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        debugPrint('[BackupManagement] Local restore cancelled before decryption');
+        throw Exception('Restore cancelled by user');
+      }
 
       await _updateProgress(0.3, 'Decrypting backup...');
+      await BackupNotificationService.showProgressNotification('Decrypting backup...', 30);
+
+      // Decrypt - this is a long operation, keep notification alive
       final backupData = await _backupService.decryptBackup(encryptedFile, passphrase);
 
-      await _updateProgress(0.5, 'Validating backup data...');
-      await Future.delayed(const Duration(milliseconds: 500));
+      // Immediately update notification after decrypt
+      await BackupNotificationService.showProgressNotification('Backup decrypted successfully', 40);
 
-      await _updateProgress(0.6, 'Restoring messages...');
+      // Check cancellation after decryption
+      if (_backupCancellationRequested) {
+        debugPrint('[BackupManagement] Local restore cancelled after decryption');
+        throw Exception('Restore cancelled by user');
+      }
+
+      await _updateProgress(0.5, 'Preparing database...');
+      await BackupNotificationService.showProgressNotification('Preparing database...', 50);
       await Future.delayed(const Duration(milliseconds: 300));
 
-      await _updateProgress(0.7, 'Restoring attachments...');
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        debugPrint('[BackupManagement] Local restore cancelled after validation');
+        throw Exception('Restore cancelled by user');
+      }
+
+      await _updateProgress(0.6, 'Restoring messages...');
+      await BackupNotificationService.showProgressNotification('Restoring messages...', 60);
+
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        debugPrint('[BackupManagement] Local restore cancelled before restore');
+        throw Exception('Restore cancelled by user');
+      }
+
+      // Restore - this is a long operation, keep notification alive
       await _backupService.restoreBackup(backupData);
 
-      await _updateProgress(0.85, 'Restoring Signal Protocol state...');
-      await Future.delayed(const Duration(milliseconds: 500));
+      // Immediately update notification after restore
+      await BackupNotificationService.showProgressNotification('Messages restored successfully', 80);
 
-      await _updateProgress(0.95, 'Finalizing restore...');
+      // Check cancellation after restore
+      if (_backupCancellationRequested) {
+        throw Exception('Restore cancelled by user');
+      }
+
+      await _updateProgress(0.9, 'Finalizing restore...');
+      await BackupNotificationService.showProgressNotification('Finalizing restore...', 90);
+      await Future.delayed(const Duration(milliseconds: 300));
+
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        throw Exception('Restore cancelled by user');
+      }
+
+      await _updateProgress(0.95, 'Completing restore...');
+      await BackupNotificationService.showProgressNotification('Completing restore...', 95);
 
       // Track this backup as restored
       final backupFileName = path.basename(filePath);
@@ -319,42 +800,155 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
       await prefs.setInt('last_restored_backup_timestamp', backupModified);
 
       await _updateProgress(1.0, 'Restore completed!');
-      await Future.delayed(const Duration(milliseconds: 800));
 
+      // Show message if widget is still mounted
       if (mounted) {
         _showSnackbar('Backup restored! Restarting app...', isError: false);
         await Future.delayed(const Duration(seconds: 2));
+      } else {
+        debugPrint('[BackupManagement] Widget disposed, restarting app anyway...');
+        await Future.delayed(const Duration(seconds: 1));
+      }
+
+      // CRITICAL: Restart app even if widget is disposed
+      debugPrint('[BackupManagement] Triggering app restart after restore...');
+      try {
         Restart.restartApp();
+        debugPrint('[BackupManagement] ✅ Restart command sent');
+      } catch (e) {
+        debugPrint('[BackupManagement] ❌ Failed to restart: $e');
       }
     } catch (e) {
-      // print('[BackupManagement] Restore error: $e');
-      _showSnackbar('Restore failed: $e', isError: true);
-      setState(() {
-        _isBackupInProgress = false;
-        _backupProgress = 0.0;
-        _backupStatus = '';
-      });
+      debugPrint('[BackupManagement] Restore error: $e');
+
+      // Handle cancellation differently from errors
+      if (e.toString().contains('cancelled by user')) {
+        debugPrint('[BackupManagement] Restore cancelled by user');
+
+        // Show cancellation notification
+        await BackupNotificationService.showFailureNotification('Local', 'Restore cancelled');
+
+        if (mounted) {
+          _showSnackbar('Restore cancelled', isError: false);
+        }
+      } else {
+        // Show failure notification
+        await BackupNotificationService.showFailureNotification(
+          'Local',
+          e.toString().length > 100 ? 'Restore error occurred' : e.toString(),
+        );
+
+        if (mounted) {
+          _showSnackbar('Restore failed: $e', isError: true);
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _isBackupInProgress = false;
+          _backupCancellationRequested = false;
+          _backupProgress = 0.0;
+          _backupStatus = '';
+        });
+      }
     }
   }
 
   Future<void> _signInToGoogleDrive() async {
     try {
+      if (!mounted) return;
       setState(() => _isLoading = true);
 
       // Trigger Google Sign-In
       final driveApi = await _backupService.getDriveApi();
 
       if (driveApi != null) {
+        // Update status and cache after successful sign-in
         await _checkGoogleDriveStatus();
-        _showSnackbar('Signed in to Google Drive successfully!');
+        if (mounted) _showSnackbar('Signed in to Google Drive successfully!');
       } else {
-        _showSnackbar('Failed to sign in to Google Drive', isError: true);
+        if (mounted) _showSnackbar('Failed to sign in to Google Drive', isError: true);
       }
     } catch (e) {
-      // print('[BackupManagement] Google Drive sign-in error: $e');
-      _showSnackbar('Sign-in failed: $e', isError: true);
+      debugPrint('[BackupManagement] Google Drive sign-in error: $e');
+      if (mounted) _showSnackbar('Sign-in failed: $e', isError: true);
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _changeGoogleDriveAccount() async {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final borderRadius = (screenWidth * 0.0375).clamp(12.0, 18.0);
+    final titleSize = (screenWidth * 0.045).clamp(16.0, 20.0);
+    final bodySize = (screenWidth * 0.035).clamp(13.0, 16.0);
+
+    try {
+      if (!mounted) return;
+
+      // Show confirmation dialog explaining what will happen
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          backgroundColor: const Color(0xFF0a1128),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(borderRadius),
+            side: BorderSide(color: Colors.cyanAccent.withOpacity(0.3)),
+          ),
+          title: Text('Change Google Drive Account', style: TextStyle(color: Colors.white, fontSize: titleSize)),
+          content: Text(
+            'You will be signed out from the current account and can select a different Google account.\n\nImportant: If you cancel the account selection, you\'ll need to sign in again.',
+            style: TextStyle(color: Colors.white70, fontSize: bodySize),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text('Cancel', style: TextStyle(color: Colors.white70, fontSize: bodySize)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text('Continue', style: TextStyle(color: Colors.cyanAccent, fontSize: bodySize)),
+            ),
+          ],
+        ),
+      );
+
+      if (confirm != true) return;
+
+      if (!mounted) return;
+      setState(() => _isLoading = true);
+
+      // Store current email for comparison
+      final currentEmail = _googleDriveEmail;
+
+      // Sign out current account (necessary to show account picker)
+      await _backupService.signOutFromGoogleDrive();
+
+      // Show account picker
+      final driveApi = await _backupService.getDriveApi();
+
+      if (driveApi != null) {
+        // Successfully signed in with account
+        await _checkGoogleDriveStatus();
+        final newEmail = _googleDriveEmail;
+
+        if (newEmail != currentEmail) {
+          if (mounted) _showSnackbar('Google Drive account changed to $newEmail');
+        } else {
+          if (mounted) _showSnackbar('Signed in with same account');
+        }
+      } else {
+        // User cancelled account picker - no account is now signed in
+        await _checkGoogleDriveStatus();
+        if (mounted) {
+          _showSnackbar('Account selection cancelled. Please sign in to use Google Drive backup.', isError: true);
+        }
+      }
+    } catch (e) {
+      debugPrint('[BackupManagement] Change account error: $e');
+      if (mounted) _showSnackbar('Failed to change account: $e', isError: true);
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -393,7 +987,18 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
     if (confirm == true) {
       try {
         await _backupService.signOutFromGoogleDrive();
-        await _checkGoogleDriveStatus();
+
+        // Clear cache immediately for instant UI update
+        await _updateGoogleDriveCache(false, null);
+
+        // Update UI
+        if (mounted) {
+          setState(() {
+            _isGoogleDriveSignedIn = false;
+            _googleDriveEmail = null;
+          });
+        }
+
         _showSnackbar('Signed out from Google Drive');
       } catch (e) {
         // print('[BackupManagement] Sign-out error: $e');
@@ -414,9 +1019,17 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
     final spacing1 = (MediaQuery.of(context).size.height * 0.0125).clamp(8.0, 12.0);
 
     try {
+      if (!mounted) return;
       setState(() => _isLoading = true);
 
+      // Optimistic execution: Trust cache and try to list backups
+      // getDriveApi() inside listBackupsFromGoogleDrive() will handle auth if needed
       final backups = await _backupService.listBackupsFromGoogleDrive();
+
+      // Update cache after successful operation
+      if (_isGoogleDriveSignedIn) {
+        _updateGoogleDriveCache(true, _googleDriveEmail);
+      }
 
       if (backups.isEmpty) {
         _showSnackbar('No backups found in Google Drive');
@@ -434,53 +1047,123 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
             side: BorderSide(color: Colors.cyanAccent.withOpacity(0.3)),
           ),
           title: Text('Google Drive Backups', style: TextStyle(color: Colors.white, fontSize: titleSize)),
-          content: SizedBox(
+          content: Container(
             width: double.maxFinite,
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.6,
+            ),
             child: ListView.builder(
               shrinkWrap: true,
               itemCount: backups.length,
               itemBuilder: (context, index) {
                 final backup = backups[index];
-                final size = backup.size != null ? _formatFileSize(int.parse(backup.size!)) : 'Unknown';
-                final date = backup.createdTime != null
-                    ? _formatDateTime(backup.createdTime!)
+
+                // CRITICAL: Convert UTC time from Drive API to local time
+                final localDate = backup.createdTime != null
+                    ? backup.createdTime!.toLocal() // Convert UTC to local
+                    : null;
+                final date = localDate != null
+                    ? _formatDateTime(localDate)
                     : 'Unknown date';
 
                 return Card(
                   color: const Color(0xFF1B263B),
                   margin: EdgeInsets.only(bottom: spacing1),
-                  child: ListTile(
-                    leading: Icon(Icons.cloud, color: Colors.cyanAccent, size: iconSize1),
-                    title: Text(
-                      backup.name ?? 'Unknown',
-                      style: TextStyle(color: Colors.white, fontSize: bodySize),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    subtitle: Column(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(borderRadius2),
+                    side: BorderSide(color: Colors.cyanAccent.withOpacity(0.2)),
+                  ),
+                  child: Padding(
+                    padding: EdgeInsets.all(spacing1),
+                    child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        SizedBox(height: spacing1 * 0.5),
-                        Text(date, style: TextStyle(color: Colors.white54, fontSize: smallSize)),
-                        Text(size, style: TextStyle(color: Colors.white54, fontSize: smallSize)),
-                      ],
-                    ),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: Icon(Icons.download, color: Colors.cyanAccent, size: iconSize2),
-                          onPressed: () {
-                            Navigator.pop(context);
-                            _restoreFromGoogleDrive(backup.id!);
-                          },
+                        // Backup name with folder icon
+                        Row(
+                          children: [
+                            Icon(Icons.cloud_done, color: Colors.cyanAccent, size: iconSize1),
+                            SizedBox(width: spacing1),
+                            Expanded(
+                              child: Text(
+                                backup.name ?? 'Unknown',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: bodySize,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
                         ),
-                        IconButton(
-                          icon: Icon(Icons.delete, color: Colors.redAccent, size: iconSize2),
-                          onPressed: () {
-                            Navigator.pop(context);
-                            _deleteGoogleDriveBackup(backup.id!);
-                          },
+                        SizedBox(height: spacing1),
+
+                        // Date and type info
+                        Row(
+                          children: [
+                            Icon(Icons.access_time, color: Colors.white54, size: iconSize2 * 0.8),
+                            SizedBox(width: spacing1 * 0.5),
+                            Text(
+                              date,
+                              style: TextStyle(color: Colors.white70, fontSize: smallSize),
+                            ),
+                          ],
+                        ),
+                        SizedBox(height: spacing1 * 0.5),
+                        Row(
+                          children: [
+                            Icon(Icons.photo_library, color: Colors.green, size: iconSize2 * 0.8),
+                            SizedBox(width: spacing1 * 0.5),
+                            Text(
+                              'Full backup with media',
+                              style: TextStyle(color: Colors.green, fontSize: smallSize),
+                            ),
+                          ],
+                        ),
+                        SizedBox(height: spacing1),
+
+                        // Action buttons
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  _restoreFromGoogleDrive(backup.id!);
+                                },
+                                icon: Icon(Icons.download, size: iconSize2 * 0.9),
+                                label: Text('Restore', style: TextStyle(fontSize: smallSize)),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.cyanAccent,
+                                  side: BorderSide(color: Colors.cyanAccent),
+                                  padding: EdgeInsets.symmetric(
+                                    vertical: spacing1 * 0.8,
+                                    horizontal: spacing1,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            SizedBox(width: spacing1),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  _deleteGoogleDriveBackup(backup.id!);
+                                },
+                                icon: Icon(Icons.delete, size: iconSize2 * 0.9),
+                                label: Text('Delete', style: TextStyle(fontSize: smallSize)),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.redAccent,
+                                  side: BorderSide(color: Colors.redAccent),
+                                  padding: EdgeInsets.symmetric(
+                                    vertical: spacing1 * 0.8,
+                                    horizontal: spacing1,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
@@ -498,14 +1181,14 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
         ),
       );
     } catch (e) {
-      // print('[BackupManagement] Error listing Google Drive backups: $e');
-      _showSnackbar('Failed to load backups: $e', isError: true);
+      debugPrint('[BackupManagement] Error listing Google Drive backups: $e');
+      if (mounted) _showSnackbar('Failed to load backups: $e', isError: true);
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  Future<void> _restoreFromGoogleDrive(String fileId) async {
+  Future<void> _restoreFromGoogleDrive(String folderId) async {
     final passphrase = await _askForPassword(
       title: 'Restore from Google Drive',
       hint: 'Enter your backup passphrase',
@@ -516,41 +1199,128 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
       return;
     }
 
+    if (!mounted) return;
+
     setState(() {
       _isBackupInProgress = true;
+      _backupCancellationRequested = false;
       _backupProgress = 0.0;
       _backupStatus = 'Preparing restore...';
     });
 
     try {
-      await _updateProgress(0.1, 'Downloading from Google Drive...');
-      final downloadedFile = await _backupService.downloadFromGoogleDrive(fileId);
+      // Show initial notification
+      await BackupNotificationService.showProgressNotification('Starting Google Drive restore...', 0);
 
-      if (downloadedFile == null) {
-        throw Exception('Failed to download backup');
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        throw Exception('Restore cancelled by user');
       }
 
-      await _updateProgress(0.3, 'Decrypting backup...');
-      final backupData = await _backupService.decryptBackup(downloadedFile, passphrase);
+      await _updateProgress(0.1, 'Downloading from Google Drive...');
+      await BackupNotificationService.showProgressNotification('Downloading from Google Drive...', 10);
 
-      await _updateProgress(0.6, 'Restoring messages...');
-      await _backupService.restoreBackup(backupData);
+      // Check cancellation
+      if (_backupCancellationRequested) {
+        throw Exception('Restore cancelled by user');
+      }
+
+      // Use new restore method with media download progress tracking
+      await _backupService.restoreFromGoogleDrive(
+        backupFolderId: folderId,
+        passphrase: passphrase,
+        shouldCancel: () {
+          debugPrint('[BackupManagement] shouldCancel callback called, returning: $_backupCancellationRequested');
+          return _backupCancellationRequested;
+        },
+        onMediaProgress: (current, total, fileName) {
+          // Check cancellation during media download
+          if (_backupCancellationRequested) {
+            debugPrint('[BackupManagement] Cancellation detected during media download');
+            return;
+          }
+
+          // Update UI and notification with media download progress
+          final mediaProgress = 0.5 + (current / total) * 0.4; // 50-90% for media download
+          final mediaStatus = 'Downloading media $current/$total: $fileName';
+          final notificationProgress = (mediaProgress * 100).toInt();
+
+          // CRITICAL: Always update notification even if widget is disposed
+          BackupNotificationService.showProgressNotification(
+            'Downloading media ($current/$total)',
+            notificationProgress,
+          );
+
+          // Update UI only if still mounted
+          if (mounted) {
+            setState(() {
+              _backupProgress = mediaProgress;
+              _backupStatus = mediaStatus;
+            });
+
+            debugPrint('[BackupManagement] Media download: $current/$total - $fileName');
+          }
+        },
+      );
+
+      // Check cancellation after restore
+      if (_backupCancellationRequested) {
+        throw Exception('Restore cancelled by user');
+      }
 
       await _updateProgress(1.0, 'Restore completed!');
+      await BackupNotificationService.showProgressNotification('Restore completed!', 100);
 
+      // Show message if widget is still mounted
       if (mounted) {
-        _showSnackbar('Backup restored! Restarting app...', isError: false);
+        _showSnackbar('Backup restored with media! Restarting app...', isError: false);
         await Future.delayed(const Duration(seconds: 2));
+      } else {
+        debugPrint('[BackupManagement] Widget disposed, restarting app anyway...');
+        await Future.delayed(const Duration(seconds: 1));
+      }
+
+      // CRITICAL: Restart app even if widget is disposed
+      debugPrint('[BackupManagement] Triggering app restart after Google Drive restore...');
+      try {
         Restart.restartApp();
+        debugPrint('[BackupManagement] ✅ Restart command sent');
+      } catch (e) {
+        debugPrint('[BackupManagement] ❌ Failed to restart: $e');
       }
     } catch (e) {
-      // print('[BackupManagement] Google Drive restore error: $e');
-      _showSnackbar('Restore failed: $e', isError: true);
-      setState(() {
-        _isBackupInProgress = false;
-        _backupProgress = 0.0;
-        _backupStatus = '';
-      });
+      debugPrint('[BackupManagement] Google Drive restore error: $e');
+
+      // Handle cancellation differently from errors
+      if (e.toString().contains('cancelled by user') || e.toString().contains('download cancelled')) {
+        debugPrint('[BackupManagement] Google Drive restore cancelled by user');
+
+        // Show cancellation notification
+        await BackupNotificationService.showFailureNotification('Google Drive', 'Restore cancelled');
+
+        if (mounted) {
+          _showSnackbar('Restore cancelled', isError: false);
+        }
+      } else {
+        // Show failure notification
+        await BackupNotificationService.showFailureNotification(
+          'Google Drive',
+          e.toString().length > 100 ? 'Restore error occurred' : e.toString(),
+        );
+
+        if (mounted) {
+          _showSnackbar('Restore failed: $e', isError: true);
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _isBackupInProgress = false;
+          _backupCancellationRequested = false;
+          _backupProgress = 0.0;
+          _backupStatus = '';
+        });
+      }
     }
   }
 
@@ -651,43 +1421,60 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
     final bodySize = (screenWidth * 0.035).clamp(13.0, 16.0);
 
     String? password;
-    await showDialog(
+    bool obscurePassword = true;
+
+    final result = await showDialog<String?>(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF0a1128),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(borderRadius),
-          side: BorderSide(color: Colors.cyanAccent.withOpacity(0.3)),
-        ),
-        title: Text(title, style: TextStyle(color: Colors.white, fontSize: titleSize)),
-        content: TextField(
-          obscureText: true,
-          style: TextStyle(color: Colors.white, fontSize: bodySize),
-          decoration: InputDecoration(
-            hintText: hint,
-            hintStyle: TextStyle(color: Colors.white38, fontSize: bodySize),
-            enabledBorder: const UnderlineInputBorder(
-              borderSide: BorderSide(color: Colors.cyanAccent),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          backgroundColor: const Color(0xFF0a1128),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(borderRadius),
+            side: BorderSide(color: Colors.cyanAccent.withOpacity(0.3)),
+          ),
+          title: Text(title, style: TextStyle(color: Colors.white, fontSize: titleSize)),
+          content: TextField(
+            obscureText: obscurePassword,
+            style: TextStyle(color: Colors.white, fontSize: bodySize),
+            decoration: InputDecoration(
+              hintText: hint,
+              hintStyle: TextStyle(color: Colors.white38, fontSize: bodySize),
+              enabledBorder: const UnderlineInputBorder(
+                borderSide: BorderSide(color: Colors.cyanAccent),
+              ),
+              focusedBorder: const UnderlineInputBorder(
+                borderSide: BorderSide(color: Colors.cyanAccent, width: 2),
+              ),
+              suffixIcon: IconButton(
+                icon: Icon(
+                  obscurePassword ? Icons.visibility : Icons.visibility_off,
+                  color: Colors.white54,
+                ),
+                onPressed: () {
+                  setState(() {
+                    obscurePassword = !obscurePassword;
+                  });
+                },
+              ),
             ),
-            focusedBorder: const UnderlineInputBorder(
-              borderSide: BorderSide(color: Colors.cyanAccent, width: 2),
+            onChanged: (value) => password = value,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, null), // CRITICAL: Return null for cancel
+              child: Text('Cancel', style: TextStyle(color: Colors.white70, fontSize: bodySize)),
             ),
-          ),
-          onChanged: (value) => password = value,
+            TextButton(
+              onPressed: () => Navigator.pop(context, password), // CRITICAL: Return password for OK
+              child: Text('OK', style: TextStyle(color: Colors.cyanAccent, fontSize: bodySize)),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Cancel', style: TextStyle(color: Colors.white70, fontSize: bodySize)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('OK', style: TextStyle(color: Colors.cyanAccent, fontSize: bodySize)),
-          ),
-        ],
       ),
     );
-    return password;
+
+    // CRITICAL: Return the dialog result (null for cancel, password for OK)
+    return result;
   }
 
   void _showSnackbar(String message, {bool isError = false}) {
@@ -696,8 +1483,35 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
       SnackBar(
         content: Text(message),
         backgroundColor: isError ? Colors.red : Colors.green,
+        duration: const Duration(seconds: 2),
       ),
     );
+  }
+
+  /// Trigger highlight animation and haptic feedback when settings change
+  Future<void> _triggerSettingsChangedFeedback(String message) async {
+    // Haptic feedback
+    HapticFeedback.mediumImpact();
+
+    // Show snackbar
+    _showSnackbar(message, isError: false);
+
+    // Trigger highlight animation on "Next backup" box
+    if (mounted) {
+      setState(() {
+        _highlightNextBackup = true;
+      });
+
+      _highlightController.forward(from: 0.0);
+
+      // Reset highlight after animation completes
+      await Future.delayed(const Duration(milliseconds: 800));
+      if (mounted) {
+        setState(() {
+          _highlightNextBackup = false;
+        });
+      }
+    }
   }
 
   String _formatFileSize(int bytes) {
@@ -718,6 +1532,24 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
       return '${difference.inDays} days ago';
     } else {
       return '${dateTime.day}/${dateTime.month}/${dateTime.year}';
+    }
+  }
+
+  String _formatNextBackupTime(DateTime nextBackup) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final tomorrow = today.add(const Duration(days: 1));
+    final nextBackupDate = DateTime(nextBackup.year, nextBackup.month, nextBackup.day);
+
+    final timeStr = '${nextBackup.hour.toString().padLeft(2, '0')}:${nextBackup.minute.toString().padLeft(2, '0')}';
+
+    if (nextBackupDate == today) {
+      return 'Tonight at $timeStr';
+    } else if (nextBackupDate == tomorrow) {
+      return 'Tomorrow at $timeStr';
+    } else {
+      final daysUntil = nextBackupDate.difference(today).inDays;
+      return 'In $daysUntil days at $timeStr';
     }
   }
 
@@ -797,10 +1629,14 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(
-                            _backupStatus,
-                            style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
+                          Expanded(
+                            child: Text(
+                              _backupStatus,
+                              style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
+                          SizedBox(width: spacing1),
                           Text(
                             '${(_backupProgress * 100).toInt()}%',
                             style: TextStyle(
@@ -810,6 +1646,20 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
                             ),
                           ),
                         ],
+                      ),
+                      SizedBox(height: spacing2),
+                      OutlinedButton.icon(
+                        onPressed: _backupCancellationRequested ? null : _cancelBackup,
+                        icon: Icon(Icons.cancel, size: iconSize2),
+                        label: Text(
+                          _backupCancellationRequested ? 'Cancelling...' : 'Cancel Backup/Restore',
+                          style: TextStyle(fontSize: bodyTextSize),
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.red,
+                          side: const BorderSide(color: Colors.red),
+                          minimumSize: Size(double.infinity, buttonHeight * 0.7),
+                        ),
                       ),
                     ],
                   ),
@@ -889,29 +1739,51 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
                             style: TextStyle(color: Colors.white, fontSize: bodyTextSize),
                           ),
                           SizedBox(height: spacing2),
+                          OutlinedButton.icon(
+                            onPressed: _isBackupInProgress ? null : _viewGoogleDriveBackups,
+                            icon: Icon(Icons.cloud_download, size: iconSize2),
+                            label: Text('View Backups', style: TextStyle(fontSize: bodyTextSize)),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.cyanAccent,
+                              side: const BorderSide(color: Colors.cyanAccent),
+                              minimumSize: Size(double.infinity, buttonHeight * 0.75),
+                            ),
+                          ),
+                          SizedBox(height: spacing1),
                           Row(
                             children: [
                               Expanded(
                                 child: OutlinedButton.icon(
-                                  onPressed: _isBackupInProgress ? null : _viewGoogleDriveBackups,
-                                  icon: Icon(Icons.cloud_download, size: iconSize2),
-                                  label: Text('View Backups', style: TextStyle(fontSize: bodyTextSize)),
+                                  onPressed: _isBackupInProgress ? null : _changeGoogleDriveAccount,
+                                  icon: Icon(Icons.swap_horiz, size: iconSize2),
+                                  label: Text('Change Account', style: TextStyle(fontSize: bodyTextSize)),
                                   style: OutlinedButton.styleFrom(
                                     foregroundColor: Colors.cyanAccent,
                                     side: const BorderSide(color: Colors.cyanAccent),
-                                    padding: EdgeInsets.symmetric(vertical: spacing2),
+                                    padding: EdgeInsets.symmetric(
+                                      horizontal: padding1 * 0.5,
+                                      vertical: spacing2,
+                                    ),
+                                    minimumSize: Size(0, buttonHeight * 0.7),
                                   ),
                                 ),
                               ),
                               SizedBox(width: spacing1),
-                              OutlinedButton(
-                                onPressed: _signOutFromGoogleDrive,
-                                style: OutlinedButton.styleFrom(
-                                  foregroundColor: Colors.red,
-                                  side: const BorderSide(color: Colors.red),
-                                  padding: EdgeInsets.all(spacing2),
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: _isBackupInProgress ? null : _signOutFromGoogleDrive,
+                                  icon: Icon(Icons.logout, size: iconSize2),
+                                  label: Text('Sign Out', style: TextStyle(fontSize: bodyTextSize)),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Colors.red,
+                                    side: const BorderSide(color: Colors.red),
+                                    padding: EdgeInsets.symmetric(
+                                      horizontal: padding1 * 0.5,
+                                      vertical: spacing2,
+                                    ),
+                                    minimumSize: Size(0, buttonHeight * 0.7),
+                                  ),
                                 ),
-                                child: Icon(Icons.logout, size: iconSize2),
                               ),
                             ],
                           ),
@@ -969,7 +1841,15 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
                             const Spacer(),
                             Switch(
                               value: settings.enabled,
-                              onChanged: (value) => settingsProvider.setEnabled(value),
+                              onChanged: (value) async {
+                                await settingsProvider.setEnabled(value);
+                                if (value) {
+                                  _triggerSettingsChangedFeedback('Auto-backup enabled');
+                                } else {
+                                  HapticFeedback.lightImpact();
+                                  _showSnackbar('Auto-backup disabled');
+                                }
+                              },
                               activeColor: Colors.cyanAccent,
                             ),
                           ],
@@ -997,107 +1877,82 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
                                   child: Text(freq.displayName),
                                 );
                               }).toList(),
-                              onChanged: (value) {
-                                if (value != null) settingsProvider.setFrequency(value);
+                              onChanged: (value) async {
+                                if (value != null) {
+                                  await settingsProvider.setFrequency(value);
+                                  _triggerSettingsChangedFeedback(
+                                    'Backup frequency updated to ${value.displayName}',
+                                  );
+                                }
                               },
                             ),
                           ),
 
-                          // Destination
+                          // Info: Auto-backup is local only
                           ListTile(
                             contentPadding: EdgeInsets.zero,
-                            leading: Icon(Icons.storage, color: Colors.cyanAccent, size: iconSize2),
-                            title: Text('Destination', style: TextStyle(color: Colors.white70, fontSize: bodyTextSize)),
-                            trailing: DropdownButton<BackupDestination>(
-                              value: settings.destination,
-                              dropdownColor: const Color(0xFF1B263B),
-                              style: TextStyle(color: Colors.white, fontSize: bodyTextSize),
-                              underline: Container(height: 1, color: Colors.cyanAccent),
-                              items: BackupDestination.values.map((dest) {
-                                return DropdownMenuItem(
-                                  value: dest,
-                                  child: Text(dest.displayName),
-                                );
-                              }).toList(),
-                              onChanged: (value) {
-                                if (value != null) settingsProvider.setDestination(value);
-                              },
-                            ),
-                          ),
-
-                          // WiFi Only
-                          SwitchListTile(
-                            contentPadding: EdgeInsets.zero,
-                            secondary: Icon(Icons.wifi, color: Colors.cyanAccent, size: iconSize2),
-                            title: Text('WiFi Only', style: TextStyle(color: Colors.white70, fontSize: bodyTextSize)),
+                            leading: Icon(Icons.info_outline, color: Colors.cyanAccent, size: iconSize2),
+                            title: Text('Backup Location', style: TextStyle(color: Colors.white70, fontSize: bodyTextSize)),
                             subtitle: Text(
-                              settings.wifiOnly ? 'Backups only on WiFi' : 'Backups on WiFi or mobile data',
-                              style: TextStyle(color: Colors.white38, fontSize: smallTextSize),
-                            ),
-                            value: settings.wifiOnly,
-                            activeColor: Colors.cyanAccent,
-                            onChanged: (value) => settingsProvider.setWifiOnly(value),
-                          ),
-
-                          // Media Age Limit
-                          ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            leading: Icon(Icons.image, color: Colors.cyanAccent, size: iconSize2),
-                            title: Text('Media Age Limit', style: TextStyle(color: Colors.white70, fontSize: bodyTextSize)),
-                            subtitle: Text(
-                              settings.mediaAgeLimitDays == null
-                                ? 'Include all media'
-                                : 'Last ${settings.mediaAgeLimitDays} days',
-                              style: TextStyle(color: Colors.white38, fontSize: smallTextSize),
-                            ),
-                            trailing: DropdownButton<int?>(
-                              value: settings.mediaAgeLimitDays,
-                              dropdownColor: const Color(0xFF1B263B),
-                              style: TextStyle(color: Colors.white, fontSize: bodyTextSize),
-                              underline: Container(height: 1, color: Colors.cyanAccent),
-                              items: [
-                                const DropdownMenuItem(value: null, child: Text('All')),
-                                const DropdownMenuItem(value: 7, child: Text('7 days')),
-                                const DropdownMenuItem(value: 30, child: Text('30 days')),
-                                const DropdownMenuItem(value: 90, child: Text('90 days')),
-                              ],
-                              onChanged: (value) => settingsProvider.setMediaAgeLimitDays(value),
+                              'Local storage only • No internet required',
+                              style: TextStyle(color: Colors.white54, fontSize: smallTextSize),
                             ),
                           ),
 
                           Divider(color: Colors.white24, height: spacing2 * 2),
 
-                          // Set Passphrase Button
-                          OutlinedButton.icon(
-                            onPressed: () async {
-                              final passphrase = await _askForPassword(
-                                title: 'Set Auto-Backup Passphrase',
-                                hint: 'Enter passphrase for auto-backups',
-                              );
-                              if (passphrase != null && passphrase.isNotEmpty) {
-                                await settingsProvider.setBackupPassphrase(passphrase);
-                                _showSnackbar('Auto-backup passphrase set');
-                              }
-                            },
-                            icon: Icon(Icons.lock, size: iconSize2),
-                            label: Text(
-                              settings.lastBackupPassphrase == null
-                                  ? 'Set Passphrase (Required)'
-                                  : 'Update Passphrase',
-                              style: TextStyle(fontSize: bodyTextSize),
-                            ),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: settings.lastBackupPassphrase == null
-                                  ? Colors.orange
-                                  : Colors.cyanAccent,
-                              side: BorderSide(
-                                color: settings.lastBackupPassphrase == null
-                                    ? Colors.orange
-                                    : Colors.cyanAccent,
+                          // Set Passphrase Button (One-time only)
+                          if (settings.lastBackupPassphrase == null)
+                            OutlinedButton.icon(
+                              onPressed: () async {
+                                final passphrase = await _askForPassword(
+                                  title: 'Set Auto-Backup Passphrase',
+                                  hint: 'Enter passphrase for auto-backups',
+                                );
+                                if (passphrase != null && passphrase.isNotEmpty) {
+                                  await settingsProvider.setBackupPassphrase(passphrase);
+                                  HapticFeedback.heavyImpact();
+                                  _showSnackbar('Auto-backup passphrase set successfully');
+                                }
+                              },
+                              icon: Icon(Icons.lock, size: iconSize2),
+                              label: Text(
+                                'Set Passphrase (Required)',
+                                style: TextStyle(fontSize: bodyTextSize),
                               ),
-                              minimumSize: Size(double.infinity, buttonHeight * 0.75),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.orange,
+                                side: const BorderSide(color: Colors.orange),
+                                minimumSize: Size(double.infinity, buttonHeight * 0.75),
+                              ),
+                            )
+                          else
+                            // Passphrase already set - show info
+                            Container(
+                              padding: EdgeInsets.all(spacing2),
+                              decoration: BoxDecoration(
+                                color: Colors.green.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(borderRadius1),
+                                border: Border.all(color: Colors.green.withOpacity(0.3)),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(Icons.check_circle, color: Colors.green, size: iconSize2),
+                                  SizedBox(width: spacing2),
+                                  Expanded(
+                                    child: Text(
+                                      'Passphrase configured',
+                                      style: TextStyle(
+                                        color: Colors.green,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: bodyTextSize,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                          ),
+
 
                           // Last Backup Info
                           if (lastBackup != null) ...[
@@ -1124,28 +1979,47 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
                                 borderRadius: BorderRadius.circular(borderRadius1),
                                 border: Border.all(color: Colors.orange.withOpacity(0.3)),
                               ),
-                              child: Row(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Icon(Icons.battery_alert, color: Colors.orange, size: iconSize2),
-                                  SizedBox(width: spacing2),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          'Battery Optimization Active',
-                                          style: TextStyle(
-                                            color: Colors.orange,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: bodyTextSize,
-                                          ),
+                                  Row(
+                                    children: [
+                                      Icon(Icons.battery_alert, color: Colors.orange, size: iconSize2),
+                                      SizedBox(width: spacing2),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              'Battery Optimization Active',
+                                              style: TextStyle(
+                                                color: Colors.orange,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: bodyTextSize,
+                                              ),
+                                            ),
+                                            SizedBox(height: spacing1 * 0.5),
+                                            Text(
+                                              'For best results:\n1. Set battery to "Unrestricted"\n2. Enable "Allow background activity"',
+                                              style: TextStyle(color: Colors.white70, fontSize: smallTextSize),
+                                            ),
+                                          ],
                                         ),
-                                        SizedBox(height: spacing1 * 0.5),
-                                        Text(
-                                          'Auto-backup may not run reliably. Disable battery optimization for best results.',
-                                          style: TextStyle(color: Colors.white70, fontSize: smallTextSize),
-                                        ),
-                                      ],
+                                      ),
+                                    ],
+                                  ),
+                                  SizedBox(height: spacing2),
+                                  ElevatedButton.icon(
+                                    onPressed: _requestBatteryOptimizationExemption,
+                                    icon: Icon(Icons.settings, size: iconSize3),
+                                    label: Text('Open Battery Settings'),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.orange,
+                                      foregroundColor: Colors.white,
+                                      padding: EdgeInsets.symmetric(horizontal: spacing2, vertical: spacing1),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(borderRadius1),
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -1245,7 +2119,14 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
                                       children: [
                                         Icon(Icons.access_time, size: iconSize3, color: Colors.white54),
                                         SizedBox(width: spacing1 * 0.5),
-                                        Text(modified, style: TextStyle(color: Colors.white54, fontSize: smallTextSize)),
+                                        Expanded(
+                                          child: Text(
+                                            modified,
+                                            style: TextStyle(color: Colors.white54, fontSize: smallTextSize),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
                                       ],
                                     ),
                                     SizedBox(height: spacing1 * 0.5),
@@ -1253,7 +2134,14 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> {
                                       children: [
                                         Icon(Icons.storage, size: iconSize3, color: Colors.white54),
                                         SizedBox(width: spacing1 * 0.5),
-                                        Text(size, style: TextStyle(color: Colors.white54, fontSize: smallTextSize)),
+                                        Expanded(
+                                          child: Text(
+                                            size,
+                                            style: TextStyle(color: Colors.white54, fontSize: smallTextSize),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
                                       ],
                                     ),
                                   ],

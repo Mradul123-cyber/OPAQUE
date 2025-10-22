@@ -5,7 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 class DeviceService {
   // Replace with your backend base URL (use http://10.0.2.2:8080 for Android emulator)
-  static const String baseUrl = 'http://192.168.29.81:8080';
+  static const String baseUrl = 'https://api.zarqmessenger.com';
 
   /// Register device + keys with the backend.
   /// - deviceId: integer device id (1 for first device)
@@ -101,6 +101,7 @@ class DeviceService {
     required int conversationId,
     required String contentB64,
     String? sessionContext, // Add this parameter
+    int? replyToMessageId, // Reply-to message ID
     String baseUrl = baseUrl,
   }) async {
     final user = FirebaseAuth.instance.currentUser;
@@ -120,6 +121,11 @@ class DeviceService {
     // Add session context if provided
     if (sessionContext != null) {
       requestBody['session_context_b64'] = sessionContext;
+    }
+
+    // Add reply_to_message_id if provided
+    if (replyToMessageId != null) {
+      requestBody['replyToMessageId'] = replyToMessageId;
     }
 
     final response = await http.post(

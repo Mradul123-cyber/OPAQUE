@@ -38,7 +38,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   String? _usernameError;
   Timer? _debounce;
   bool _showUsernameField = false; // Track if username field should be shown (not used for Google users anymore)
-  final String backendBaseUrl = 'http://192.168.29.81:8080';
+  final String backendBaseUrl = 'https://api.zarqmessenger.com';
 
   bool _isGoogleSignIn() {
     // Check if user signed in with Google

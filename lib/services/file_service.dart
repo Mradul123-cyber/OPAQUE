@@ -13,15 +13,18 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:pointycastle/export.dart';
 import 'package:crypto/crypto.dart';
-import 'package:video_compress/video_compress.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
 
 class FileService {
-  static const String baseUrl = 'http://192.168.29.81:8080';
+  static const String baseUrl = 'https://api.zarqmessenger.com';
   static const int maxImageSize = 1920; // Max width/height for images
   static const int imageQuality = 85; // JPEG quality (0-100)
-  static const int maxVideoSize = 100 * 1024 * 1024; // 100MB max video size
+  static const int maxCompressedVideoSize = 300 * 1024 * 1024; // 300MB max COMPRESSED video size
+  static const int maxDocumentSize = 150 * 1024 * 1024; // 150MB max document size
   static const int videoBitrate = 1000000; // 1Mbps for compressed video
+
+  // Native video compression MethodChannel
+  static const MethodChannel _videoCompressionChannel = MethodChannel('com.zarq/video_compression');
 
   /// Pick image from gallery or camera
   static Future<XFile?> pickImage({required ImageSource source}) async {
@@ -111,11 +114,11 @@ class FileService {
     }
   }
 
-  /// Compress video before encryption
+  /// Compress video before encryption (using native Kotlin MediaCodec API)
   /// Returns the file path (compressed or original)
   static Future<File?> compressVideo(String videoPath) async {
+    final file = File(videoPath);
     try {
-      final file = File(videoPath);
       final fileSize = await file.length();
 
       // print('[FileService] Original video size: ${fileSize / (1024 * 1024)} MB');
@@ -127,26 +130,33 @@ class FileService {
         return file;
       }
 
-      // print('[FileService] Compressing video...');
-      final MediaInfo? compressedVideo = await VideoCompress.compressVideo(
-        videoPath,
-        quality: VideoQuality.MediumQuality,
-        deleteOrigin: false,
-        includeAudio: true,
-      );
+      // print('[FileService] Compressing video with native MediaCodec...');
 
-      if (compressedVideo == null || compressedVideo.file == null) {
+      // Create output path in temp directory
+      final tempDir = await getTemporaryDirectory();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final outputPath = path.join(tempDir.path, 'compressed_$timestamp.mp4');
+
+      // Call native compression
+      final result = await _videoCompressionChannel.invokeMethod('compressVideo', {
+        'inputPath': videoPath,
+        'outputPath': outputPath,
+        'quality': 'MEDIUM', // LOW, MEDIUM, or HIGH
+      });
+
+      if (result != null) {
+        final compressedFile = File(result);
+        final compressedSize = await compressedFile.length();
+        // print('[FileService] ✅ Native compression: ${fileSize / (1024 * 1024)} MB → ${compressedSize / (1024 * 1024)} MB');
+        return compressedFile;
+      } else {
         // print('[FileService] Compression failed, using original');
         return file;
       }
-
-      final compressedSize = await compressedVideo.file!.length();
-      // print('[FileService] Compressed: ${fileSize / (1024 * 1024)} MB → ${compressedSize / (1024 * 1024)} MB');
-
-      return compressedVideo.file!;
     } catch (e) {
       // print('[FileService] Error compressing video: $e');
-      return null;
+      // Return original file instead of null to prevent crashes
+      return file;
     }
   }
 
@@ -172,18 +182,17 @@ class FileService {
     }
   }
 
-  /// Get video metadata (duration, dimensions)
+  /// Get video metadata (duration, dimensions) using native Android MediaMetadataRetriever
   static Future<Map<String, dynamic>?> getVideoMetadata(String videoPath) async {
     try {
-      final MediaInfo? info = await VideoCompress.getMediaInfo(videoPath);
-      if (info == null) return null;
+      final result = await _videoCompressionChannel.invokeMethod('getVideoMetadata', {
+        'videoPath': videoPath,
+      });
 
-      return {
-        'duration': info.duration?.toInt() ?? 0, // milliseconds
-        'width': info.width?.toInt() ?? 0,
-        'height': info.height?.toInt() ?? 0,
-        'filesize': info.filesize ?? 0,
-      };
+      if (result != null) {
+        return Map<String, dynamic>.from(result);
+      }
+      return null;
     } catch (e) {
       // print('[FileService] Error getting video metadata: $e');
       return null;
@@ -523,13 +532,14 @@ class FileService {
   }
 
   /// Save image to persistent storage (UID-isolated)
+  /// WhatsApp approach: Store in external storage so media survives app uninstall
   static Future<File?> saveImageToPersistentStorage(Uint8List data, int attachmentId) async {
     try {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return null;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final imagesDir = Directory(path.join(dir.path, 'images', currentUser.uid));
+      // Use external storage like WhatsApp - media persists after uninstall
+      final imagesDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Images/${currentUser.uid}');
 
       // Create user-specific images directory if it doesn't exist
       if (!await imagesDir.exists()) {
@@ -538,10 +548,10 @@ class FileService {
 
       final file = File(path.join(imagesDir.path, 'attachment_$attachmentId.jpg'));
       await file.writeAsBytes(data);
-      // print('[FileService] Saved image to persistent storage: ${file.path}');
+      // print('[FileService] Saved image to external storage: ${file.path}');
       return file;
     } catch (e) {
-      // print('[FileService] Error saving to persistent storage: $e');
+      // print('[FileService] Error saving to external storage: $e');
       return null;
     }
   }
@@ -552,18 +562,18 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return null;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File(path.join(dir.path, 'images', currentUser.uid, 'attachment_$attachmentId.jpg'));
+      // Load from external storage
+      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Images/${currentUser.uid}/attachment_$attachmentId.jpg');
 
       if (await file.exists()) {
-        // print('[FileService] Loading image from persistent storage: ${file.path}');
+        // print('[FileService] Loading image from external storage: ${file.path}');
         return await file.readAsBytes();
       } else {
-        // print('[FileService] Image not found in persistent storage');
+        // print('[FileService] Image not found in external storage');
         return null;
       }
     } catch (e) {
-      // print('[FileService] Error loading from persistent storage: $e');
+      // print('[FileService] Error loading from external storage: $e');
       return null;
     }
   }
@@ -574,8 +584,8 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return false;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File(path.join(dir.path, 'images', currentUser.uid, 'attachment_$attachmentId.jpg'));
+      // Check external storage
+      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Images/${currentUser.uid}/attachment_$attachmentId.jpg');
       return await file.exists();
     } catch (e) {
       return false;
@@ -587,13 +597,14 @@ class FileService {
   // ============================================================
 
   /// Save video to persistent storage (UID-isolated)
+  /// WhatsApp approach: Store in external storage so media survives app uninstall
   static Future<File?> saveVideoToPersistentStorage(Uint8List data, int attachmentId) async {
     try {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return null;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final videosDir = Directory(path.join(dir.path, 'videos', currentUser.uid));
+      // Use external storage like WhatsApp - media persists after uninstall
+      final videosDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Videos/${currentUser.uid}');
 
       // Create user-specific videos directory if it doesn't exist
       if (!await videosDir.exists()) {
@@ -602,10 +613,10 @@ class FileService {
 
       final file = File(path.join(videosDir.path, 'attachment_$attachmentId.mp4'));
       await file.writeAsBytes(data);
-      // print('[FileService] Saved video to persistent storage: ${file.path}');
+      // print('[FileService] Saved video to external storage: ${file.path}');
       return file;
     } catch (e) {
-      // print('[FileService] Error saving video to persistent storage: $e');
+      // print('[FileService] Error saving video to external storage: $e');
       return null;
     }
   }
@@ -616,18 +627,18 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return null;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File(path.join(dir.path, 'videos', currentUser.uid, 'attachment_$attachmentId.mp4'));
+      // Load from external storage
+      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Videos/${currentUser.uid}/attachment_$attachmentId.mp4');
 
       if (await file.exists()) {
-        // print('[FileService] Loading video from persistent storage: ${file.path}');
+        // print('[FileService] Loading video from external storage: ${file.path}');
         return await file.readAsBytes();
       } else {
-        // print('[FileService] Video not found in persistent storage');
+        // print('[FileService] Video not found in external storage');
         return null;
       }
     } catch (e) {
-      // print('[FileService] Error loading video from persistent storage: $e');
+      // print('[FileService] Error loading video from external storage: $e');
       return null;
     }
   }
@@ -638,8 +649,8 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return false;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File(path.join(dir.path, 'videos', currentUser.uid, 'attachment_$attachmentId.mp4'));
+      // Check external storage
+      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Videos/${currentUser.uid}/attachment_$attachmentId.mp4');
       return await file.exists();
     } catch (e) {
       return false;
@@ -652,8 +663,8 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return null;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File(path.join(dir.path, 'videos', currentUser.uid, 'attachment_$attachmentId.mp4'));
+      // Get from external storage
+      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Videos/${currentUser.uid}/attachment_$attachmentId.mp4');
 
       if (await file.exists()) {
         return file.path;
@@ -668,13 +679,14 @@ class FileService {
   // ==================== THUMBNAIL STORAGE ====================
 
   /// Save video thumbnail to persistent storage (UID-isolated)
+  /// WhatsApp approach: Store in external storage so media survives app uninstall
   static Future<bool> saveThumbnailToPersistentStorage(Uint8List thumbnailData, int attachmentId) async {
     try {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return false;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final thumbnailsDir = Directory(path.join(dir.path, 'thumbnails', currentUser.uid));
+      // Use external storage like WhatsApp - media persists after uninstall
+      final thumbnailsDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Thumbnails/${currentUser.uid}');
 
       // Create user-specific thumbnails directory if it doesn't exist
       if (!await thumbnailsDir.exists()) {
@@ -683,10 +695,10 @@ class FileService {
 
       final file = File(path.join(thumbnailsDir.path, 'thumb_$attachmentId.jpg'));
       await file.writeAsBytes(thumbnailData);
-      // print('[FileService] Saved thumbnail to persistent storage: ${file.path}');
+      // print('[FileService] Saved thumbnail to external storage: ${file.path}');
       return true;
     } catch (e) {
-      // print('[FileService] Error saving thumbnail to persistent storage: $e');
+      // print('[FileService] Error saving thumbnail to external storage: $e');
       return false;
     }
   }
@@ -697,18 +709,18 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return null;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File(path.join(dir.path, 'thumbnails', currentUser.uid, 'thumb_$attachmentId.jpg'));
+      // Load from external storage
+      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Thumbnails/${currentUser.uid}/thumb_$attachmentId.jpg');
 
       if (await file.exists()) {
-        // print('[FileService] Loading thumbnail from persistent storage: ${file.path}');
+        // print('[FileService] Loading thumbnail from external storage: ${file.path}');
         return await file.readAsBytes();
       } else {
-        // print('[FileService] Thumbnail not found in persistent storage');
+        // print('[FileService] Thumbnail not found in external storage');
         return null;
       }
     } catch (e) {
-      // print('[FileService] Error loading thumbnail from persistent storage: $e');
+      // print('[FileService] Error loading thumbnail from external storage: $e');
       return null;
     }
   }
@@ -719,8 +731,8 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return false;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File(path.join(dir.path, 'thumbnails', currentUser.uid, 'thumb_$attachmentId.jpg'));
+      // Check external storage
+      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Thumbnails/${currentUser.uid}/thumb_$attachmentId.jpg');
       return await file.exists();
     } catch (e) {
       return false;
@@ -732,13 +744,14 @@ class FileService {
   // ============================================================
 
   /// Save document to persistent storage (UID-isolated)
+  /// WhatsApp approach: Store in external storage so media survives app uninstall
   static Future<File?> saveDocumentToPersistentStorage(Uint8List data, int attachmentId, String extension) async {
     try {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return null;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final documentsDir = Directory(path.join(dir.path, 'documents', currentUser.uid));
+      // Use external storage like WhatsApp - media persists after uninstall
+      final documentsDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Documents/${currentUser.uid}');
 
       // Create user-specific documents directory if it doesn't exist
       if (!await documentsDir.exists()) {
@@ -747,10 +760,10 @@ class FileService {
 
       final file = File(path.join(documentsDir.path, 'attachment_$attachmentId$extension'));
       await file.writeAsBytes(data);
-      // print('[FileService] Saved document to persistent storage: ${file.path}');
+      // print('[FileService] Saved document to external storage: ${file.path}');
       return file;
     } catch (e) {
-      // print('[FileService] Error saving document to persistent storage: $e');
+      // print('[FileService] Error saving document to external storage: $e');
       return null;
     }
   }
@@ -761,18 +774,18 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return null;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File(path.join(dir.path, 'documents', currentUser.uid, 'attachment_$attachmentId$extension'));
+      // Load from external storage
+      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Documents/${currentUser.uid}/attachment_$attachmentId$extension');
 
       if (await file.exists()) {
-        // print('[FileService] Loading document from persistent storage: ${file.path}');
+        // print('[FileService] Loading document from external storage: ${file.path}');
         return await file.readAsBytes();
       } else {
-        // print('[FileService] Document not found in persistent storage');
+        // print('[FileService] Document not found in external storage');
         return null;
       }
     } catch (e) {
-      // print('[FileService] Error loading document from persistent storage: $e');
+      // print('[FileService] Error loading document from external storage: $e');
       return null;
     }
   }
@@ -783,8 +796,8 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return false;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File(path.join(dir.path, 'documents', currentUser.uid, 'attachment_$attachmentId$extension'));
+      // Check external storage
+      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Documents/${currentUser.uid}/attachment_$attachmentId$extension');
       return await file.exists();
     } catch (e) {
       return false;
@@ -797,8 +810,8 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return null;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File(path.join(dir.path, 'documents', currentUser.uid, 'attachment_$attachmentId$extension'));
+      // Get from external storage
+      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Documents/${currentUser.uid}/attachment_$attachmentId$extension');
 
       if (await file.exists()) {
         return file.path;
@@ -847,13 +860,14 @@ class FileService {
   }
 
   /// Save audio to persistent storage (UID-isolated)
+  /// WhatsApp approach: Store in external storage so media survives app uninstall
   static Future<File?> saveAudioToPersistentStorage(Uint8List data, int attachmentId) async {
     try {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return null;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final audiosDir = Directory(path.join(dir.path, 'audios', currentUser.uid));
+      // Use external storage like WhatsApp - media persists after uninstall
+      final audiosDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Audio/${currentUser.uid}');
 
       // Create user-specific audios directory if it doesn't exist
       if (!await audiosDir.exists()) {
@@ -862,10 +876,10 @@ class FileService {
 
       final file = File(path.join(audiosDir.path, 'attachment_$attachmentId.aac'));
       await file.writeAsBytes(data);
-      // print('[FileService] Saved audio to persistent storage: ${file.path}');
+      // print('[FileService] Saved audio to external storage: ${file.path}');
       return file;
     } catch (e) {
-      // print('[FileService] Error saving audio to persistent storage: $e');
+      // print('[FileService] Error saving audio to external storage: $e');
       return null;
     }
   }
@@ -876,18 +890,18 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return null;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File(path.join(dir.path, 'audios', currentUser.uid, 'attachment_$attachmentId.aac'));
+      // Load from external storage
+      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Audio/${currentUser.uid}/attachment_$attachmentId.aac');
 
       if (await file.exists()) {
-        // print('[FileService] Loading audio from persistent storage: ${file.path}');
+        // print('[FileService] Loading audio from external storage: ${file.path}');
         return await file.readAsBytes();
       } else {
-        // print('[FileService] Audio not found in persistent storage');
+        // print('[FileService] Audio not found in external storage');
         return null;
       }
     } catch (e) {
-      // print('[FileService] Error loading audio from persistent storage: $e');
+      // print('[FileService] Error loading audio from external storage: $e');
       return null;
     }
   }
@@ -898,8 +912,8 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return false;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File(path.join(dir.path, 'audios', currentUser.uid, 'attachment_$attachmentId.aac'));
+      // Check external storage
+      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Audio/${currentUser.uid}/attachment_$attachmentId.aac');
       return await file.exists();
     } catch (e) {
       return false;
@@ -912,8 +926,8 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return null;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File(path.join(dir.path, 'audios', currentUser.uid, 'attachment_$attachmentId.aac'));
+      // Get from external storage
+      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Audio/${currentUser.uid}/attachment_$attachmentId.aac');
 
       if (await file.exists()) {
         return file.path;

@@ -61,7 +61,7 @@ class _CustomizationScreenState extends State<CustomizationScreen> {
   final List<BubbleOption> _bubbleOptions = [
     BubbleOption(resourceKey: 'default_rounded', name: 'Rounded'),
     BubbleOption(resourceKey: 'soft_edges', name: 'Soft Edges'),
-    BubbleOption(resourceKey: 'square', name: 'Square'),
+    BubbleOption(resourceKey: 'square_corners', name: 'Square'),
     BubbleOption(resourceKey: 'minimal', name: 'Minimal'),
     BubbleOption(resourceKey: 'modern_card', name: 'Modern Cards'),
   ];
@@ -76,9 +76,10 @@ class _CustomizationScreenState extends State<CustomizationScreen> {
     'yellow': {'name': 'Yellow', 'color': Color(0xFFFFFDE7), 'border': Color(0xFFFFF176)},
   };
 
-  // Home screen background options - Only Light Theme for now
+  // Home screen background options
   final List<Map<String, String>> _homeScreenOptions = [
     {'key': 'default', 'name': 'Light Theme', 'description': 'Clean white background'},
+    {'key': 'dark', 'name': 'Dark Theme', 'description': 'Modern dark background'},
   ];
 
   // Create Group screen background options
@@ -87,7 +88,14 @@ class _CustomizationScreenState extends State<CustomizationScreen> {
     {'key': 'dynamic', 'name': 'Dynamic Leaves', 'description': 'Animated falling leaves'},
   ];
 
-  void _handleSettingChange({String? styleKey, String? colorStart, String? colorEnd, String? homeScreenStyle, String? groupScreenStyle, String? cardBubbleColor}) async {
+  // Find Friends screen theme options
+  final List<Map<String, String>> _findFriendsScreenOptions = [
+    {'key': 'default', 'name': 'Light Theme', 'description': 'Clean white background'},
+    {'key': 'dark', 'name': 'Dark Theme', 'description': 'Modern dark background'},
+  ];
+
+
+  void _handleSettingChange({String? styleKey, String? colorStart, String? colorEnd, String? homeScreenStyle, String? groupScreenStyle, String? cardBubbleColor, String? findFriendsScreenStyle}) async {
     final provider = Provider.of<UserSettingsProvider>(context, listen: false);
 
     // Save to local storage (instant, no network delay)
@@ -98,6 +106,7 @@ class _CustomizationScreenState extends State<CustomizationScreen> {
       homeScreenStyle: homeScreenStyle,
       groupScreenStyle: groupScreenStyle,
       cardBubbleColor: cardBubbleColor,
+      findFriendsScreenStyle: findFriendsScreenStyle,
     );
 
     // Optional: Show brief confirmation
@@ -172,10 +181,17 @@ class _CustomizationScreenState extends State<CustomizationScreen> {
 
                         SizedBox(height: sectionSpacing),
 
-                        // Section: Create Group Screen
-                        _buildSectionHeader(Icons.group_add, 'Create Group Screen'),
+                        // Section: Group Screen
+                        _buildSectionHeader(Icons.group_add, 'Group Screen'),
                         SizedBox(height: itemSpacing),
                         _buildGroupScreenStyleCard(userSettings),
+
+                        SizedBox(height: sectionSpacing),
+
+                        // Section: Friends Screen
+                        _buildSectionHeader(Icons.person_search, 'Friends Screen'),
+                        SizedBox(height: itemSpacing),
+                        _buildFindFriendsScreenStyleCard(userSettings),
 
                         SizedBox(height: sectionSpacing),
 
@@ -622,30 +638,6 @@ class _CustomizationScreenState extends State<CustomizationScreen> {
                 ),
               );
             }),
-            // Coming Soon Message
-            Container(
-              padding: EdgeInsets.all(optionPadding),
-              decoration: BoxDecoration(
-                color: Colors.orange.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(borderRadius * 0.7),
-                border: Border.all(color: Colors.orange.withOpacity(0.3), width: 1),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.access_time, color: Colors.orange, size: optionNameFontSize),
-                  SizedBox(width: optionPadding * 0.5),
-                  Text(
-                    'More themes coming soon...',
-                    style: TextStyle(
-                      color: Colors.orange,
-                      fontSize: optionDescFontSize,
-                      fontStyle: FontStyle.italic,
-                    ),
-                  ),
-                ],
-              ),
-            ),
           ],
         ),
       ),
@@ -691,7 +683,7 @@ class _CustomizationScreenState extends State<CustomizationScreen> {
             ),
             SizedBox(height: spacing1),
             Text(
-              "Choose your create group screen background",
+              "Choose your group screen background",
               style: TextStyle(color: Colors.white60, fontSize: descFontSize),
             ),
             SizedBox(height: spacing2),
@@ -755,6 +747,111 @@ class _CustomizationScreenState extends State<CustomizationScreen> {
       ),
     );
   }
+
+  Widget _buildFindFriendsScreenStyleCard(UserSettingsProvider userSettings) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    final cardPadding = (screenWidth * 0.04).clamp(12.0, 20.0);
+    final borderRadius = (screenWidth * 0.03).clamp(10.0, 14.0);
+    final titleFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final descFontSize = (screenWidth * 0.0325).clamp(12.0, 15.0);
+    final optionNameFontSize = (screenWidth * 0.0375).clamp(13.0, 16.0);
+    final optionDescFontSize = (screenWidth * 0.03).clamp(11.0, 14.0);
+    final spacing1 = (screenHeight * 0.01).clamp(6.0, 10.0);
+    final spacing2 = (screenHeight * 0.02).clamp(12.0, 18.0);
+    final spacing3 = (screenHeight * 0.015).clamp(10.0, 14.0);
+    final spacing4 = (screenHeight * 0.005).clamp(3.0, 6.0);
+    final optionPadding = (screenWidth * 0.04).clamp(12.0, 18.0);
+
+    final currentStyle = userSettings.findFriendsScreenStyle ?? 'default';
+
+    return Card(
+      color: const Color(0xFF1B263B).withOpacity(0.6),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(borderRadius),
+        side: BorderSide(color: Colors.cyanAccent.withOpacity(0.3)),
+      ),
+      child: Padding(
+        padding: EdgeInsets.all(cardPadding),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "Background Style",
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: titleFontSize,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            SizedBox(height: spacing1),
+            Text(
+              "Choose your friends screen background",
+              style: TextStyle(color: Colors.white60, fontSize: descFontSize),
+            ),
+            SizedBox(height: spacing2),
+            ..._findFriendsScreenOptions.map((option) {
+              final isSelected = currentStyle == option['key'];
+              return Padding(
+                padding: EdgeInsets.only(bottom: spacing3),
+                child: InkWell(
+                  onTap: () => _handleSettingChange(findFriendsScreenStyle: option['key']),
+                  borderRadius: BorderRadius.circular(borderRadius * 0.7),
+                  child: Container(
+                    padding: EdgeInsets.all(optionPadding),
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? Colors.cyanAccent.withOpacity(0.15)
+                          : const Color(0xFF0a1128).withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(borderRadius * 0.7),
+                      border: Border.all(
+                        color: isSelected ? Colors.cyanAccent : Colors.white24,
+                        width: isSelected ? 2 : 1,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          isSelected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                          color: isSelected ? Colors.cyanAccent : Colors.white54,
+                        ),
+                        SizedBox(width: optionPadding),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                option['name']!,
+                                style: TextStyle(
+                                  color: isSelected ? Colors.cyanAccent : Colors.white,
+                                  fontSize: optionNameFontSize,
+                                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                ),
+                              ),
+                              SizedBox(height: spacing4),
+                              Text(
+                                option['description']!,
+                                style: TextStyle(
+                                  color: Colors.white60,
+                                  fontSize: optionDescFontSize,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }),
+          ],
+        ),
+      ),
+    );
+  }
+
 
   Widget _buildCallOverlayStyleCard() {
     final screenWidth = MediaQuery.of(context).size.width;

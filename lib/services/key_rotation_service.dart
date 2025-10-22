@@ -8,7 +8,7 @@ import 'package:zarq_messenger/services/device_service.dart';
 class KeyRotationService {
   static Timer? _rotationTimer;
 
-  static const String baseUrl = 'http://192.168.29.81:8080';
+  static const String baseUrl = 'https://api.zarqmessenger.com';
 
 
   static Future<Map<String, String>> _getAuthHeaders() async {

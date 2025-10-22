@@ -1,3 +1,6 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -5,8 +8,15 @@ plugins {
     id("com.google.gms.google-services")
 }
 
+// Load keystore properties from key.properties file
+val keystorePropertiesFile = rootProject.file("key.properties")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+}
+
 android {
-    namespace = "com.example.zarq_messenger"
+    namespace = "com.zarq.messenger"
     compileSdk = 36
     ndkVersion = "27.0.12077973"
 
@@ -33,7 +43,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.zarq_messenger"
+        applicationId = "com.zarq.messenger"
         minSdk = 26  // Android 8.0 Oreo - Recommended for full feature support
         targetSdk = 36
         versionCode = flutter.versionCode
@@ -42,9 +52,18 @@ android {
         multiDexEnabled = true
     }
 
+    signingConfigs {
+        create("release") {
+            keyAlias = keystoreProperties["keyAlias"] as String?
+            keyPassword = keystoreProperties["keyPassword"] as String?
+            storeFile = keystoreProperties["storeFile"]?.let { file(it) }
+            storePassword = keystoreProperties["storePassword"] as String?
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
 
             // Enable ProGuard/R8 for release builds
             isMinifyEnabled = true  // Enable code shrinking
@@ -90,7 +109,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("org.json:json:20240303")
+    // JSONObject is built into Android SDK - no external dependency needed
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.3")
 
     // COMPATIBLE Signal Protocol Libraries
@@ -106,6 +125,14 @@ dependencies {
 
     // Glide for image loading
     implementation("com.github.bumptech.glide:glide:4.16.0")
+
+    // Razorpay Android SDK for native payment handling
+    implementation("com.razorpay:checkout:1.6.40")
+
+    // WorkManager for background tasks
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+
+    // Note: Transcription feature temporarily disabled - no suitable free on-device library available
 
     //implementation("org.whispersystems:curve25519-java:0.5.0")
 }

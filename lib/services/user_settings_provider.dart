@@ -13,9 +13,12 @@ class UserSettingsProvider with ChangeNotifier {
     bubbleStyle: 'default_rounded',
     myBubbleColorStart: '667EEA',
     myBubbleColorEnd: '764BA2',
-    homeScreenStyle: 'current',
+    homeScreenStyle: 'default',
     groupScreenStyle: 'static',
     cardBubbleColor: 'blue',
+    encryptionAnimationStyle: 'static',
+    findFriendsScreenStyle: 'default',
+    friendRequestsScreenStyle: 'default',
   );
 
   UserSettings get currentSettings => _settings;
@@ -27,6 +30,9 @@ class UserSettingsProvider with ChangeNotifier {
   String get homeScreenStyle => _settings.homeScreenStyle;
   String get groupScreenStyle => _settings.groupScreenStyle;
   String get cardBubbleColor => _settings.cardBubbleColor;
+  String get encryptionAnimationStyle => _settings.encryptionAnimationStyle;
+  String get findFriendsScreenStyle => _settings.findFriendsScreenStyle;
+  String get friendRequestsScreenStyle => _settings.friendRequestsScreenStyle;
 
   UserSettingsProvider() {
     _loadInitialStyle();
@@ -50,6 +56,9 @@ class UserSettingsProvider with ChangeNotifier {
     String? homeScreenStyle,
     String? groupScreenStyle,
     String? cardBubbleColor,
+    String? encryptionAnimationStyle,
+    String? findFriendsScreenStyle,
+    String? friendRequestsScreenStyle,
   }) async {
     // Update local state
     _settings = UserSettings(
@@ -59,6 +68,9 @@ class UserSettingsProvider with ChangeNotifier {
       homeScreenStyle: homeScreenStyle ?? _settings.homeScreenStyle,
       groupScreenStyle: groupScreenStyle ?? _settings.groupScreenStyle,
       cardBubbleColor: cardBubbleColor ?? _settings.cardBubbleColor,
+      encryptionAnimationStyle: encryptionAnimationStyle ?? _settings.encryptionAnimationStyle,
+      findFriendsScreenStyle: findFriendsScreenStyle ?? _settings.findFriendsScreenStyle,
+      friendRequestsScreenStyle: friendRequestsScreenStyle ?? _settings.friendRequestsScreenStyle,
     );
 
     // Save to local storage (instant, no network call)
@@ -75,9 +87,12 @@ class UserSettingsProvider with ChangeNotifier {
       bubbleStyle: 'default_rounded',
       myBubbleColorStart: '667EEA',
       myBubbleColorEnd: '764BA2',
-      homeScreenStyle: 'current',
+      homeScreenStyle: 'default',
       groupScreenStyle: 'static',
       cardBubbleColor: 'blue',
+      encryptionAnimationStyle: 'static',
+      findFriendsScreenStyle: 'default',
+      friendRequestsScreenStyle: 'default',
     );
     notifyListeners();
   }

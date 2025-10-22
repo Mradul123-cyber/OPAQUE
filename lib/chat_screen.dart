@@ -30,7 +30,13 @@ import 'services/database_service.dart';
 import 'services/websocket_service.dart';
 import 'services/device_service.dart';
 import 'services/file_service.dart';
+import 'models/message_reaction.dart';
+import 'widgets/message_reactions_widget.dart';
+import 'widgets/encryption_animation_widget.dart';
+import 'widgets/particle_animation_widget.dart';
+import 'widgets/ai_processing_particles.dart';
 import 'services/group_encryption_service.dart';
+import 'services/ai_service.dart';
 import 'widgets/call_aware_screen.dart';
 import 'services/global_call_manager.dart';
 import 'package:image_picker/image_picker.dart';
@@ -38,6 +44,8 @@ import 'package:open_file/open_file.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:flutter_linkify/flutter_linkify.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'widgets/fullscreen_image_viewer.dart';
 import 'widgets/fullscreen_video_player.dart';
@@ -47,12 +55,12 @@ import 'widgets/voice_message_player.dart';
 import 'screens/group_info_screen.dart';
 
 class ChatScreen extends StatefulWidget {
-  final WebSocketChannel channel;
+  final WebSocketChannel? channel; // Nullable for offline mode
   final ConversationInfo conversationInfo;
 
   const ChatScreen({
     super.key,
-    required this.channel,
+    this.channel, // Optional for offline mode
     required this.conversationInfo,
   });
 
@@ -60,7 +68,7 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, TickerProviderStateMixin {
   static const platform = MethodChannel('com.zarq/signal');
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
@@ -75,10 +83,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   late final ConversationService _apiService;
   late final DatabaseService _dbService;
   late final WebSocketService _websocketService;
+  final AIService _aiService = AIService();
 
   bool _isLoading = true;
   final Set<int> _decryptedMessageIds = {};
   final Set<int> _selectedMessageIds = {};
+  final Set<int> _animatedMessageIds = {}; // Track which messages have been animated
   bool _isMultiSelectionMode = false;
   final GlobalKey _lastMessageKey = GlobalKey();
   final Set<int> _processedSentMessageIds = {};
@@ -93,6 +103,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _isRecordingVoice = false;
   bool _hasTextInput = false;
 
+  // AI mode state
+  bool _isAIMode = false;
+  bool _isAIProcessing = false;
+
   // Message search state
   bool _isSearching = false;
   final TextEditingController _searchController = TextEditingController();
@@ -106,6 +120,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   String? _typingUserUid;
   Timer? _typingTimer;
   bool _isCurrentlyTyping = false;
+
+  // Typing animation controller
+  late AnimationController _typingAnimationController;
+  late List<Animation<double>> _typingDotAnimations;
 
   // Presence/online status state
   bool _isRecipientOnline = false;
@@ -131,6 +149,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   List<String> _blockedUsers = [];
   bool _isUserBlocked = false;
 
+  // E2E encryption banner state
+  bool _showEncryptionBanner = true;
+  bool _isRemovingBanner = false;
+  bool _isBannerInHindi = true; // Default to Hindi
+
   // Cache for downloaded audio (stores file paths, not bytes)
   final Map<int, String> _audioCache = {};
 
@@ -139,8 +162,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final Map<int, Future<String?>> _videoLoadingFutures = {};
   final Map<int, Future<String?>> _audioLoadingFutures = {};
 
+  // Reply-to-message state
+  Message? _replyingToMessage;
+
   // Cache for pending attachment metadata (for messages that haven't arrived yet)
   final Map<int, Map<String, dynamic>> _pendingAttachments = {};
+
+  // Pagination state
+  static const int _messagesPerPage = 50;
+  bool _hasMoreMessages = false;
+  bool _isLoadingMoreMessages = false;
+  int _loadedMessageCount = 0;
 
   @override
   void initState() {
@@ -153,8 +185,47 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _websocketService = Provider.of<WebSocketService>(context, listen: false);
 
     _chatProvider.setCurrentConversationId(widget.conversationInfo.conversationId);
+
+    // 🚀 FIX: Mark messages as read IMMEDIATELY to clear badge instantly
+    _markMessagesAsRead();
+
     _initializeChat();
     _loadWallpaper();
+    _loadEncryptionBannerPreference();
+    _aiService.initialize(); // Initialize AI service
+
+    // Initialize typing animation controller (WhatsApp-style bouncing dots)
+    _typingAnimationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    )..repeat();
+
+    // Create 3 bouncing dot animations with staggered delays
+    _typingDotAnimations = List.generate(3, (index) {
+      final start = index * 0.2; // Stagger each dot by 20% of cycle
+      return TweenSequence<double>([
+        TweenSequenceItem(
+          tween: Tween(begin: 0.0, end: -8.0).chain(CurveTween(curve: Curves.easeOut)),
+          weight: 25.0,
+        ),
+        TweenSequenceItem(
+          tween: Tween(begin: -8.0, end: 0.0).chain(CurveTween(curve: Curves.easeIn)),
+          weight: 25.0,
+        ),
+        TweenSequenceItem(
+          tween: ConstantTween(0.0),
+          weight: 50.0,
+        ),
+      ]).animate(
+        CurvedAnimation(
+          parent: _typingAnimationController,
+          curve: Interval(start, start + 0.5 > 1.0 ? 1.0 : start + 0.5, curve: Curves.linear),
+        ),
+      );
+    });
+
+    // Add scroll listener for pagination
+    _scrollController.addListener(_onScroll);
 
     // Listen to text input changes for voice/send button toggle and typing indicators
     // Listen to text input changes for voice/send button toggle and typing indicators
@@ -165,11 +236,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _handleTypingIndicator();
     });
 
+    // Listen to focus changes to scroll to last message when input is focused
+    _focusNode.addListener(() {
+      if (_focusNode.hasFocus) {
+        // Small delay to let keyboard animation start
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (mounted) {
+            _scrollToBottom(instant: true); // Instant jump like WhatsApp
+          }
+        });
+      }
+    });
+
     // Setup GlobalCallManager callback for sending signals
     final callManager = Provider.of<GlobalCallManager>(context, listen: false);
     callManager.onSendSignal = (signalData) {
       final message = jsonEncode(signalData);
-      widget.channel.sink.add(message);
+      // Only send if channel is available (online mode)
+      widget.channel?.sink.add(message);
       // print('[ChatScreen] 📞 Sent call signal via GlobalCallManager: ${signalData['type']}');
     };
 
@@ -245,6 +329,23 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
           if (userUid == _recipientUid && isOnline != null) {
             _handlePresenceUpdate(isOnline, lastSeenTimestamp);
+          }
+        } else if (type == 'reaction_added') {
+          final messageId = data['message_id'] as int?;
+          final userUid = data['user_uid'] as String?;
+          final username = data['username'] as String?;
+          final emoji = data['emoji'] as String?;
+
+          if (messageId != null && userUid != null && emoji != null) {
+            _handleReactionAdded(messageId, userUid, username, emoji);
+          }
+        } else if (type == 'reaction_removed') {
+          final messageId = data['message_id'] as int?;
+          final userUid = data['user_uid'] as String?;
+          final emoji = data['emoji'] as String?;
+
+          if (messageId != null && userUid != null && emoji != null) {
+            _handleReactionRemoved(messageId, userUid, emoji);
           }
         }
         // Note: Call signaling (call_offer, call_answer, ice_candidate, call_rejected, call_ended)
@@ -344,31 +445,92 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _initializeChat() async {
+    final startTime = DateTime.now();
+    print('[ChatScreen] 🚀 _initializeChat started');
+
     await _getCurrentUser();
     if (_currentUserUid == null) return;
 
+    // Set recipient info immediately (no await)
     if (!widget.conversationInfo.isGroup && widget.conversationInfo.partnerUid != null) {
       _recipientUid = widget.conversationInfo.partnerUid;
-      await _checkExistingSession();
-
-      // Query recipient's presence status for 1-1 chats
-      _websocketService.queryPresenceStatus(_recipientUid!);
-
-      // Load blocked users AFTER _recipientUid is set
-      await _loadBlockedUsers();
-    } else if (widget.conversationInfo.isGroup) {
-      // Setup group encryption for group chats
-      await _setupGroupEncryption();
-      // Fetch group member count
-      await _fetchGroupMemberCount();
     }
 
+    // 🚀 SHOW MESSAGES IMMEDIATELY (don't wait for session/encryption)
     await _refreshMessagesFromDb();
 
-    if (mounted) setState(() => _isLoading = false);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom(instant: true));
+    final elapsed = DateTime.now().difference(startTime).inMilliseconds;
+    print('[ChatScreen] ✅ Messages shown in ${elapsed}ms');
 
-    _performBackgroundWebSocketTasks();
+    if (mounted) setState(() => _isLoading = false);
+
+    // Scroll to bottom instantly
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future.delayed(const Duration(milliseconds: 100), () {
+        _scrollToBottom(instant: true);
+      });
+    });
+
+    // ⏰ Do everything else in BACKGROUND (don't block UI, fire and forget)
+    _initializeInBackground().then((_) {
+      // Background tasks completed
+    }).catchError((error) {
+      // Silent error handling - don't interrupt user
+      // print('[ChatScreen] Background init error: $error');
+    });
+  }
+
+  /// Background initialization - doesn't block UI
+  Future<void> _initializeInBackground() async {
+    try {
+      if (!widget.conversationInfo.isGroup && widget.conversationInfo.partnerUid != null) {
+        // Check session in background (may fail offline)
+        try {
+          await _checkExistingSession();
+        } catch (e) {
+          // Offline: Session check failed, but user can still read messages
+          print('[ChatScreen] ⚠️ Session check failed (offline?): $e');
+        }
+
+        // Query recipient's presence status for 1-1 chats (may fail offline)
+        try {
+          _websocketService.queryPresenceStatus(_recipientUid!);
+        } catch (e) {
+          print('[ChatScreen] ⚠️ Presence query failed (offline?): $e');
+        }
+
+        // Load blocked users (may fail offline)
+        try {
+          await _loadBlockedUsers();
+        } catch (e) {
+          print('[ChatScreen] ⚠️ Blocked users load failed (offline?): $e');
+        }
+      } else if (widget.conversationInfo.isGroup) {
+        // Setup group encryption for group chats (may fail offline)
+        try {
+          await _setupGroupEncryption();
+        } catch (e) {
+          print('[ChatScreen] ⚠️ Group encryption setup failed (offline?): $e');
+        }
+
+        // Fetch group member count (may fail offline)
+        try {
+          await _fetchGroupMemberCount();
+        } catch (e) {
+          print('[ChatScreen] ⚠️ Group member count fetch failed (offline?): $e');
+        }
+      }
+
+      // Background WebSocket tasks (may fail offline)
+      try {
+        _performBackgroundWebSocketTasks();
+      } catch (e) {
+        print('[ChatScreen] ⚠️ Background WebSocket tasks failed (offline?): $e');
+      }
+    } catch (e) {
+      print('[ChatScreen] ⚠️ Background initialization failed: $e');
+      // Don't crash - user can still view cached messages
+    }
   }
 
   Future<void> _performBackgroundWebSocketTasks() async {
@@ -381,15 +543,161 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _refreshMessagesFromDb() async {
-    final messages = await _dbService.getMessages(widget.conversationInfo.conversationId);
+    final conversationId = widget.conversationInfo.conversationId;
+
+    // 🚀 INSTANT LOADING: Check if we have cached messages
+    final cachedMessages = _chatProvider.getCachedMessages(conversationId);
+
+    if (cachedMessages != null) {
+      print('[ChatScreen] ⚡ CACHE HIT! Showing ${cachedMessages.length} cached messages instantly');
+
+      // Show cached messages INSTANTLY (no loading spinner!)
+      if (mounted) {
+        // Single setState to minimize rebuilds
+        setState(() {
+          _loadedMessageCount = cachedMessages.length;
+          _isLoading = false; // ✅ Stop loading immediately
+        });
+
+        // Set messages without creating new list (reuse cached)
+        _chatProvider.setMessages(cachedMessages, conversationId: conversationId);
+      }
+
+      // Background refresh: Update from database silently
+      _refreshMessagesInBackground(conversationId);
+      return;
+    }
+
+    print('[ChatScreen] ❌ CACHE MISS - Loading from database...');
+
+    // No cache: Load from database (first time or cache expired)
+    final messages = await _dbService.getMessages(
+      conversationId,
+      limit: _messagesPerPage,
+    );
+
+    // Check if there are more messages to load
+    final totalCount = await _dbService.getMessageCount(conversationId);
 
     if (mounted) {
-      _chatProvider.setMessages(messages);
-      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+      setState(() {
+        _loadedMessageCount = messages.length;
+        _hasMoreMessages = messages.length < totalCount;
+        _isLoading = false;
+      });
+
+      _chatProvider.setMessages(messages, conversationId: conversationId);
+
+      // Use multiple frame callbacks to ensure scroll happens after ListView builds
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _scrollToBottom(instant: true);
+        });
+      });
+    }
+  }
+
+  /// Background refresh: Update messages silently without blocking UI
+  Future<void> _refreshMessagesInBackground(int conversationId) async {
+    try {
+      final messages = await _dbService.getMessages(
+        conversationId,
+        limit: _messagesPerPage,
+      );
+
+      final totalCount = await _dbService.getMessageCount(conversationId);
+
+      if (mounted) {
+        setState(() {
+          _loadedMessageCount = messages.length;
+          _hasMoreMessages = messages.length < totalCount;
+        });
+
+        // Update messages silently (don't scroll, don't interrupt user)
+        _chatProvider.setMessages(messages, conversationId: conversationId);
+      }
+    } catch (e) {
+      // print('[ChatScreen] Background refresh failed: $e');
+      // Silently fail - user already sees cached messages
+    }
+  }
+
+  /// Scroll listener for pagination
+  /// In reversed ListView, scrolling UP (to older messages) increases scroll position
+  void _onScroll() {
+    if (_scrollController.hasClients && !_isLoadingMoreMessages && _hasMoreMessages) {
+      final maxScroll = _scrollController.position.maxScrollExtent;
+      final currentScroll = _scrollController.position.pixels;
+
+      // Load more when user scrolls within 200 pixels of the top (older messages)
+      if (currentScroll >= maxScroll - 200) {
+        _loadMoreMessages();
+      }
+    }
+  }
+
+  /// Load older messages when scrolling up
+  Future<void> _loadMoreMessages() async {
+    if (_isLoadingMoreMessages || !_hasMoreMessages) return;
+
+    setState(() => _isLoadingMoreMessages = true);
+
+    try {
+      // Load next batch of older messages
+      final olderMessages = await _dbService.loadOlderMessages(
+        widget.conversationInfo.conversationId,
+        currentCount: _loadedMessageCount,
+        limit: _messagesPerPage,
+      );
+
+      if (olderMessages.isEmpty) {
+        setState(() {
+          _hasMoreMessages = false;
+          _isLoadingMoreMessages = false;
+        });
+        return;
+      }
+
+      // Save current scroll position to maintain it after adding messages
+      final currentOffset = _scrollController.offset;
+
+      // Prepend older messages to the existing list
+      final currentMessages = _chatProvider.messages;
+      final updatedMessages = [...olderMessages, ...currentMessages];
+
+      setState(() {
+        _loadedMessageCount = updatedMessages.length;
+      });
+
+      _chatProvider.setMessages(updatedMessages, conversationId: widget.conversationInfo.conversationId);
+
+      // Restore scroll position (adjust for new items added)
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scrollController.hasClients) {
+          _scrollController.jumpTo(currentOffset);
+        }
+      });
+
+    } catch (e) {
+      // print('[ChatScreen] Error loading more messages: $e');
+    } finally {
+      setState(() => _isLoadingMoreMessages = false);
     }
   }
 
   Future<void> _sendMessage() async {
+    // 🚀 OFFLINE MODE: Prevent sending when no internet connection
+    if (widget.channel == null || !_websocketService.isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('📴 No internet connection. Please connect to send messages.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
     // Prevent sending messages to blocked users
     if (_isUserBlocked) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -409,9 +717,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (!widget.conversationInfo.isGroup && _recipientUid == null) return;
 
     _controller.clear();
-    FocusScope.of(context).unfocus();
+    // Keep keyboard open after sending message
+    // FocusScope.of(context).unfocus(); // Commented out to keep keyboard visible
 
     final tempMessageId = -DateTime.now().millisecondsSinceEpoch;
+    final replyToMessageId = _replyingToMessage?.id;
     final optimisticMessage = Message(
       id: tempMessageId,
       conversationId: widget.conversationInfo.conversationId,
@@ -422,7 +732,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       status: MessageStatus.sending,
       isEncrypted: true,
       isQuickReply: false,
+      replyToMessageId: replyToMessageId,
+      repliedMessageContent: _replyingToMessage?.content,
+      repliedMessageSenderName: _replyingToMessage?.username,
     );
+
+    // Clear reply state
+    _cancelReply();
 
     _chatProvider.addMessage(optimisticMessage);
     _scrollToBottom();
@@ -489,6 +805,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final response = await DeviceService.sendMessage(
         conversationId: widget.conversationInfo.conversationId,
         contentB64: encryptedMessage,
+        replyToMessageId: replyToMessageId,
       );
 
       final realMessageId = response['message_id'] ?? tempMessageId;
@@ -505,6 +822,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         senderDeviceId: myDeviceId,
         recipientDeviceId: recipientDeviceId,
         isQuickReply: false,
+        replyToMessageId: replyToMessageId,
+        repliedMessageContent: optimisticMessage.repliedMessageContent,
+        repliedMessageSenderName: optimisticMessage.repliedMessageSenderName,
       );
 
       _chatProvider.updateMessageStatus(tempMessageId, sentMessage);
@@ -522,6 +842,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   // Start voice recording
   void _startVoiceRecording() {
+    // 🚀 OFFLINE MODE: Prevent voice messages when no internet connection
+    if (widget.channel == null || !_websocketService.isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('📴 No internet connection. Please connect to send voice messages.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
     // Prevent voice messages to blocked users
     if (_isUserBlocked) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -545,7 +877,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   // Send voice message with E2EE
-  Future<void> _sendVoiceMessage(String audioPath, int duration) async {
+  Future<void> _sendVoiceMessage(String audioPath, int duration) async{
     setState(() {
       _isRecordingVoice = false;
     });
@@ -695,11 +1027,33 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
       } else {
         // 1-ON-1: Encrypt AES key with Signal Protocol
-        encryptedAesKeyForRecipient = await SignalService.encryptMessage(
+        // CRITICAL: Validate session before encrypting to prevent corrupted encryption
+        bool hasValidSession = await SignalService.isSessionValidForSending(
           recipientUid: _recipientUid!,
-          plaintext: aesKeyB64,
           deviceId: recipientDeviceId!,
         );
+
+        if (!hasValidSession) {
+          // Session invalid - establish new session silently
+          final prekeyBundle = await DeviceService.fetchPrekeyBundle(
+            targetUid: _recipientUid!,
+            deviceId: recipientDeviceId,
+          );
+          if (prekeyBundle == null) throw Exception('No prekey bundle available for AES key encryption');
+
+          encryptedAesKeyForRecipient = await SignalService.encryptMessageWithSessionSetup(
+            recipientUid: _recipientUid!,
+            plaintext: aesKeyB64,
+            prekeyBundle: prekeyBundle,
+            deviceId: recipientDeviceId,
+          );
+        } else {
+          encryptedAesKeyForRecipient = await SignalService.encryptMessage(
+            recipientUid: _recipientUid!,
+            plaintext: aesKeyB64,
+            deviceId: recipientDeviceId!,
+          );
+        }
       }
 
       if (encryptedAesKeyForRecipient == null) {
@@ -998,6 +1352,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   // Send image message
   Future<void> _sendImageMessage(ImageSource source) async {
+    // 🚀 OFFLINE MODE: Prevent image sending when no internet connection
+    if (widget.channel == null || !_websocketService.isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('📴 No internet connection. Please connect to send images.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
     if (!widget.conversationInfo.isGroup && _recipientUid == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Recipient not found'), backgroundColor: Colors.red),
@@ -1150,11 +1516,33 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
       } else {
         // 1-ON-1: Encrypt AES key with Signal Protocol
-        encryptedAesKeyForRecipient = await SignalService.encryptMessage(
+        // CRITICAL: Validate session before encrypting to prevent corrupted encryption
+        bool hasValidSession = await SignalService.isSessionValidForSending(
           recipientUid: _recipientUid!,
-          plaintext: aesKeyB64,
           deviceId: recipientDeviceId!,
         );
+
+        if (!hasValidSession) {
+          // Session invalid - establish new session silently
+          final prekeyBundle = await DeviceService.fetchPrekeyBundle(
+            targetUid: _recipientUid!,
+            deviceId: recipientDeviceId,
+          );
+          if (prekeyBundle == null) throw Exception('No prekey bundle available for AES key encryption');
+
+          encryptedAesKeyForRecipient = await SignalService.encryptMessageWithSessionSetup(
+            recipientUid: _recipientUid!,
+            plaintext: aesKeyB64,
+            prekeyBundle: prekeyBundle,
+            deviceId: recipientDeviceId,
+          );
+        } else {
+          encryptedAesKeyForRecipient = await SignalService.encryptMessage(
+            recipientUid: _recipientUid!,
+            plaintext: aesKeyB64,
+            deviceId: recipientDeviceId!,
+          );
+        }
       }
 
       if (encryptedAesKeyForRecipient == null) {
@@ -1239,6 +1627,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   // Send video message
   Future<void> _sendVideoMessage(ImageSource source) async {
+    // 🚀 OFFLINE MODE: Prevent video sending when no internet connection
+    if (widget.channel == null || !_websocketService.isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('📴 No internet connection. Please connect to send videos.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
     if (!widget.conversationInfo.isGroup && _recipientUid == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Recipient not found'), backgroundColor: Colors.red),
@@ -1380,6 +1780,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         throw Exception('Video compression failed');
       }
 
+      // Check compressed video size
+      final compressedSize = await compressedVideoFile.length();
+      if (compressedSize > FileService.maxCompressedVideoSize) {
+        throw Exception(
+          'Video too large after compression: ${(compressedSize / (1024 * 1024)).toStringAsFixed(1)}MB. '
+          'Maximum allowed: ${(FileService.maxCompressedVideoSize / (1024 * 1024)).toStringAsFixed(0)}MB'
+        );
+      }
+
       // Get metadata
       final metadata = await FileService.getVideoMetadata(compressedVideoFile.path);
       final videoDuration = metadata?['duration'] != null
@@ -1408,11 +1817,34 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
       } else {
         // 1-ON-1: Encrypt AES key with Signal Protocol
-        encryptedAesKeyForRecipient = await SignalService.encryptMessage(
+        // CRITICAL: Validate session before encrypting AES key to prevent corrupted encryption
+        // Session may become invalid during video processing (identity key changes, etc.)
+        bool hasValidSession = await SignalService.isSessionValidForSending(
           recipientUid: _recipientUid!,
-          plaintext: aesKeyB64,
           deviceId: recipientDeviceId!,
         );
+
+        if (!hasValidSession) {
+          // Session invalid - must establish new session
+          final prekeyBundle = await DeviceService.fetchPrekeyBundle(
+            targetUid: _recipientUid!,
+            deviceId: recipientDeviceId!,
+          );
+          if (prekeyBundle == null) throw Exception('No prekey bundle available for AES key encryption');
+
+          encryptedAesKeyForRecipient = await SignalService.encryptMessageWithSessionSetup(
+            recipientUid: _recipientUid!,
+            plaintext: aesKeyB64,
+            prekeyBundle: prekeyBundle,
+            deviceId: recipientDeviceId!,
+          );
+        } else {
+          encryptedAesKeyForRecipient = await SignalService.encryptMessage(
+            recipientUid: _recipientUid!,
+            plaintext: aesKeyB64,
+            deviceId: recipientDeviceId!,
+          );
+        }
       }
 
       if (encryptedAesKeyForRecipient == null) throw Exception('Failed to encrypt video key for recipient');
@@ -1495,6 +1927,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   // Send document message
   Future<void> _sendDocumentMessage() async {
+    // 🚀 OFFLINE MODE: Prevent document sending when no internet connection
+    if (widget.channel == null || !_websocketService.isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('📴 No internet connection. Please connect to send documents.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
     if (!widget.conversationInfo.isGroup && _recipientUid == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Recipient not found'), backgroundColor: Colors.red),
@@ -1519,6 +1963,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       if (filePath == null) {
         throw Exception('File path is null');
+      }
+
+      // Check document size
+      if (fileSize > FileService.maxDocumentSize) {
+        throw Exception(
+          'Document too large: ${(fileSize / (1024 * 1024)).toStringAsFixed(1)}MB. '
+          'Maximum allowed: ${(FileService.maxDocumentSize / (1024 * 1024)).toStringAsFixed(0)}MB'
+        );
       }
 
       // Get MIME type
@@ -1780,7 +2232,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       final token = await user.getIdToken();
       final url = Uri.parse(
-          'http://192.168.29.81:8080/groups/${widget.conversationInfo.conversationId}/info');
+          'https://api.zarqmessenger.com/groups/${widget.conversationInfo.conversationId}/info');
 
       final response = await http.get(
         url,
@@ -1913,6 +2365,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _focusNode.dispose();
     _searchController.dispose();
     _typingTimer?.cancel();
+    _typingAnimationController.dispose(); // Dispose typing animation controller
     super.dispose();
   }
 
@@ -1982,37 +2435,96 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  void _handleReactionAdded(int messageId, String userUid, String? username, String emoji) {
+    // Update message in chat provider
+    final messageIndex = _chatProvider.messages.indexWhere((m) => m.id == messageId);
+    if (messageIndex != -1) {
+      final message = _chatProvider.messages[messageIndex];
+      final reactions = List<MessageReaction>.from(
+        message.reactions?.cast<MessageReaction>() ?? [],
+      );
+
+      // Add new reaction (avoid duplicates)
+      final existingIndex = reactions.indexWhere(
+        (r) => r.messageId == messageId && r.userUid == userUid && r.emoji == emoji,
+      );
+
+      if (existingIndex == -1) {
+        reactions.add(MessageReaction(
+          id: DateTime.now().millisecondsSinceEpoch, // Temporary ID
+          messageId: messageId,
+          userUid: userUid,
+          emoji: emoji,
+          createdAt: DateTime.now(),
+          username: username,
+        ));
+
+        final updatedMessage = message.copyWith(reactions: reactions);
+        _chatProvider.updateMessage(updatedMessage);
+      }
+    }
+  }
+
+  void _handleReactionRemoved(int messageId, String userUid, String emoji) {
+    // Update message in chat provider
+    final messageIndex = _chatProvider.messages.indexWhere((m) => m.id == messageId);
+    if (messageIndex != -1) {
+      final message = _chatProvider.messages[messageIndex];
+      final reactions = List<MessageReaction>.from(
+        message.reactions?.cast<MessageReaction>() ?? [],
+      );
+
+      // Remove reaction
+      reactions.removeWhere(
+        (r) => r.messageId == messageId && r.userUid == userUid && r.emoji == emoji,
+      );
+
+      final updatedMessage = message.copyWith(reactions: reactions);
+      _chatProvider.updateMessage(updatedMessage);
+    }
+  }
+
   Future<void> _getCurrentUser() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
       _currentUser = user.displayName ?? user.email ?? "Anonymous User";
       _currentUserUid = user.uid;
 
-      // Fetch current user's avatar
-      try {
-        final token = await user.getIdToken();
-        final url = Uri.parse('http://192.168.29.81:8080/profiles/me');
-        final response = await http.get(url, headers: {'Authorization': 'Bearer $token'});
+      // 🚀 OPTIMIZATION: Fetch avatar in BACKGROUND (don't block chat opening)
+      _fetchCurrentUserAvatarInBackground();
+    }
+  }
 
-        if (response.statusCode == 200) {
-          // print('[ChatScreen] Profile response body: ${response.body}');
-          final profile = jsonDecode(response.body) as Map<String, dynamic>;
+  /// Fetch current user's avatar in background without blocking UI
+  Future<void> _fetchCurrentUserAvatarInBackground() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
 
-          // Safely extract avatar URL
-          final avatarValue = profile['profile_picture_url'];
-          if (avatarValue != null) {
+    try {
+      final token = await user.getIdToken();
+      final url = Uri.parse('https://api.zarqmessenger.com/profiles/me');
+      final response = await http.get(url, headers: {'Authorization': 'Bearer $token'});
+
+      if (response.statusCode == 200) {
+        // print('[ChatScreen] Profile response body: ${response.body}');
+        final profile = jsonDecode(response.body) as Map<String, dynamic>;
+
+        // Safely extract avatar URL
+        final avatarValue = profile['profile_picture_url'];
+        if (avatarValue != null && mounted) {
+          setState(() {
             _currentUserAvatar = avatarValue.toString();
-            // print('[ChatScreen] Current user avatar: $_currentUserAvatar');
-          } else {
-            // print('[ChatScreen] No avatar found in profile');
-          }
+          });
+          // print('[ChatScreen] Current user avatar: $_currentUserAvatar');
         } else {
-          // print('[ChatScreen] Profile fetch failed with status: ${response.statusCode}');
+          // print('[ChatScreen] No avatar found in profile');
         }
-      } catch (e, stackTrace) {
-        // print('[ChatScreen] Error fetching current user avatar: $e');
-        // print('[ChatScreen] Stack trace: $stackTrace');
+      } else {
+        // print('[ChatScreen] Profile fetch failed with status: ${response.statusCode}');
       }
+    } catch (e, stackTrace) {
+      // print('[ChatScreen] Error fetching current user avatar: $e');
+      // print('[ChatScreen] Stack trace: $stackTrace');
     }
   }
 
@@ -2099,6 +2611,43 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                         ],
                       ),
                     ),
+                  // Show AI MODE ON banner
+                  if (_isAIMode)
+                    Center(
+                      child: Container(
+                        margin: EdgeInsets.only(top: spacing1),
+                        padding: EdgeInsets.symmetric(horizontal: padding2, vertical: spacing1),
+                        decoration: BoxDecoration(
+                          color: Colors.black,
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.3),
+                              blurRadius: 8,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.auto_awesome, color: Colors.white, size: 16),
+                            SizedBox(width: spacing1),
+                            Text(
+                              'AI MODE ON',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: tinyTextSize,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1.2,
+                              ),
+                            ),
+                            SizedBox(width: spacing1),
+                            const Icon(Icons.auto_awesome, color: Colors.white, size: 16),
+                          ],
+                        ),
+                      ),
+                    ),
                   Expanded(
                     child: _isLoading
                         ? const Center(child: CircularProgressIndicator())
@@ -2169,13 +2718,71 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                           // Will show count badge in the UI
                         }
 
+                        // Messages list with reverse scroll + banner at top (WhatsApp approach)
+                        // Calculate item count: messages + loading indicator + encryption banner
+                        int extraItems = 0;
+                        if (_isLoadingMoreMessages && _hasMoreMessages) extraItems++;
+                        if (_showEncryptionBanner) extraItems++;
+
                         return ListView.builder(
                           controller: _scrollController,
+                          reverse: true, // Build from bottom to top like WhatsApp
                           padding: const EdgeInsets.symmetric(vertical: 8),
-                          itemCount: messages.length,
+                          itemCount: messages.length + extraItems,
                           itemBuilder: (context, index) {
-                            final message = messages[index];
-                            return _buildMessageBubble(message, index, messages.length);
+                            // Loading indicator appears when scrolling to older messages
+                            if (_isLoadingMoreMessages && _hasMoreMessages && index == messages.length) {
+                              return const Padding(
+                                padding: EdgeInsets.all(16.0),
+                                child: Center(
+                                  child: SizedBox(
+                                    width: 24,
+                                    height: 24,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF00ACC1)),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }
+
+                            // Encryption banner appears as the LAST item (top of conversation in reverse mode)
+                            if (_showEncryptionBanner) {
+                              final bannerIndex = messages.length + (_isLoadingMoreMessages && _hasMoreMessages ? 1 : 0);
+                              if (index == bannerIndex) {
+                                return _buildEncryptionBanner();
+                              }
+                            }
+
+                            // Reverse the index to show oldest first
+                            final reversedIndex = messages.length - 1 - index;
+                            final message = messages[reversedIndex];
+                            return Dismissible(
+                              key: Key('msg_${message.id}'),
+                              direction: DismissDirection.horizontal,
+                              dismissThresholds: const {
+                                DismissDirection.endToStart: 0.01,
+                                DismissDirection.startToEnd: 0.01,
+                              },
+                              movementDuration: const Duration(milliseconds: 100),
+                              resizeDuration: const Duration(milliseconds: 100),
+                              confirmDismiss: (direction) async {
+                                _setReplyToMessage(message);
+                                return false; // Don't actually dismiss
+                              },
+                              background: Container(
+                                alignment: Alignment.centerLeft,
+                                padding: const EdgeInsets.only(left: 20),
+                                child: const Icon(Icons.reply, color: Colors.black),
+                              ),
+                              secondaryBackground: Container(
+                                alignment: Alignment.centerRight,
+                                padding: const EdgeInsets.only(right: 20),
+                                child: const Icon(Icons.reply, color: Colors.black),
+                              ),
+                              child: _buildMessageBubble(message, reversedIndex, messages.length),
+                            );
                           },
                         );
                       },
@@ -2250,10 +2857,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
           child: Container(
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.7),
+              gradient: _isAIMode
+                ? const LinearGradient(
+                    colors: [
+                      Color(0xFFFF0080), // Pink
+                      Color(0xFFFF8C00), // Orange
+                      Color(0xFFFFD700), // Gold
+                      Color(0xFF00FF00), // Green
+                      Color(0xFF00CED1), // Cyan
+                      Color(0xFF9370DB), // Purple
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  )
+                : null,
+              color: _isAIMode ? null : Colors.white.withOpacity(0.7),
               border: Border(
                 bottom: BorderSide(
-                  color: Colors.grey.withOpacity(0.2),
+                  color: _isAIMode ? Colors.white.withOpacity(0.3) : Colors.grey.withOpacity(0.2),
                   width: 1,
                 ),
               ),
@@ -2262,7 +2883,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ),
       ),
       leading: IconButton(
-        icon: Icon(Icons.arrow_back, color: Colors.black87, size: iconSize2),
+        icon: Icon(Icons.arrow_back, color: _isAIMode ? Colors.white : Colors.black87, size: iconSize2),
         onPressed: () => Navigator.pop(context),
       ),
       leadingWidth: iconSize2 + padding2,
@@ -2312,7 +2933,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     style: TextStyle(
                       fontSize: appBarTitleSize,
                       fontWeight: FontWeight.w600,
-                      color: Colors.black87,
+                      color: _isAIMode ? Colors.white : Colors.black87,
                     ),
                   ),
                   SizedBox(height: verticalSpacing),
@@ -2322,13 +2943,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       _groupMemberCount != null
                           ? '$_groupMemberCount ${_groupMemberCount == 1 ? "member" : "members"}'
                           : 'Tap for info',
-                      style: TextStyle(fontSize: smallTextSize, color: Colors.grey[600]),
+                      style: TextStyle(fontSize: smallTextSize, color: _isAIMode ? Colors.white70 : Colors.grey[600]),
                     )
                   // Show online status for 1-1 chats
                   else if (!widget.conversationInfo.isGroup && _recipientUid != null)
                     Text(
                       _getStatusText(),
-                      style: TextStyle(fontSize: smallTextSize, color: Colors.grey[600]),
+                      style: TextStyle(fontSize: smallTextSize, color: _isAIMode ? Colors.white70 : Colors.grey[600]),
                     ),
                 ],
               ),
@@ -2341,21 +2962,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         if (!widget.conversationInfo.isGroup && _recipientUid != null) ...[
           Consumer<GlobalCallManager>(
             builder: (context, callManager, child) => IconButton(
-              icon: Icon(Icons.call, color: Colors.black87, size: iconSize2),
+              icon: Icon(Icons.call, color: _isAIMode ? Colors.white : Colors.black87, size: iconSize2),
               tooltip: 'Voice Call',
               onPressed: callManager.isInCall ? null : _startVoiceCall,
             ),
           ),
           Consumer<GlobalCallManager>(
             builder: (context, callManager, child) => IconButton(
-              icon: Icon(Icons.videocam, color: Colors.black87, size: iconSize2),
+              icon: Icon(Icons.videocam, color: _isAIMode ? Colors.white : Colors.black87, size: iconSize2),
               tooltip: 'Video Call',
               onPressed: callManager.isInCall ? null : _startVideoCall,
             ),
           ),
         ],
         PopupMenuButton<String>(
-          icon: Icon(Icons.more_vert, color: Colors.black87, size: iconSize2),
+          icon: Icon(Icons.more_vert, color: _isAIMode ? Colors.white : Colors.black87, size: iconSize2),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(borderRadius2),
           ),
@@ -2706,6 +3327,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ),
           SizedBox(width: spacing1),
           FloatingActionButton(
+            heroTag: 'react',
+            mini: true,
+            backgroundColor: const Color(0xFFFFC107),
+            onPressed: () {
+              if (_selectedMessageIds.length == 1) {
+                final selectedMessage = _chatProvider.messages.firstWhere((m) => m.id == _selectedMessageIds.first);
+                _clearSelection();
+                _showReactionPicker(selectedMessage.id);
+              }
+            },
+            child: Icon(Icons.add_reaction_outlined, size: iconSize3),
+          ),
+          SizedBox(width: spacing1),
+          FloatingActionButton(
             heroTag: 'copy',
             mini: true,
             backgroundColor: Colors.orange,
@@ -2757,16 +3392,70 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             ),
           ],
         ),
-        child: _isRecordingVoice
-            ? VoiceMessageRecorder(
-                onRecordingComplete: _sendVoiceMessage,
-                onCancel: () {
-                  setState(() {
-                    _isRecordingVoice = false;
-                  });
-                },
-              )
-            : Row(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Reply preview
+            if (_replyingToMessage != null)
+              Container(
+                padding: EdgeInsets.all(spacing1),
+                decoration: BoxDecoration(
+                  color: Colors.grey[200],
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(spacing1)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 4,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF667EEA),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    SizedBox(width: spacing1),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _replyingToMessage!.username,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF667EEA),
+                              fontSize: 12,
+                            ),
+                          ),
+                          Text(
+                            _replyingToMessage!.content,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(color: Colors.grey[700], fontSize: 13),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, size: 20, color: Colors.black),
+                      onPressed: _cancelReply,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
+                ),
+              ),
+            // Input area
+            _isRecordingVoice
+                ? VoiceMessageRecorder(
+                    onRecordingComplete: _sendVoiceMessage,
+                    onCancel: () {
+                      setState(() {
+                        _isRecordingVoice = false;
+                      });
+                    },
+                  )
+                : Row(
                 children: [
                   Expanded(
                     child: Container(
@@ -2798,7 +3487,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                 border: InputBorder.none,
                                 contentPadding: EdgeInsets.symmetric(horizontal: spacing1, vertical: padding2),
                               ),
-                              maxLines: null,
+                              maxLines: 5,
+                              minLines: 1,
+                              keyboardType: TextInputType.multiline,
                               textCapitalization: TextCapitalization.sentences,
                               onSubmitted: (_) => _sendMessage(),
                               onTap: () {
@@ -2808,11 +3499,70 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                               },
                             ),
                           ),
+                          // AI Mode Toggle Button with particle animation
+                          Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              IconButton(
+                                icon: Icon(
+                                  Icons.auto_awesome,
+                                  color: _isAIMode ? const Color(0xFF667EEA) : Colors.grey[600],
+                                  size: iconSize3,
+                                ),
+                                onPressed: () {
+                                  setState(() {
+                                    _isAIMode = !_isAIMode;
+                                  });
+                                },
+                              ),
+                              // Magic particles when processing
+                              if (_isAIProcessing)
+                                Positioned.fill(
+                                  child: IgnorePointer(
+                                    child: AIProcessingParticles(
+                                      isProcessing: _isAIProcessing,
+                                      color: const Color(0xFF667EEA),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
                         ],
                       ),
                     ),
                   ),
                   SizedBox(width: spacing1),
+                  // Show enhance button when in AI mode with text
+                  if (_isAIMode && _hasTextInput) ...[
+                    Container(
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFFFF6F00), Color(0xFFFFA000)],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.orange.withOpacity(0.3),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: IconButton(
+                        icon: Icon(
+                          Icons.auto_fix_high,
+                          color: Colors.white,
+                          size: iconSize3,
+                        ),
+                        tooltip: 'Enhance message',
+                        onPressed: _showEnhanceOptions,
+                      ),
+                    ),
+                    SizedBox(width: spacing1),
+                  ],
+                  // Send/Mic button
                   Container(
                     decoration: BoxDecoration(
                       gradient: const LinearGradient(
@@ -2840,6 +3590,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   ),
                 ],
               ),
+          ],
+        ),
       ),
     );
   }
@@ -2851,6 +3603,88 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return Color(int.parse('0xFF$hexColor'));
   }
 
+  Widget _buildEncryptionBanner() {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final bannerPadding = (screenWidth * 0.04).clamp(12.0, 20.0);
+    final fontSize = (screenWidth * 0.035).clamp(13.0, 16.0);
+
+    // Hindi and English content
+    final title = _isBannerInHindi ? 'एंड-टू-एंड एन्क्रिप्टेड' : 'End-to-End Encrypted';
+    final subtitle = _isBannerInHindi
+        ? 'आपके संदेश निजी रहते हैं — केवल आप और आपका चैट पार्टनर पढ़ सकते हैं। Zarq Messenger भी नहीं'
+        : 'Your messages stay private — only you and your chat partner can read them. Not even Zarq Messenger can';
+
+    return ParticleAnimationWidget(
+      isRemoving: _isRemovingBanner,
+      onAnimationComplete: () {},
+      child: GestureDetector(
+        onTap: _showRemoveBannerDialog,
+        onDoubleTap: () {
+          setState(() {
+            _isBannerInHindi = !_isBannerInHindi;
+          });
+        },
+        child: Container(
+          margin: EdgeInsets.symmetric(
+            horizontal: bannerPadding,
+            vertical: bannerPadding * 0.5,
+          ),
+          padding: EdgeInsets.all(bannerPadding),
+          decoration: BoxDecoration(
+            color: Colors.black,
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.3),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.lock,
+                  color: Colors.white,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: fontSize,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.9),
+                        fontSize: fontSize * 0.85,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _buildMessageBubble(Message message, int index, int itemCount) {
     final isMe = message.senderUid == _currentUserUid;
@@ -2888,7 +3722,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       key: itemKey,
       onLongPress: () => _handleMessageLongPress(message),
       onTap: () {
-        if (_isMultiSelectionMode) {
+        if (_isAIMode) {
+          // Show AI options when in AI mode
+          _showAIOptions(message);
+        } else if (_isMultiSelectionMode) {
           _toggleMessageSelection(message);
         } else if (message.content == "This message was deleted") {
           _showDeletedMessageOptions(message);
@@ -2900,7 +3737,51 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         padding: EdgeInsets.symmetric(horizontal: spacing2, vertical: spacing1),
         child: Align(
           alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-          child: Container(
+          child: _buildMessageWithAnimation(
+            message,
+            isMe,
+            isSelected,
+            styleKey,
+            colorStartHex,
+            colorEndHex,
+            cardBubbleColor,
+            screenWidth,
+            padding2,
+            spacing1,
+            spacing2,
+            smallTextSize,
+            bodyTextSize,
+            tinyTextSize,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMessageWithAnimation(
+    Message message,
+    bool isMe,
+    bool isSelected,
+    String styleKey,
+    String colorStartHex,
+    String colorEndHex,
+    String cardBubbleColor,
+    double screenWidth,
+    double padding2,
+    double spacing1,
+    double spacing2,
+    double smallTextSize,
+    double bodyTextSize,
+    double tinyTextSize,
+  ) {
+    final userSettings = Provider.of<UserSettingsProvider>(context, listen: false);
+    final animationStyle = userSettings.encryptionAnimationStyle;
+    final shouldAnimate = animationStyle == 'dynamic' && !_animatedMessageIds.contains(message.id);
+
+    final bubbleWidget = Stack(
+      clipBehavior: Clip.none, // Allow overflow to show eye icon outside bubble
+      children: [
+        Container(
             constraints: BoxConstraints(
               maxWidth: MediaQuery.of(context).size.width * 0.75,
             ),
@@ -2954,6 +3835,45 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       ),
                     ),
                   ),
+                // Display replied message if this is a reply
+                if (message.replyToMessageId != null && message.repliedMessageContent != null)
+                  Container(
+                    margin: EdgeInsets.only(bottom: spacing1),
+                    padding: EdgeInsets.all(spacing1),
+                    decoration: BoxDecoration(
+                      color: (isMe ? Colors.white : Colors.grey[300])?.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border(
+                        left: BorderSide(
+                          color: isMe ? Colors.white : const Color(0xFF667EEA),
+                          width: 3,
+                        ),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          message.repliedMessageSenderName ?? 'User',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: tinyTextSize,
+                            color: isMe ? Colors.white : const Color(0xFF667EEA),
+                          ),
+                        ),
+                        Text(
+                          message.repliedMessageContent!,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: tinyTextSize,
+                            color: isMe ? Colors.white70 : Colors.grey[700],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 // Display image if has attachment (hide if message is deleted)
                 if (message.hasAttachment && message.attachmentType == 'image' && message.content != 'This message was deleted')
                   _buildImageAttachment(message),
@@ -2966,8 +3886,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 // Display voice message if has audio attachment (hide if message is deleted)
                 if (message.hasAttachment && message.attachmentType == 'audio' && message.content != 'This message was deleted')
                   _buildVoiceMessageAttachment(message),
-                // Display text content (hide "[Image]", "[Video]", "[Voice message]", and document placeholders when media is shown)
-                if (message.content != '[Image]' && message.content != '[Video]' && message.content != '[Voice message]' && !message.content.startsWith('📄') && message.content != 'This message was deleted')
+                // Display text content - Show placeholders for pending attachments, hide them only when attachment is actually shown
+                if (message.content != 'This message was deleted' && !(message.hasAttachment && (message.content == '[Image]' || message.content == '[Video]' || message.content == '[Voice message]' || message.content.startsWith('📄'))))
                   _buildHighlightedText(
                     message.content,
                     isMe,
@@ -2998,18 +3918,60 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                           : (isMe ? Colors.white70 : Colors.grey[600]),
                       ),
                     ),
-                    if (isMe) ...[
+                    if (isMe && message.status != MessageStatus.read) ...[
                       SizedBox(width: spacing1),
                       _buildMessageStatusIcon(message, styleKey),
                     ],
+                    // Static encryption lock icon
+                    SizedBox(width: spacing1),
+                    Icon(
+                      Icons.lock,
+                      size: 12,
+                      color: isMe
+                        ? Colors.white
+                        : Colors.black.withOpacity(0.6),
+                    ),
                   ],
+                ),
+                // Reactions display
+                MessageReactionsWidget(
+                  messageId: message.id,
+                  reactions: message.reactions,
+                  isMe: isMe,
                 ),
               ],
             ),
           ),
-        ),
-      ),
+        // Eye icon at top-left when message is read (positioned outside with partial overlap)
+        if (isMe && message.status == MessageStatus.read)
+          Positioned(
+            top: -(screenWidth * 0.015).clamp(5.0, 8.0),
+            left: -(screenWidth * 0.015).clamp(5.0, 8.0),
+            child: Icon(
+              Icons.visibility,
+              size: (screenWidth * 0.045).clamp(16.0, 20.0),
+              color: Colors.black,
+            ),
+          ),
+      ],
     );
+
+    // Wrap with animation if not yet animated
+    if (shouldAnimate) {
+      return EncryptionAnimationWidget(
+        isDecrypting: !isMe, // Receiver sees decryption animation
+        onAnimationComplete: () {
+          if (mounted) {
+            setState(() {
+              _animatedMessageIds.add(message.id);
+            });
+          }
+        },
+        child: bubbleWidget,
+      );
+    }
+
+    return bubbleWidget;
   }
 
   BorderRadius _getDynamicBorderRadius(bool isMe, String styleKey, double screenWidth) {
@@ -4032,12 +4994,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
 
       // Download and decrypt
-      // print('[ChatScreen] Downloading encrypted video $attachmentId...');
+      print('[ChatScreen] 📥 Downloading encrypted video $attachmentId...');
       final encryptedData = await FileService.downloadEncryptedFile(attachmentId);
-      if (encryptedData == null) return null;
+      if (encryptedData == null) {
+        print('[ChatScreen] ❌ Download failed');
+        return null;
+      }
+      print('[ChatScreen] ✅ Downloaded ${encryptedData.length} bytes');
 
       Message workingMessage = message;
       if (message.mediaEncryptionKey == null || message.mediaEncryptionIv == null) {
+        print('[ChatScreen] ⚠️ Missing encryption keys, fetching metadata...');
         final metadata = await FileService.fetchAttachmentMetadata(attachmentId);
         if (metadata != null) {
           workingMessage = message.copyWith(
@@ -4045,6 +5012,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             mediaEncryptionIv: metadata['media_encryption_iv'],
             senderDeviceId: metadata['sender_device_id'] ?? message.senderDeviceId,
           );
+          print('[ChatScreen] ✅ Metadata fetched');
         }
       }
 
@@ -4055,26 +5023,28 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         final myDeviceId = await SignalService.getDeviceId();
         final isSender = currentUser?.uid == workingMessage.senderUid;
 
-        // print('[ChatScreen] 🔐 Video decryption - isSender: $isSender');
+        print('[ChatScreen] 🔐 Video decryption - isSender: $isSender');
 
         // Determine which encryption key to use and whether it needs Signal decryption
         String aesKeyB64; // This will be the raw AES key (base64)
 
         if (isSender && workingMessage.senderMediaEncryptionKey != null) {
           // Sender re-downloading their own video - key is stored as RAW base64 (not encrypted)
-          // print('[ChatScreen] 🔐 SENDER RE-DOWNLOAD VIDEO - Using raw senderMediaEncryptionKey');
+          print('[ChatScreen] 🔐 SENDER RE-DOWNLOAD VIDEO - Using raw senderMediaEncryptionKey');
           aesKeyB64 = workingMessage.senderMediaEncryptionKey!; // Already raw AES key
-          // print('[ChatScreen] 🔐 Using sender raw key (first 30 chars): ${aesKeyB64.substring(0, 30)}...');
+          print('[ChatScreen] 🔐 Using sender raw key (first 30 chars): ${aesKeyB64.substring(0, math.min(30, aesKeyB64.length))}...');
         } else {
           // Recipient receiving video - key is encrypted with Signal or Sender Keys
-          // print('[ChatScreen] 🔐 RECIPIENT RECEIVE VIDEO - Using encrypted recipientMediaEncryptionKey');
+          print('[ChatScreen] 🔐 RECIPIENT RECEIVE VIDEO - Using encrypted recipientMediaEncryptionKey');
           final encryptedAesKeyB64 = workingMessage.mediaEncryptionKey!;
           final decryptionSenderUid = workingMessage.senderUid!;
           final decryptionDeviceId = workingMessage.senderDeviceId!;
+          print('[ChatScreen] 🔐 Encrypted key length: ${encryptedAesKeyB64.length}');
+          print('[ChatScreen] 🔐 Sender: $decryptionSenderUid:$decryptionDeviceId');
 
           // CRITICAL: Check if this is a GROUP message (needs Sender Keys decryption)
           if (widget.conversationInfo.isGroup) {
-            // print('[ChatScreen] 🔐 GROUP VIDEO - Decrypting AES key with Sender Keys Protocol');
+            print('[ChatScreen] 🔐 GROUP VIDEO - Decrypting AES key with Sender Keys Protocol');
 
             final decryptedAesKeyB64 = await GroupEncryptionService.decryptGroupMessage(
               senderUid: decryptionSenderUid,
@@ -4085,10 +5055,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
             if (decryptedAesKeyB64 == null) throw Exception('Failed to decrypt AES key with Sender Keys');
 
-            // print('[ChatScreen] ✅ AES key decrypted with Sender Keys Protocol');
+            print('[ChatScreen] ✅ AES key decrypted with Sender Keys Protocol');
             aesKeyB64 = decryptedAesKeyB64;
           } else {
-            // print('[ChatScreen] 🔐 1-ON-1 VIDEO - Decrypting AES key with Signal Protocol');
+            print('[ChatScreen] 🔐 1-ON-1 VIDEO - Decrypting AES key with Signal Protocol');
 
             final decryptedAesKeyB64 = await SignalService.decryptMessage(
               senderUid: decryptionSenderUid,
@@ -4098,37 +5068,45 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
             if (decryptedAesKeyB64 == null) throw Exception('Failed to decrypt AES key');
 
-            // print('[ChatScreen] ✅ AES key decrypted with Signal Protocol');
+            print('[ChatScreen] ✅ AES key decrypted with Signal Protocol');
             aesKeyB64 = decryptedAesKeyB64;
           }
         }
 
+        print('[ChatScreen] 🔐 Decoding AES key and IV...');
         final aesKey = base64.decode(aesKeyB64);
         final aesIv = base64.decode(workingMessage.mediaEncryptionIv!);
+        print('[ChatScreen] 🔐 Key: ${aesKey.length} bytes, IV: ${aesIv.length} bytes');
 
+        print('[ChatScreen] 🔐 Decrypting video data...');
         decryptedData = FileService.decryptWithAES(
           encryptedData: encryptedData,
           key: aesKey,
           iv: aesIv,
         );
 
-        // print('[ChatScreen] ✅ Video decrypted successfully');
+        print('[ChatScreen] ✅ Video decrypted successfully (${decryptedData.length} bytes)');
       } else {
+        print('[ChatScreen] ⚠️ No encryption - using raw data');
         decryptedData = encryptedData;
       }
 
       // Save to storage
+      print('[ChatScreen] 💾 Saving to persistent storage...');
       await FileService.saveVideoToPersistentStorage(decryptedData, attachmentId);
       final videoPath = await FileService.getVideoFilePath(attachmentId);
 
       if (videoPath != null) {
+        print('[ChatScreen] ✅ Video saved: $videoPath');
         _videoCache[attachmentId] = videoPath;
         return videoPath;
       }
 
+      print('[ChatScreen] ❌ Failed to get video path');
       return null;
-    } catch (e) {
-      // print('[ChatScreen] Error loading video: $e');
+    } catch (e, stackTrace) {
+      print('[ChatScreen] ❌ Error loading video: $e');
+      print('[ChatScreen] ❌ Stack trace: $stackTrace');
       return null;
     }
   }
@@ -5035,11 +6013,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void _scrollToBottom({bool instant = false}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
+        // With reverse: true, position 0 is the bottom (most recent message)
         if (instant) {
-          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+          _scrollController.jumpTo(0);
         } else {
           _scrollController.animateTo(
-            _scrollController.position.maxScrollExtent,
+            0,
             duration: const Duration(milliseconds: 300),
             curve: Curves.easeOut,
           );
@@ -5049,7 +6028,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _toggleMessageSelection(Message message) {
-    if (message.senderUid != _currentUserUid) return;
+    // Allow selecting any message except deleted ones
     if (message.content == "This message was deleted") return;
     setState(() {
       if (_selectedMessageIds.contains(message.id)) {
@@ -5068,7 +6047,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
   }
 
+  void _setReplyToMessage(Message message) {
+    if (message.content == "This message was deleted") return;
+
+    setState(() {
+      _replyingToMessage = message;
+    });
+
+    // Focus on text field
+    _focusNode.requestFocus();
+  }
+
+  void _cancelReply() {
+    setState(() {
+      _replyingToMessage = null;
+    });
+  }
+
   void _handleMessageLongPress(Message message) {
+    // Allow selecting any message except deleted ones
+    if (message.content == "This message was deleted") return;
+
     if (_isMultiSelectionMode) {
       _toggleMessageSelection(message);
     } else {
@@ -5078,6 +6077,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         _isMultiSelectionMode = true;
       });
     }
+  }
+
+  void _showReactionPicker(int messageId) {
+    final wsService = Provider.of<WebSocketService>(context, listen: false);
+
+    ReactionPicker.show(
+      context,
+      messageId,
+      (emoji) {
+        // Add reaction via WebSocket
+        wsService.addReaction(messageId: messageId, emoji: emoji);
+      },
+    );
   }
 
 
@@ -5440,11 +6452,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         senderDeviceId: senderDeviceId ?? originalMessage.senderDeviceId, // Use from payload or keep existing
       );
 
-      // Update in provider
-      _chatProvider.messages[messageIndex] = updatedMessage;
-      // print('[ChatScreen] 📢 BEFORE notifyListeners - message list length: ${_chatProvider.messages.length}');
-      _chatProvider.notifyListeners();
-      // print('[ChatScreen] 📢 AFTER notifyListeners - should trigger Consumer rebuild');
+      // Update in provider using updateMessage method to ensure proper notification
+      _chatProvider.updateMessage(updatedMessage);
+      // print('[ChatScreen] 📢 Message updated in provider - should trigger Consumer rebuild');
+
+      // Force immediate UI refresh
+      if (mounted) {
+        setState(() {});
+      }
 
       // Update in database
       await _dbService.insertMessage(updatedMessage);
@@ -5478,6 +6493,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _deleteSelectedMessages() async {
     if (_selectedMessageIds.isEmpty) return;
 
+    // Check if ALL selected messages belong to current user
+    final selectedMessages = _chatProvider.messages
+        .where((msg) => _selectedMessageIds.contains(msg.id))
+        .toList();
+    final allOwnMessages = selectedMessages.every((msg) => msg.senderUid == _currentUserUid);
+
     final deletionType = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
@@ -5496,12 +6517,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               title: const Text('Delete for me', style: TextStyle(color: Colors.black87)),
               onTap: () => Navigator.of(context).pop('delete_for_me'),
             ),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.group_outlined, color: Colors.red),
-              title: const Text('Delete for everyone', style: TextStyle(color: Colors.black87)),
-              onTap: () => Navigator.of(context).pop('delete_for_everyone'),
-            ),
+            // Only show "Delete for everyone" if ALL selected messages are own messages
+            if (allOwnMessages)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.group_outlined, color: Colors.red),
+                title: const Text('Delete for everyone', style: TextStyle(color: Colors.black87)),
+                onTap: () => Navigator.of(context).pop('delete_for_everyone'),
+              ),
           ],
         ),
         actions: [
@@ -5786,18 +6809,31 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ? Colors.black87
         : (isMe ? Colors.white : Colors.black87);
 
-    // If not searching or no query, show normal text
+    // If not searching or no query, show text with clickable links
     if (!_isSearching || _searchQuery.isEmpty) {
-      return Text(
-        text,
+      return Linkify(
+        onOpen: (link) async {
+          final url = Uri.parse(link.url);
+          if (await canLaunchUrl(url)) {
+            await launchUrl(url, mode: LaunchMode.externalApplication);
+          }
+        },
+        text: text,
         style: TextStyle(
           fontSize: 16,
           color: textColor,
         ),
+        linkStyle: TextStyle(
+          fontSize: 16,
+          color: isMe ? Colors.blue[100] : Colors.blue[700],
+          decoration: TextDecoration.underline,
+        ),
       );
     }
 
-    // Build highlighted text
+    // Build highlighted text with search matches
+    // Note: When searching, we'll show highlighted text without linkify
+    // This is a trade-off to avoid complexity of combining both features
     final spans = <TextSpan>[];
     final lowerText = text.toLowerCase();
     int start = 0;
@@ -5847,40 +6883,32 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
-  // Build typing animation (three animated dots)
+  // Build WhatsApp-style typing animation (three bouncing dots)
   Widget _buildTypingAnimation() {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: List.generate(3, (index) {
-        return TweenAnimationBuilder<double>(
-          tween: Tween(begin: 0.0, end: 1.0),
-          duration: Duration(milliseconds: 600),
-          curve: Curves.easeInOut,
-          builder: (context, value, child) {
-            final delay = index * 0.2;
-            final animValue = ((value + delay) % 1.0);
-            final opacity = (animValue < 0.5) ? animValue * 2 : (1 - animValue) * 2;
-
+    return AnimatedBuilder(
+      animation: _typingAnimationController,
+      builder: (context, child) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: List.generate(3, (index) {
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: 2),
-              child: Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: Colors.grey.withOpacity(0.4 + opacity * 0.4),
-                  shape: BoxShape.circle,
+              child: Transform.translate(
+                offset: Offset(0, _typingDotAnimations[index].value),
+                child: Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[600],
+                    shape: BoxShape.circle,
+                  ),
                 ),
               ),
             );
-          },
-          onEnd: () {
-            // Restart animation
-            if (mounted && _isOtherUserTyping) {
-              setState(() {});
-            }
-          },
+          }),
         );
-      }),
+      },
     );
   }
 
@@ -5950,64 +6978,193 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// Load encryption banner preference from SharedPreferences (per conversation)
+  Future<void> _loadEncryptionBannerPreference() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final conversationId = widget.conversationInfo.conversationId;
+      final showBanner = prefs.getBool('show_encryption_banner_$conversationId') ?? true;
+      setState(() {
+        _showEncryptionBanner = showBanner;
+      });
+    } catch (e) {
+      // print('[ChatScreen] Error loading encryption banner preference: $e');
+    }
+  }
+
+  /// Save encryption banner preference to SharedPreferences (per conversation)
+  Future<void> _saveEncryptionBannerPreference(bool show) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final conversationId = widget.conversationInfo.conversationId;
+      await prefs.setBool('show_encryption_banner_$conversationId', show);
+    } catch (e) {
+      // print('[ChatScreen] Error saving encryption banner preference: $e');
+    }
+  }
+
+  /// Show dialog to confirm banner removal
+  void _showRemoveBannerDialog() {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final titleFontSize = (screenWidth * 0.045).clamp(16.0, 20.0);
+    final contentFontSize = (screenWidth * 0.038).clamp(14.0, 16.0);
+    final buttonFontSize = (screenWidth * 0.035).clamp(13.0, 15.0);
+    final iconSize = (screenWidth * 0.06).clamp(22.0, 26.0);
+    final padding = (screenWidth * 0.04).clamp(16.0, 24.0);
+
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          contentPadding: EdgeInsets.all(padding),
+          title: Row(
+            children: [
+              Icon(Icons.lock, color: Colors.blue, size: iconSize),
+              SizedBox(width: padding * 0.5),
+              Expanded(
+                child: Text(
+                  'Hide Encryption Banner',
+                  style: TextStyle(fontSize: titleFontSize),
+                ),
+              ),
+            ],
+          ),
+          content: Text(
+            'Do you want to hide the end-to-end encryption banner?\n\nYour messages will still remain encrypted.',
+            style: TextStyle(fontSize: contentFontSize),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text('Cancel', style: TextStyle(fontSize: buttonFontSize)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _removeBannerWithAnimation();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+              child: Text('Hide', style: TextStyle(fontSize: buttonFontSize)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Remove banner with particle animation
+  void _removeBannerWithAnimation() {
+    setState(() {
+      _isRemovingBanner = true;
+    });
+
+    // Wait for animation to complete before hiding banner
+    Future.delayed(const Duration(milliseconds: 600), () {
+      if (mounted) {
+        setState(() {
+          _showEncryptionBanner = false;
+          _isRemovingBanner = false;
+        });
+        _saveEncryptionBannerPreference(false);
+      }
+    });
+  }
+
   /// Show wallpaper picker dialog
   void _showWallpaperPicker() {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    final dialogPadding = (screenWidth * 0.04).clamp(12.0, 20.0);
+    final titleFontSize = (screenWidth * 0.045).clamp(16.0, 20.0);
+    final descFontSize = (screenWidth * 0.035).clamp(12.0, 16.0);
+    final galleryFontSize = (screenWidth * 0.038).clamp(14.0, 17.0);
+    final iconSize = (screenWidth * 0.055).clamp(20.0, 26.0);
+    final spacing1 = (screenHeight * 0.015).clamp(10.0, 16.0);
+    final spacing2 = (screenHeight * 0.01).clamp(8.0, 12.0);
+    final wrapSpacing = (screenWidth * 0.025).clamp(8.0, 12.0);
+    final optionSize = (screenWidth * 0.18).clamp(65.0, 85.0);
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Change Wallpaper'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Choose a background for this chat', style: TextStyle(fontSize: 14)),
-            const SizedBox(height: 16),
-            // Gallery option
-            InkWell(
-              onTap: () async {
-                Navigator.pop(context);
-                await _pickWallpaperFromGallery();
-              },
-              child: Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.blue[50],
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.blue[200]!, width: 2),
+        title: Text(
+          'Change Wallpaper',
+          style: TextStyle(fontSize: titleFontSize),
+        ),
+        contentPadding: EdgeInsets.fromLTRB(dialogPadding, dialogPadding, dialogPadding, 0),
+        content: SingleChildScrollView(
+          child: SizedBox(
+            width: screenWidth * 0.85,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Choose a background for this chat',
+                  style: TextStyle(fontSize: descFontSize),
                 ),
-                child: Row(
-                  children: [
-                    Icon(Icons.image, color: Colors.blue[700], size: 24),
-                    const SizedBox(width: 12),
-                    Text(
-                      'Choose from Gallery',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.blue[900],
-                      ),
+                SizedBox(height: spacing1),
+                // Gallery option
+                InkWell(
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await _pickWallpaperFromGallery();
+                  },
+                  child: Container(
+                    padding: EdgeInsets.all(dialogPadding * 0.8),
+                    decoration: BoxDecoration(
+                      color: Colors.blue[50],
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.blue[200]!, width: 2),
                     ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.image, color: Colors.blue[700], size: iconSize),
+                        SizedBox(width: spacing2),
+                        Flexible(
+                          child: Text(
+                            'Choose from Gallery',
+                            style: TextStyle(
+                              fontSize: galleryFontSize,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.blue[900],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                SizedBox(height: spacing1),
+                Text(
+                  'Or choose a color:',
+                  style: TextStyle(fontSize: descFontSize * 0.9, color: Colors.grey),
+                ),
+                SizedBox(height: spacing2),
+                Wrap(
+                  spacing: wrapSpacing,
+                  runSpacing: wrapSpacing,
+                  children: [
+                    _buildWallpaperOption(const Color(0xFFECE5DD), 'Default', optionSize),
+                    _buildWallpaperOption(const Color(0xFF000000), 'Dark Black', optionSize),
+                    _buildWallpaperOption(const Color(0xFFE8F5E9), 'Green', optionSize),
+                    _buildWallpaperOption(const Color(0xFFE3F2FD), 'Blue', optionSize),
+                    _buildWallpaperOption(const Color(0xFFFFF3E0), 'Orange', optionSize),
+                    _buildWallpaperOption(const Color(0xFFF3E5F5), 'Purple', optionSize),
+                    _buildWallpaperOption(const Color(0xFFFFEBEE), 'Pink', optionSize),
                   ],
                 ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            const Text('Or choose a color:', style: TextStyle(fontSize: 13, color: Colors.grey)),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                _buildWallpaperOption(const Color(0xFFECE5DD), 'Default'),
-                _buildWallpaperOption(const Color(0xFFE8F5E9), 'Green'),
-                _buildWallpaperOption(const Color(0xFFE3F2FD), 'Blue'),
-                _buildWallpaperOption(const Color(0xFFFFF3E0), 'Orange'),
-                _buildWallpaperOption(const Color(0xFFF3E5F5), 'Purple'),
-                _buildWallpaperOption(const Color(0xFFFFEBEE), 'Pink'),
+                SizedBox(height: spacing2),
               ],
             ),
-          ],
+          ),
         ),
         actions: [
           TextButton(
@@ -6059,7 +7216,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  Widget _buildWallpaperOption(Color color, String name) {
+  Widget _buildWallpaperOption(Color color, String name, double size) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final nameFontSize = (screenWidth * 0.028).clamp(9.0, 13.0);
+
     return InkWell(
       onTap: () async {
         final prefs = await SharedPreferences.getInstance();
@@ -6085,8 +7245,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         }
       },
       child: Container(
-        width: 80,
-        height: 80,
+        width: size,
+        height: size,
         decoration: BoxDecoration(
           color: color,
           borderRadius: BorderRadius.circular(12),
@@ -6095,7 +7255,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         child: Center(
           child: Text(
             name,
-            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: nameFontSize,
+              fontWeight: FontWeight.w600,
+              color: color.computeLuminance() < 0.5 ? Colors.white : Colors.black87,
+            ),
           ),
         ),
       ),
@@ -6264,5 +7429,1576 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
       }
     }
+  }
+
+  // AI Features
+  void _showAIOptions(Message message) {
+    // Don't show AI options for deleted messages or messages with only attachments
+    if (message.content == "This message was deleted" ||
+        message.content.isEmpty ||
+        message.content == '[Image]' ||
+        message.content == '[Video]' ||
+        message.content == '[Voice message]') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot use AI on this message'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final handleWidth = (screenWidth * 0.1).clamp(35.0, 50.0);
+    final handleHeight = (screenHeight * 0.005).clamp(3.0, 5.0);
+    final spacing1 = (screenHeight * 0.015).clamp(10.0, 16.0);
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(height: spacing1),
+              // Drag handle
+              Container(
+                width: handleWidth,
+                height: handleHeight,
+                decoration: BoxDecoration(
+                  color: Colors.grey[400],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              SizedBox(height: spacing1 * 1.5),
+              // AI Options Cards
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: spacing1),
+                child: Column(
+                  children: [
+                    _buildAIActionCard(
+                      icon: Icons.translate,
+                      title: 'Translate',
+                      subtitle: 'Translate to other languages',
+                      color: const Color(0xFF4CAF50),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showTranslateDialog(message);
+                      },
+                    ),
+                    SizedBox(height: spacing1),
+                    _buildAIActionCard(
+                      icon: Icons.summarize,
+                      title: 'Summarize',
+                      subtitle: 'Get a brief summary',
+                      color: const Color(0xFF2196F3),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showLanguageSelectionDialog(message, 'summarize');
+                      },
+                    ),
+                    SizedBox(height: spacing1),
+                    _buildAIActionCard(
+                      icon: Icons.lightbulb_outline,
+                      title: 'Explain',
+                      subtitle: 'Explain in simple terms',
+                      color: const Color(0xFFFF9800),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showLanguageSelectionDialog(message, 'explain');
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: spacing1),
+              // Privacy warning
+              Container(
+                margin: EdgeInsets.symmetric(horizontal: spacing1),
+                padding: EdgeInsets.all(spacing1 * 0.8),
+                decoration: BoxDecoration(
+                  color: Colors.orange[50],
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.orange[300]!),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.warning_amber, color: Colors.orange[700], size: 20),
+                    SizedBox(width: spacing1 * 0.5),
+                    Expanded(
+                      child: Text(
+                        'Message sent to Google AI (E2EE bypassed)',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.orange[900],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: MediaQuery.of(context).padding.bottom + spacing1),
+          ],
+        ),
+      ),
+      ),
+    );
+  }
+
+  Widget _buildAIActionCard({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    final cardPadding = (screenWidth * 0.04).clamp(14.0, 20.0);
+    final iconPadding = (screenWidth * 0.03).clamp(10.0, 14.0);
+    final iconSize = (screenWidth * 0.06).clamp(22.0, 28.0);
+    final titleSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final subtitleSize = (screenWidth * 0.03).clamp(11.0, 14.0);
+    final arrowSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final spacing1 = (screenWidth * 0.04).clamp(12.0, 18.0);
+    final spacing2 = (screenHeight * 0.0025).clamp(2.0, 4.0);
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: EdgeInsets.all(cardPadding),
+        decoration: BoxDecoration(
+          color: Colors.black,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: color.withOpacity(0.3),
+            width: 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: EdgeInsets.all(iconPadding),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icon, color: color, size: iconSize),
+            ),
+            SizedBox(width: spacing1),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: titleSize,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  SizedBox(height: spacing2),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      color: Colors.white60,
+                      fontSize: subtitleSize,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.arrow_forward_ios, color: Colors.grey[600], size: arrowSize),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showTranslateDialog(Message message) {
+    final languages = {
+      'English': '🇬🇧',
+      'Spanish': '🇪🇸',
+      'French': '🇫🇷',
+      'German': '🇩🇪',
+      'Italian': '🇮🇹',
+      'Portuguese': '🇵🇹',
+      'Russian': '🇷🇺',
+      'Chinese': '🇨🇳',
+      'Japanese': '🇯🇵',
+      'Korean': '🇰🇷',
+      'Arabic': '🇸🇦',
+      'Hindi': '🇮🇳',
+      'Bengali': '🇧🇩',
+      'Tamil': '🇮🇳',
+      'Telugu': '🇮🇳',
+      'Marathi': '🇮🇳',
+    };
+
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final spacing1 = (screenHeight * 0.015).clamp(12.0, 20.0);
+    final padding1 = (screenWidth * 0.04).clamp(16.0, 24.0);
+    final titleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+    final bodySize = (screenWidth * 0.038).clamp(14.0, 16.0);
+    final emojiSize = (screenWidth * 0.08).clamp(28.0, 36.0);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.7,
+        minChildSize: 0.5,
+        maxChildSize: 0.9,
+        builder: (context, scrollController) => Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(25)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.15),
+                blurRadius: 20,
+                offset: const Offset(0, -4),
+              ),
+            ],
+          ),
+          child: Column(
+            children: [
+              SizedBox(height: spacing1),
+              // Handle bar
+              Container(
+                width: (screenWidth * 0.1).clamp(40.0, 50.0),
+                height: (screenHeight * 0.005).clamp(4.0, 5.0),
+                decoration: BoxDecoration(
+                  color: Colors.grey[400],
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+              SizedBox(height: spacing1 * 1.5),
+              // Title with gradient background
+              Container(
+                margin: EdgeInsets.symmetric(horizontal: padding1),
+                padding: EdgeInsets.all(padding1 * 0.8),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [const Color(0xFF4CAF50).withOpacity(0.1), const Color(0xFF4CAF50).withOpacity(0.05)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: const Color(0xFF4CAF50).withOpacity(0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: EdgeInsets.all(spacing1 * 0.6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF4CAF50).withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(Icons.translate, color: const Color(0xFF4CAF50), size: titleSize),
+                    ),
+                    SizedBox(width: spacing1),
+                    Text(
+                      'Select Language',
+                      style: TextStyle(
+                        fontSize: titleSize,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: spacing1 * 1.5),
+              // Language grid
+              Expanded(
+                child: GridView.builder(
+                  controller: scrollController,
+                  padding: EdgeInsets.symmetric(horizontal: padding1),
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    crossAxisSpacing: spacing1,
+                    mainAxisSpacing: spacing1,
+                    childAspectRatio: 2.5,
+                  ),
+                  itemCount: languages.length,
+                  itemBuilder: (context, index) {
+                    final language = languages.keys.elementAt(index);
+                    final flag = languages[language]!;
+
+                    return TweenAnimationBuilder<double>(
+                      duration: Duration(milliseconds: 300 + (index * 30)),
+                      tween: Tween(begin: 0.0, end: 1.0),
+                      builder: (context, value, child) {
+                        return Transform.scale(
+                          scale: 0.8 + (0.2 * value),
+                          child: Opacity(
+                            opacity: value,
+                            child: child,
+                          ),
+                        );
+                      },
+                      child: InkWell(
+                        onTap: () {
+                          Navigator.pop(context);
+                          _processAI(message, 'translate', targetLanguage: language);
+                        },
+                        borderRadius: BorderRadius.circular(16),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                const Color(0xFF4CAF50).withOpacity(0.08),
+                                const Color(0xFF4CAF50).withOpacity(0.03),
+                              ],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            ),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: const Color(0xFF4CAF50).withOpacity(0.2),
+                              width: 1.5,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                flag,
+                                style: TextStyle(fontSize: emojiSize),
+                              ),
+                              SizedBox(width: spacing1 * 0.75),
+                              Flexible(
+                                child: Text(
+                                  language,
+                                  style: TextStyle(
+                                    fontSize: bodySize,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.black87,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              SizedBox(height: MediaQuery.of(context).padding.bottom + spacing1),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Show language selection dialog for Summarize/Explain
+  void _showLanguageSelectionDialog(Message message, String action) {
+    final languages = {
+      'English': '🇬🇧',
+      'Spanish': '🇪🇸',
+      'French': '🇫🇷',
+      'German': '🇩🇪',
+      'Italian': '🇮🇹',
+      'Portuguese': '🇵🇹',
+      'Russian': '🇷🇺',
+      'Chinese': '🇨🇳',
+      'Japanese': '🇯🇵',
+      'Korean': '🇰🇷',
+      'Arabic': '🇸🇦',
+      'Hindi': '🇮🇳',
+      'Bengali': '🇧🇩',
+      'Tamil': '🇮🇳',
+      'Telugu': '🇮🇳',
+      'Marathi': '🇮🇳',
+    };
+
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final spacing1 = (screenHeight * 0.015).clamp(12.0, 20.0);
+    final padding1 = (screenWidth * 0.04).clamp(16.0, 24.0);
+    final titleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+    final bodySize = (screenWidth * 0.038).clamp(14.0, 16.0);
+    final emojiSize = (screenWidth * 0.08).clamp(28.0, 36.0);
+
+    // Get title and icon based on action
+    final actionTitle = action == 'summarize' ? 'Summarize' : 'Explain';
+    final actionIcon = action == 'summarize' ? Icons.summarize : Icons.lightbulb_outline;
+    final actionColor = action == 'summarize' ? const Color(0xFF2196F3) : const Color(0xFFFF9800);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.7,
+        minChildSize: 0.5,
+        maxChildSize: 0.9,
+        builder: (context, scrollController) => Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(25)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.15),
+                blurRadius: 20,
+                offset: const Offset(0, -4),
+              ),
+            ],
+          ),
+          child: Column(
+            children: [
+              SizedBox(height: spacing1),
+              // Handle bar
+              Container(
+                width: (screenWidth * 0.1).clamp(40.0, 50.0),
+                height: (screenHeight * 0.005).clamp(4.0, 5.0),
+                decoration: BoxDecoration(
+                  color: Colors.grey[400],
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+              SizedBox(height: spacing1 * 1.5),
+              // Title with gradient background
+              Container(
+                margin: EdgeInsets.symmetric(horizontal: padding1),
+                padding: EdgeInsets.all(padding1 * 0.8),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [actionColor.withOpacity(0.1), actionColor.withOpacity(0.05)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: actionColor.withOpacity(0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: EdgeInsets.all(spacing1 * 0.6),
+                      decoration: BoxDecoration(
+                        color: actionColor.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(actionIcon, color: actionColor, size: titleSize),
+                    ),
+                    SizedBox(width: spacing1),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          actionTitle,
+                          style: TextStyle(
+                            fontSize: titleSize,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
+                          ),
+                        ),
+                        Text(
+                          'Select output language',
+                          style: TextStyle(
+                            fontSize: bodySize * 0.9,
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: spacing1 * 1.5),
+              // Language grid
+              Expanded(
+                child: GridView.builder(
+                  controller: scrollController,
+                  padding: EdgeInsets.symmetric(horizontal: padding1),
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    crossAxisSpacing: spacing1,
+                    mainAxisSpacing: spacing1,
+                    childAspectRatio: 2.5,
+                  ),
+                  itemCount: languages.length,
+                  itemBuilder: (context, index) {
+                    final language = languages.keys.elementAt(index);
+                    final flag = languages[language]!;
+
+                    return TweenAnimationBuilder<double>(
+                      duration: Duration(milliseconds: 300 + (index * 30)),
+                      tween: Tween(begin: 0.0, end: 1.0),
+                      builder: (context, value, child) {
+                        return Transform.scale(
+                          scale: 0.8 + (0.2 * value),
+                          child: Opacity(
+                            opacity: value,
+                            child: child,
+                          ),
+                        );
+                      },
+                      child: InkWell(
+                        onTap: () {
+                          Navigator.pop(context);
+                          _processAI(message, action, targetLanguage: language);
+                        },
+                        borderRadius: BorderRadius.circular(16),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                actionColor.withOpacity(0.08),
+                                actionColor.withOpacity(0.03),
+                              ],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            ),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: actionColor.withOpacity(0.2),
+                              width: 1.5,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                flag,
+                                style: TextStyle(fontSize: emojiSize),
+                              ),
+                              SizedBox(width: spacing1 * 0.75),
+                              Flexible(
+                                child: Text(
+                                  language,
+                                  style: TextStyle(
+                                    fontSize: bodySize,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.black87,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              SizedBox(height: MediaQuery.of(context).padding.bottom + spacing1),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Show language selection dialog for text enhance
+  void _showEnhanceLanguageDialog(String style) {
+    final languages = {
+      'English': '🇬🇧',
+      'Spanish': '🇪🇸',
+      'French': '🇫🇷',
+      'German': '🇩🇪',
+      'Italian': '🇮🇹',
+      'Portuguese': '🇵🇹',
+      'Russian': '🇷🇺',
+      'Chinese': '🇨🇳',
+      'Japanese': '🇯🇵',
+      'Korean': '🇰🇷',
+      'Arabic': '🇸🇦',
+      'Hindi': '🇮🇳',
+      'Bengali': '🇧🇩',
+      'Tamil': '🇮🇳',
+      'Telugu': '🇮🇳',
+      'Marathi': '🇮🇳',
+    };
+
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final spacing1 = (screenHeight * 0.015).clamp(12.0, 20.0);
+    final padding1 = (screenWidth * 0.04).clamp(16.0, 24.0);
+    final titleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+    final bodySize = (screenWidth * 0.038).clamp(14.0, 16.0);
+    final emojiSize = (screenWidth * 0.08).clamp(28.0, 36.0);
+
+    // Get style info
+    final styleInfo = _getStyleInfo(style);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.7,
+        minChildSize: 0.5,
+        maxChildSize: 0.9,
+        builder: (context, scrollController) => Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(25)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.15),
+                blurRadius: 20,
+                offset: const Offset(0, -5),
+              ),
+            ],
+          ),
+          child: Column(
+            children: [
+              // Handle bar
+              Container(
+                margin: EdgeInsets.only(top: spacing1),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[400],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              SizedBox(height: spacing1 * 1.5),
+              // Header
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: padding1),
+                child: Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: styleInfo['color'].withOpacity(0.1),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        styleInfo['icon'],
+                        color: styleInfo['color'],
+                        size: 32,
+                      ),
+                    ),
+                    SizedBox(height: spacing1),
+                    Text(
+                      styleInfo['title'],
+                      style: TextStyle(
+                        fontSize: titleSize,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
+                    ),
+                    SizedBox(height: spacing1 * 0.5),
+                    Text(
+                      'Select output language',
+                      style: TextStyle(
+                        fontSize: bodySize,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: spacing1 * 1.5),
+              // Language grid
+              Expanded(
+                child: GridView.builder(
+                  controller: scrollController,
+                  padding: EdgeInsets.symmetric(horizontal: padding1),
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    crossAxisSpacing: spacing1,
+                    mainAxisSpacing: spacing1,
+                    childAspectRatio: 2.5,
+                  ),
+                  itemCount: languages.length,
+                  itemBuilder: (context, index) {
+                    final language = languages.keys.elementAt(index);
+                    final flag = languages[language]!;
+
+                    return TweenAnimationBuilder<double>(
+                      duration: Duration(milliseconds: 300 + (index * 30)),
+                      tween: Tween(begin: 0.0, end: 1.0),
+                      builder: (context, value, child) {
+                        return Transform.scale(
+                          scale: 0.8 + (0.2 * value),
+                          child: Opacity(
+                            opacity: value,
+                            child: child,
+                          ),
+                        );
+                      },
+                      child: InkWell(
+                        onTap: () {
+                          Navigator.pop(context);
+                          _enhanceInputText(style, targetLanguage: language);
+                        },
+                        borderRadius: BorderRadius.circular(16),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                styleInfo['color'].withOpacity(0.08),
+                                styleInfo['color'].withOpacity(0.03),
+                              ],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            ),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: styleInfo['color'].withOpacity(0.2),
+                              width: 1.5,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                flag,
+                                style: TextStyle(fontSize: emojiSize),
+                              ),
+                              SizedBox(width: spacing1 * 0.75),
+                              Flexible(
+                                child: Text(
+                                  language,
+                                  style: TextStyle(
+                                    fontSize: bodySize,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.black87,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              SizedBox(height: MediaQuery.of(context).padding.bottom + spacing1),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Helper to get style info
+  Map<String, dynamic> _getStyleInfo(String style) {
+    switch (style) {
+      case 'formal':
+        return {
+          'title': 'Make Formal',
+          'icon': Icons.business_center,
+          'color': const Color(0xFF9C27B0),
+        };
+      case 'casual':
+        return {
+          'title': 'Make Casual',
+          'icon': Icons.sentiment_satisfied,
+          'color': const Color(0xFF00BCD4),
+        };
+      case 'concise':
+        return {
+          'title': 'Make Concise',
+          'icon': Icons.compress,
+          'color': const Color(0xFFFF5722),
+        };
+      case 'fix':
+        return {
+          'title': 'Fix Grammar',
+          'icon': Icons.check_circle_outline,
+          'color': const Color(0xFF4CAF50),
+        };
+      default:
+        return {
+          'title': 'Enhance',
+          'icon': Icons.auto_awesome,
+          'color': Colors.orange,
+        };
+    }
+  }
+
+  Future<void> _processAI(Message message, String action, {String? targetLanguage}) async {
+    // Start particle animation
+    setState(() {
+      _isAIProcessing = true;
+    });
+
+    try {
+      AIResponse response;
+
+      switch (action) {
+        case 'translate':
+          response = await _aiService.translateMessage(message.content, targetLanguage!);
+          break;
+        case 'summarize':
+          response = await _aiService.summarizeMessage(message.content, targetLanguage: targetLanguage);
+          break;
+        case 'explain':
+          response = await _aiService.explainMessage(message.content, targetLanguage: targetLanguage);
+          break;
+        default:
+          throw Exception('Unknown action');
+      }
+
+      // Stop particle animation
+      if (mounted) {
+        setState(() {
+          _isAIProcessing = false;
+        });
+      }
+
+      // Show result
+      if (mounted) {
+        _showAIResult(action, message.content, response);
+      }
+    } catch (e) {
+      // Stop particle animation
+      if (mounted) {
+        setState(() {
+          _isAIProcessing = false;
+        });
+      }
+
+      // Show error
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('AI Error: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
+  void _showAIResult(String action, String originalText, AIResponse response) {
+    String title;
+    IconData icon;
+    Color accentColor;
+
+    switch (action) {
+      case 'translate':
+        title = 'Translation';
+        icon = Icons.translate;
+        accentColor = const Color(0xFF4CAF50);
+        break;
+      case 'summarize':
+        title = 'Summary';
+        icon = Icons.summarize;
+        accentColor = const Color(0xFF2196F3);
+        break;
+      case 'explain':
+        title = 'Explanation';
+        icon = Icons.lightbulb_outline;
+        accentColor = const Color(0xFFFF9800);
+        break;
+      default:
+        title = 'AI Result';
+        icon = Icons.auto_awesome;
+        accentColor = const Color(0xFF667EEA);
+    }
+
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final spacing1 = (screenHeight * 0.015).clamp(12.0, 20.0);
+    final padding1 = (screenWidth * 0.04).clamp(16.0, 24.0);
+    final titleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+    final bodySize = (screenWidth * 0.038).clamp(14.0, 16.0);
+    final labelSize = (screenWidth * 0.03).clamp(12.0, 14.0);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.75,
+        minChildSize: 0.5,
+        maxChildSize: 0.95,
+        builder: (context, scrollController) => Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(25)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.15),
+                blurRadius: 20,
+                offset: const Offset(0, -4),
+              ),
+            ],
+          ),
+          child: Column(
+            children: [
+              SizedBox(height: spacing1),
+              // Handle bar
+              Container(
+                width: (screenWidth * 0.1).clamp(40.0, 50.0),
+                height: (screenHeight * 0.005).clamp(4.0, 5.0),
+                decoration: BoxDecoration(
+                  color: Colors.grey[400],
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+              SizedBox(height: spacing1 * 1.5),
+              // Title with gradient background
+              Container(
+                margin: EdgeInsets.symmetric(horizontal: padding1),
+                padding: EdgeInsets.all(padding1 * 0.8),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [accentColor.withOpacity(0.1), accentColor.withOpacity(0.05)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: accentColor.withOpacity(0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: EdgeInsets.all(spacing1 * 0.6),
+                      decoration: BoxDecoration(
+                        color: accentColor.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(icon, color: accentColor, size: titleSize),
+                    ),
+                    SizedBox(width: spacing1),
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: titleSize,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.close, color: Colors.grey[600]),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: spacing1 * 1.5),
+              // Content
+              Expanded(
+                child: ListView(
+                  controller: scrollController,
+                  padding: EdgeInsets.symmetric(horizontal: padding1),
+                  children: [
+                    // Original message card
+                    Container(
+                      padding: EdgeInsets.all(padding1 * 0.75),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[50],
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.grey[200]!),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.message, size: labelSize, color: Colors.grey[600]),
+                              SizedBox(width: spacing1 * 0.5),
+                              Text(
+                                'Original Message',
+                                style: TextStyle(
+                                  fontSize: labelSize,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.grey[700],
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                          SizedBox(height: spacing1 * 0.75),
+                          Text(
+                            originalText,
+                            style: TextStyle(fontSize: bodySize, height: 1.6, color: Colors.black87),
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(height: spacing1 * 1.5),
+                    // AI Result card with animation
+                    TweenAnimationBuilder<double>(
+                      duration: const Duration(milliseconds: 400),
+                      tween: Tween(begin: 0.0, end: 1.0),
+                      builder: (context, value, child) {
+                        return Transform.translate(
+                          offset: Offset(0, 20 * (1 - value)),
+                          child: Opacity(
+                            opacity: value,
+                            child: child,
+                          ),
+                        );
+                      },
+                      child: Container(
+                        padding: EdgeInsets.all(padding1 * 0.75),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [accentColor.withOpacity(0.08), accentColor.withOpacity(0.03)],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: accentColor.withOpacity(0.3), width: 1.5),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.auto_awesome, size: labelSize + 2, color: accentColor),
+                                SizedBox(width: spacing1 * 0.5),
+                                Text(
+                                  'AI $title',
+                                  style: TextStyle(
+                                    fontSize: labelSize,
+                                    fontWeight: FontWeight.bold,
+                                    color: accentColor,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            SizedBox(height: spacing1 * 0.75),
+                            SelectableText(
+                              response.content,
+                              style: TextStyle(fontSize: bodySize, height: 1.6, color: Colors.black87),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    SizedBox(height: spacing1 * 2),
+                    // Copy button with modern style
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: response.content));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: const Row(
+                              children: [
+                                Icon(Icons.check_circle, color: Colors.white),
+                                SizedBox(width: 12),
+                                Text('Copied to clipboard'),
+                              ],
+                            ),
+                            backgroundColor: accentColor,
+                            behavior: SnackBarBehavior.floating,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.copy_rounded),
+                      label: const Text('Copy Result'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: accentColor,
+                        foregroundColor: Colors.white,
+                        padding: EdgeInsets.symmetric(vertical: padding1 * 0.7),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        elevation: 2,
+                      ),
+                    ),
+                    SizedBox(height: MediaQuery.of(context).padding.bottom + spacing1),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showEnhanceOptions() {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final handleWidth = (screenWidth * 0.1).clamp(35.0, 50.0);
+    final handleHeight = (screenHeight * 0.005).clamp(3.0, 5.0);
+    final spacing1 = (screenHeight * 0.015).clamp(10.0, 16.0);
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(height: spacing1),
+              // Drag handle
+              Container(
+                width: handleWidth,
+                height: handleHeight,
+                decoration: BoxDecoration(
+                  color: Colors.grey[400],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              SizedBox(height: spacing1 * 1.5),
+              // Enhancement Options Cards
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: spacing1),
+                child: Column(
+                  children: [
+                    _buildAIActionCard(
+                      icon: Icons.business_center,
+                      title: 'Make Formal',
+                      subtitle: 'Professional and polished tone',
+                      color: const Color(0xFF9C27B0),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showEnhanceLanguageDialog('formal');
+                      },
+                    ),
+                    SizedBox(height: spacing1),
+                    _buildAIActionCard(
+                      icon: Icons.sentiment_satisfied,
+                      title: 'Make Casual',
+                      subtitle: 'Friendly and relaxed tone',
+                      color: const Color(0xFF00BCD4),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showEnhanceLanguageDialog('casual');
+                      },
+                    ),
+                    SizedBox(height: spacing1),
+                    _buildAIActionCard(
+                      icon: Icons.compress,
+                      title: 'Make Concise',
+                      subtitle: 'Clear and to the point',
+                      color: const Color(0xFFFF5722),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showEnhanceLanguageDialog('concise');
+                      },
+                    ),
+                    SizedBox(height: spacing1),
+                    _buildAIActionCard(
+                      icon: Icons.check_circle_outline,
+                      title: 'Fix Grammar',
+                      subtitle: 'Correct spelling and grammar',
+                      color: const Color(0xFF4CAF50),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showEnhanceLanguageDialog('fix');
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: spacing1),
+              // Privacy warning
+              Container(
+                margin: EdgeInsets.symmetric(horizontal: spacing1),
+                padding: EdgeInsets.all(spacing1 * 0.8),
+                decoration: BoxDecoration(
+                  color: Colors.orange[50],
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.orange[300]!),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.warning_amber, color: Colors.orange[700], size: 20),
+                    SizedBox(width: spacing1 * 0.5),
+                    Expanded(
+                      child: Text(
+                        'Text sent to Google AI',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.orange[900],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: MediaQuery.of(context).padding.bottom + spacing1),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _enhanceInputText(String style, {String? targetLanguage}) async {
+    final text = _controller.text.trim();
+    if (text.isEmpty) return;
+
+    // Start particle animation
+    setState(() {
+      _isAIProcessing = true;
+    });
+
+    try {
+      final response = await _aiService.enhanceMessage(text, style, targetLanguage: targetLanguage);
+
+      // Stop particle animation
+      if (mounted) {
+        setState(() {
+          _isAIProcessing = false;
+        });
+      }
+
+      if (!response.success) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(response.error ?? 'Enhancement failed'),
+              backgroundColor: Colors.red,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+        return;
+      }
+
+      // Show result with option to replace
+      if (mounted) {
+        _showEnhancedTextResult(text, response.content, style);
+      }
+    } catch (e) {
+      // Stop particle animation
+      if (mounted) {
+        setState(() {
+          _isAIProcessing = false;
+        });
+      }
+
+      // Show error
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Enhancement error: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
+  void _showEnhancedTextResult(String original, String enhanced, String style) {
+    String styleName;
+    IconData styleIcon;
+    Color styleColor;
+
+    switch (style) {
+      case 'formal':
+        styleName = 'Formal';
+        styleIcon = Icons.business_center;
+        styleColor = const Color(0xFF9C27B0);
+        break;
+      case 'casual':
+        styleName = 'Casual';
+        styleIcon = Icons.sentiment_satisfied;
+        styleColor = const Color(0xFF00BCD4);
+        break;
+      case 'concise':
+        styleName = 'Concise';
+        styleIcon = Icons.compress;
+        styleColor = const Color(0xFFFF5722);
+        break;
+      case 'fix':
+        styleName = 'Fixed';
+        styleIcon = Icons.check_circle_outline;
+        styleColor = const Color(0xFF4CAF50);
+        break;
+      default:
+        styleName = 'Enhanced';
+        styleIcon = Icons.auto_fix_high;
+        styleColor = const Color(0xFFFF6F00);
+    }
+
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final spacing1 = (screenHeight * 0.015).clamp(12.0, 20.0);
+    final padding1 = (screenWidth * 0.04).clamp(16.0, 24.0);
+    final titleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+    final bodySize = (screenWidth * 0.038).clamp(14.0, 16.0);
+    final labelSize = (screenWidth * 0.03).clamp(12.0, 14.0);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.7,
+        minChildSize: 0.5,
+        maxChildSize: 0.95,
+        builder: (context, scrollController) => Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(25)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.15),
+                blurRadius: 20,
+                offset: const Offset(0, -4),
+              ),
+            ],
+          ),
+          child: Column(
+            children: [
+              SizedBox(height: spacing1),
+              // Handle bar
+              Container(
+                width: (screenWidth * 0.1).clamp(40.0, 50.0),
+                height: (screenHeight * 0.005).clamp(4.0, 5.0),
+                decoration: BoxDecoration(
+                  color: Colors.grey[400],
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+              SizedBox(height: spacing1 * 1.5),
+              // Title with gradient background
+              Container(
+                margin: EdgeInsets.symmetric(horizontal: padding1),
+                padding: EdgeInsets.all(padding1 * 0.8),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [styleColor.withOpacity(0.1), styleColor.withOpacity(0.05)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: styleColor.withOpacity(0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: EdgeInsets.all(spacing1 * 0.6),
+                      decoration: BoxDecoration(
+                        color: styleColor.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(styleIcon, color: styleColor, size: titleSize),
+                    ),
+                    SizedBox(width: spacing1),
+                    Expanded(
+                      child: Text(
+                        '$styleName Version',
+                        style: TextStyle(
+                          fontSize: titleSize,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.close, color: Colors.grey[600]),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: spacing1 * 1.5),
+              // Content
+              Expanded(
+                child: ListView(
+                  controller: scrollController,
+                  padding: EdgeInsets.symmetric(horizontal: padding1),
+                  children: [
+                    // Original card
+                    Container(
+                      padding: EdgeInsets.all(padding1 * 0.75),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[50],
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.grey[200]!),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.edit_note, size: labelSize, color: Colors.grey[600]),
+                              SizedBox(width: spacing1 * 0.5),
+                              Text(
+                                'Original',
+                                style: TextStyle(
+                                  fontSize: labelSize,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.grey[700],
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                          SizedBox(height: spacing1 * 0.75),
+                          Text(
+                            original,
+                            style: TextStyle(fontSize: bodySize, height: 1.6, color: Colors.black87),
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(height: spacing1 * 1.5),
+                    // Enhanced card with animation
+                    TweenAnimationBuilder<double>(
+                      duration: const Duration(milliseconds: 400),
+                      tween: Tween(begin: 0.0, end: 1.0),
+                      builder: (context, value, child) {
+                        return Transform.translate(
+                          offset: Offset(0, 20 * (1 - value)),
+                          child: Opacity(
+                            opacity: value,
+                            child: child,
+                          ),
+                        );
+                      },
+                      child: Container(
+                        padding: EdgeInsets.all(padding1 * 0.75),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [styleColor.withOpacity(0.08), styleColor.withOpacity(0.03)],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: styleColor.withOpacity(0.3), width: 1.5),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.auto_fix_high, size: labelSize + 2, color: styleColor),
+                                SizedBox(width: spacing1 * 0.5),
+                                Text(
+                                  '$styleName Version',
+                                  style: TextStyle(
+                                    fontSize: labelSize,
+                                    fontWeight: FontWeight.bold,
+                                    color: styleColor,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            SizedBox(height: spacing1 * 0.75),
+                            SelectableText(
+                              enhanced,
+                              style: TextStyle(fontSize: bodySize, height: 1.6, color: Colors.black87),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    SizedBox(height: spacing1 * 2),
+                    // Action buttons with modern style
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () {
+                              Clipboard.setData(ClipboardData(text: enhanced));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: const Row(
+                                    children: [
+                                      Icon(Icons.check_circle, color: Colors.white),
+                                      SizedBox(width: 12),
+                                      Text('Copied to clipboard'),
+                                    ],
+                                  ),
+                                  backgroundColor: styleColor,
+                                  behavior: SnackBarBehavior.floating,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  duration: const Duration(seconds: 2),
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.copy_rounded),
+                            label: const Text('Copy'),
+                            style: OutlinedButton.styleFrom(
+                              side: BorderSide(color: styleColor, width: 1.5),
+                              foregroundColor: styleColor,
+                              padding: EdgeInsets.symmetric(vertical: padding1 * 0.7),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            ),
+                          ),
+                        ),
+                        SizedBox(width: spacing1),
+                        Expanded(
+                          flex: 2,
+                          child: ElevatedButton.icon(
+                            onPressed: () {
+                              Navigator.pop(context);
+                              // Smooth text insertion with animation
+                              Future.delayed(const Duration(milliseconds: 200), () {
+                                _controller.text = enhanced;
+                                _focusNode.requestFocus();
+                                // Animate cursor to end
+                                _controller.selection = TextSelection.fromPosition(
+                                  TextPosition(offset: enhanced.length),
+                                );
+                              });
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Row(
+                                    children: [
+                                      Icon(Icons.check_circle, color: Colors.white),
+                                      SizedBox(width: spacing1 * 0.75),
+                                      const Expanded(child: Text('Text inserted smoothly')),
+                                    ],
+                                  ),
+                                  backgroundColor: styleColor,
+                                  behavior: SnackBarBehavior.floating,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  duration: const Duration(seconds: 2),
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.check_circle),
+                            label: const Text('Use This'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: styleColor,
+                              foregroundColor: Colors.white,
+                              padding: EdgeInsets.symmetric(vertical: padding1 * 0.7),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              elevation: 2,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: MediaQuery.of(context).padding.bottom + spacing1),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

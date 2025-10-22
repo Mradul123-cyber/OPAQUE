@@ -12,6 +12,8 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:zarq_messenger/screens/backup_management_screen.dart';
 import 'package:zarq_messenger/screens/customization_screen.dart';
+import 'package:zarq_messenger/screens/tutorial_screen.dart';
+import 'package:zarq_messenger/screens/premium_plans_screen.dart';
 import 'profile_background.dart';
 import 'login_screen.dart';
 import 'about_screen.dart';
@@ -52,6 +54,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isUploading = false;
   String? _avatarUrl;
   String? _displayName;
+  String? _username;
   bool _isFriendsListVisible = false;
   bool _isFriendsLoading = false;
   List<Friend> _friendsList = [];
@@ -76,7 +79,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       final token = await user.getIdToken();
       final response = await http.get(
-        Uri.parse('http://192.168.29.81:8080/profiles/me'),
+        Uri.parse('https://api.zarqmessenger.com/profiles/me'),
         headers: {'Authorization': 'Bearer $token'},
       );
 
@@ -84,6 +87,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final data = json.decode(response.body);
         setState(() {
           _displayName = data['display_name'];
+          _username = data['username'];
           _displayNameController.text = _displayName ?? '';
         });
       }
@@ -163,7 +167,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (token == null) throw Exception("User not authenticated");
 
     final response = await http.post(
-      Uri.parse('http://192.168.29.81:8080/profile/avatar/update'),
+      Uri.parse('https://api.zarqmessenger.com/profile/avatar/update'),
       headers: {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
@@ -184,7 +188,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final token = await _currentUser?.getIdToken();
       if (token == null) throw Exception("Not authenticated");
 
-      final url = Uri.parse('http://192.168.29.81:8080/friends/list');
+      final url = Uri.parse('https://api.zarqmessenger.com/friends/list');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -273,7 +277,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       final token = await user.getIdToken();
       final response = await http.post(
-        Uri.parse('http://192.168.29.81:8080/profile/displayname/update'),
+        Uri.parse('https://api.zarqmessenger.com/profile/displayname/update'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
@@ -620,7 +624,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               Icon(Icons.alternate_email, color: Colors.green[700], size: iconSize2),
                               SizedBox(width: spacing3),
                               Text(
-                                _currentUser?.displayName ?? 'username',
+                                _username ?? 'Loading...',
                                 style: TextStyle(
                                   fontSize: usernameSize,
                                   color: Colors.green[900],
@@ -724,6 +728,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         const Divider(color: Colors.white30),
                         SizedBox(height: spacing1),
 
+                        // 🚨 PREMIUM SECTION 🚨
+                        _buildPremiumSection(
+                          sectionTitleSize: sectionTitleSize,
+                          iconSize1: iconSize1,
+                          bodyTextSize: bodyTextSize,
+                          spacing2: spacing2,
+                          spacing3: spacing3,
+                          borderRadius1: borderRadius1,
+                        ),
+                        SizedBox(height: spacing1),
+
+                        const Divider(color: Colors.white30),
+                        SizedBox(height: spacing1),
+
                         // 🚨 BACKUP SECTION 🚨
                         _buildBackupSection(
                           sectionTitleSize: sectionTitleSize,
@@ -760,6 +778,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           borderRadius1: borderRadius1,
                         ),
                         SizedBox(height: spacing1),
+
+                        const Divider(color: Colors.white30),
+                        SizedBox(height: spacing1),
+
+                        // 🚨 DELETE ACCOUNT SECTION 🚨
+                        // TODO: Delete Account - Disabled temporarily due to cascade issues
+                        // Needs proper strategy for handling user data deletion without affecting other users
+                        // _buildActionButton(
+                        //   icon: Icons.delete_forever_outlined,
+                        //   text: 'Delete Account',
+                        //   onTap: () => _showDeleteAccountDialog(context),
+                        //   color: Colors.red.shade700,
+                        //   buttonHeight: (screenHeight * 0.065).clamp(45.0, 60.0),
+                        //   borderRadius: borderRadius1 * 0.75,
+                        // ),
+                        //
+                        // SizedBox(height: spacing2),
 
                         const Divider(color: Colors.white30),
                         SizedBox(height: spacing1),
@@ -931,6 +966,119 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _buildPremiumSection({
+    required double sectionTitleSize,
+    required double iconSize1,
+    required double bodyTextSize,
+    required double spacing2,
+    required double spacing3,
+    required double borderRadius1,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          "Premium Subscription",
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: sectionTitleSize,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        SizedBox(height: spacing2 * 0.75),
+
+        // TODO: PREMIUM - DISABLED FOR NOW (TEST MODE)
+        // Uncomment the section below when switching to Razorpay LIVE mode
+        // and comment out the "Coming Soon" section
+
+        /* ==================== ENABLE THIS WHEN GOING LIVE ====================
+        // Info about premium
+        Container(
+          padding: EdgeInsets.all(spacing3),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                const Color(0xFFF59E0B).withOpacity(0.2),
+                const Color(0xFF8B5CF6).withOpacity(0.2),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(borderRadius1 * 0.4),
+            border: Border.all(color: const Color(0xFFF59E0B).withOpacity(0.5)),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.workspace_premium, color: const Color(0xFFF59E0B), size: iconSize1),
+              SizedBox(width: spacing3),
+              Expanded(
+                child: Text(
+                  'Unlock unlimited AI power and premium features',
+                  style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: spacing2 * 0.75),
+
+        // Upgrade to Premium Button
+        _buildActionButton(
+          icon: Icons.star,
+          text: 'Upgrade to Premium',
+          onTap: _navigateToPremium,
+          color: const Color(0xFFF59E0B),
+          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
+          borderRadius: borderRadius1 * 0.75,
+        ),
+        ==================== END LIVE VERSION ==================== */
+
+        // ==================== TEMPORARY: COMING SOON (TEST MODE) ====================
+        // Info about premium - Coming Soon
+        Container(
+          padding: EdgeInsets.all(spacing3),
+          decoration: BoxDecoration(
+            color: Colors.grey.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(borderRadius1 * 0.4),
+            border: Border.all(color: Colors.grey.withOpacity(0.3)),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.lock, color: Colors.grey, size: iconSize1),
+              SizedBox(width: spacing3),
+              Expanded(
+                child: Text(
+                  'Premium features launching soon with live payments',
+                  style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: spacing2 * 0.75),
+
+        // Upgrade to Premium Button - Disabled (Coming Soon)
+        _buildDisabledActionButton(
+          icon: Icons.lock,
+          text: 'Coming Soon',
+          color: Colors.grey,
+          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
+          borderRadius: borderRadius1 * 0.75,
+        ),
+        // ==================== END COMING SOON VERSION ====================
+      ],
+    );
+  }
+
+  void _navigateToPremium() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const PremiumPlansScreen(),
+      ),
+    );
+  }
+
   Widget _buildAboutSection({
     required double sectionTitleSize,
     required double iconSize1,
@@ -966,12 +1114,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
               SizedBox(width: spacing3),
               Expanded(
                 child: Text(
-                  'Version, features, and legal information',
+                  'Learn how Zarq works, version info, and legal',
                   style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
                 ),
               ),
             ],
           ),
+        ),
+        SizedBox(height: spacing2 * 0.75),
+
+        // How Zarq Works Button
+        _buildActionButton(
+          icon: Icons.school_outlined,
+          text: 'How Zarq Works',
+          onTap: _navigateToTutorial,
+          color: Colors.purpleAccent,
+          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
+          borderRadius: borderRadius1 * 0.75,
         ),
         SizedBox(height: spacing2 * 0.75),
 
@@ -985,6 +1144,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           borderRadius: borderRadius1 * 0.75,
         ),
       ],
+    );
+  }
+
+  void _navigateToTutorial() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const TutorialScreen(),
+      ),
     );
   }
 
@@ -1089,7 +1257,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (user != null) {
         try {
           final token = await user.getIdToken();
-          final url = Uri.parse('http://192.168.29.81:8080/v1/fcm/token');
+          final url = Uri.parse('https://api.zarqmessenger.com/v1/fcm/token');
           await http.post(
             url,
             headers: {
@@ -1149,6 +1317,220 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         (route) => false,
       );
+    }
+  }
+
+  // Show delete account dialog with strong confirmation
+  void _showDeleteAccountDialog(BuildContext context) {
+    final TextEditingController confirmationController = TextEditingController();
+    const String confirmationText = "DELETE";
+    bool isDeleting = false;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              backgroundColor: Colors.grey[900],
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: const Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 32),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Delete Account?',
+                      style: TextStyle(color: Colors.white, fontSize: 20),
+                    ),
+                  ),
+                ],
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '⚠️ WARNING: This action is PERMANENT and IRREVERSIBLE!',
+                      style: TextStyle(
+                        color: Colors.redAccent,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Your account and ALL data will be permanently deleted:',
+                      style: TextStyle(color: Colors.white70, fontSize: 14),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      '• All messages (cannot be recovered)\n'
+                      '• All photos and videos\n'
+                      '• All conversations\n'
+                      '• All friends and contacts\n'
+                      '• All call history\n'
+                      '• Your profile and account',
+                      style: TextStyle(color: Colors.white60, fontSize: 13),
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'To confirm, type DELETE below:',
+                      style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: confirmationController,
+                      enabled: !isDeleting,
+                      style: const TextStyle(color: Colors.white, fontSize: 16, letterSpacing: 2),
+                      decoration: InputDecoration(
+                        hintText: 'Type DELETE',
+                        hintStyle: TextStyle(color: Colors.grey[600]),
+                        filled: true,
+                        fillColor: Colors.black45,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(color: Colors.redAccent),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(color: Colors.grey[700]!),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(color: Colors.redAccent, width: 2),
+                        ),
+                      ),
+                      onChanged: (value) {
+                        setState(() {}); // Rebuild to update button state
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isDeleting ? null : () {
+                    confirmationController.dispose();
+                    Navigator.of(dialogContext).pop();
+                  },
+                  child: Text(
+                    'Cancel',
+                    style: TextStyle(
+                      color: isDeleting ? Colors.grey : Colors.grey[400],
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+                ElevatedButton(
+                  onPressed: (isDeleting || confirmationController.text != confirmationText)
+                      ? null
+                      : () async {
+                          setState(() {
+                            isDeleting = true;
+                          });
+
+                          try {
+                            await _deleteAccount();
+                            confirmationController.dispose();
+                            if (dialogContext.mounted) {
+                              Navigator.of(dialogContext).pop();
+                            }
+                          } catch (e) {
+                            setState(() {
+                              isDeleting = false;
+                            });
+                            if (dialogContext.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('Failed to delete account: $e'),
+                                  backgroundColor: Colors.red,
+                                ),
+                              );
+                            }
+                          }
+                        },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: (confirmationController.text == confirmationText && !isDeleting)
+                        ? Colors.redAccent
+                        : Colors.grey[800],
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.grey[800],
+                    disabledForegroundColor: Colors.grey[600],
+                  ),
+                  child: isDeleting
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        )
+                      : const Text('Delete Forever', style: TextStyle(fontSize: 16)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // Delete account from backend
+  Future<void> _deleteAccount() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        throw Exception("User not authenticated");
+      }
+
+      final token = await user.getIdToken();
+
+      // Call backend delete account endpoint
+      final response = await http.delete(
+        Uri.parse('https://api.zarqmessenger.com/v1/user/account/delete'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        // Account deleted successfully from backend
+
+        // Clear local data
+        final signalResetSuccess = await SignalService.resetUserContext();
+        if (!signalResetSuccess) {
+          // print("Warning: Signal Protocol context reset failed");
+        }
+
+        final dbService = Provider.of<DatabaseService>(context, listen: false);
+        await dbService.resetDatabase();
+
+        // Disconnect WebSocket
+        final websocketService = Provider.of<WebSocketService>(context, listen: false);
+        websocketService.disconnect();
+
+        // Sign out from Firebase
+        await FirebaseAuth.instance.signOut();
+
+        // Navigate to login screen
+        if (mounted) {
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(
+              builder: (context) => const LoginScreen(),
+            ),
+            (route) => false,
+          );
+        }
+      } else {
+        throw Exception('Failed to delete account: ${response.body}');
+      }
+    } catch (e) {
+      throw Exception('Error deleting account: $e');
     }
   }
 
@@ -1374,6 +1756,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(borderRadius)),
         shadowColor: color,
         elevation: 8,
+      ),
+    );
+  }
+
+  Widget _buildDisabledActionButton({
+    required IconData icon,
+    required String text,
+    required Color color,
+    required double buttonHeight,
+    required double borderRadius,
+  }) {
+    final iconSize = (MediaQuery.of(context).size.width * 0.05).clamp(18.0, 24.0);
+    final textSize = (MediaQuery.of(context).size.width * 0.04).clamp(14.0, 18.0);
+
+    return ElevatedButton.icon(
+      onPressed: null, // Disabled
+      icon: Icon(icon, color: Colors.white54, size: iconSize),
+      label: Text(
+        text,
+        style: TextStyle(
+          color: Colors.white54,
+          fontWeight: FontWeight.bold,
+          fontSize: textSize,
+        ),
+      ),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: color.withOpacity(0.3),
+        disabledBackgroundColor: color.withOpacity(0.3),
+        minimumSize: Size(double.infinity, buttonHeight),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(borderRadius)),
+        elevation: 0,
       ),
     );
   }

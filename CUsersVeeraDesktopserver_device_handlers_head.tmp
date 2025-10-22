@@ -1,0 +1,100 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gorilla/mux"
+)
+
+
+type fcmTokenRequest struct {
+	FCMToken  string `json:"fcm_token"`
+	DeviceID  int    `json:"device_id"`
+	Platform  string `json:"platform"`
+}
+// Request payload (matches the API spec)
+type deviceRegisterRequest struct {
+	FirebaseUID    string `json:"firebase_uid"`
+	DeviceID       int    `json:"device_id"`
+	DeviceName     string `json:"device_name"`
+	Platform       string `json:"platform"`
+	PushToken      string `json:"push_token"`
+	IdentityKeyB64 string `json:"identity_key_b64"`
+	RegistrationID int    `json:"registration_id"`
+
+	SignedPreKey struct {
+		KeyID        int    `json:"key_id"`
+		PublicKeyB64 string `json:"public_key_b64"`
+		SignatureB64 string `json:"signature_b64"`
+	} `json:"signed_prekey"`
+
+	OneTimePreKeys []struct {
+		KeyID        int    `json:"key_id"`
+		PublicKeyB64 string `json:"public_key_b64"`
+	} `json:"one_time_prekeys"`
+}
+
+// Response
+type deviceRegisterResponse struct {
+	InsertedOneTimePrekeys int `json:"inserted_one_time_prekeys"`
+	Message                string `json:"message"`
+}
+
+
+func updateFCMTokenHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Authenticate request
+	token, _, err := getVerifiedToken(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	authUID := token.UID
+
+	// Parse request body
+	var req fcmTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	if req.DeviceID <= 0 {
+    http.Error(w, "device_id is required", http.StatusBadRequest)
+    return
+}
+
+	// Default platform if not provided
+	if req.Platform == "" {
+		req.Platform = "android"
+	}
+
+	// If FCM token is empty, clear it (for logout)
+	var fcmTokenValue interface{}
+	if req.FCMToken == "" {
+		fcmTokenValue = nil
+		log.Printf("Clearing FCM token for user %s, device %d (logout)", authUID, req.DeviceID)
+	} else {
+		fcmTokenValue = req.FCMToken
+		log.Printf("Updating FCM token for user %s, device %d", authUID, req.DeviceID)
+	}
+
+	// Update FCM token in database
+	query := `
+		UPDATE devices
+		SET fcm_token = $1, platform = $2, last_seen_at = $3
+		WHERE firebase_uid = $4 AND device_id = $5
+	`
+

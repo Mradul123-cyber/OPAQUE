@@ -13,6 +13,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'services/websocket_service.dart';
+import 'services/user_settings_provider.dart';
 import 'widgets/call_aware_screen.dart';
 import 'friend_info_screen.dart';
 import 'package:provider/provider.dart';
@@ -214,7 +215,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
   Future<void> _fetchMyFriends(String token) async {
     try {
-      final url = Uri.parse('http://192.168.29.81:8080/friends/list');
+      final url = Uri.parse('https://api.zarqmessenger.com/friends/list');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -238,7 +239,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
   Future<void> _fetchSentRequests(String token) async {
     try {
-      final url = Uri.parse('http://192.168.29.81:8080/friends/sent-requests');
+      final url = Uri.parse('https://api.zarqmessenger.com/friends/sent-requests');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -268,7 +269,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
   Future<void> _fetchReceivedRequests(String token) async {
     try {
-      final url = Uri.parse('http://192.168.29.81:8080/friends/requests');
+      final url = Uri.parse('https://api.zarqmessenger.com/friends/requests');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -298,7 +299,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     if (user == null) return;
 
     final token = await user.getIdToken();
-    final url = Uri.parse('http://192.168.29.81:8080/friends/accept');
+    final url = Uri.parse('https://api.zarqmessenger.com/friends/accept');
 
     try {
       final response = await http.post(
@@ -338,7 +339,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     if (user == null) return;
 
     final token = await user.getIdToken();
-    final url = Uri.parse('http://192.168.29.81:8080/friends/decline');
+    final url = Uri.parse('https://api.zarqmessenger.com/friends/decline');
 
     try {
       final response = await http.post(
@@ -405,7 +406,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     }
 
     final token = await user.getIdToken();
-    final url = Uri.parse('http://192.168.29.81:8080/friends/request');
+    final url = Uri.parse('https://api.zarqmessenger.com/friends/request');
 
     try {
       final response = await http.post(
@@ -480,7 +481,12 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     if (permissionStatus.isGranted) {
       setState(() => _statusMessage = "Permission granted. Scanning contacts...");
 
-      final List<Contact> contacts = await FlutterContacts.getContacts(withProperties: true);
+      final List<Contact> contacts = await FlutterContacts.getContacts(withProperties: true).timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          throw TimeoutException('Contact scanning timed out after 30 seconds');
+        },
+      );
       // print('[FindFriends] Found ${contacts.length} contacts in phone');
 
       final List<String> hashedContacts = [];
@@ -560,7 +566,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
       try {
         // print('[FindFriends] Sending ${hashedContacts.length} hashed contacts to server...');
-        final url = Uri.parse('http://192.168.29.81:8080/friends/find');
+        final url = Uri.parse('https://api.zarqmessenger.com/friends/find');
         final response = await http.post(
           url,
           headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
@@ -696,7 +702,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     final token = await user.getIdToken();
 
     try {
-      final url = Uri.parse('http://192.168.29.81:8080/users/search?q=$query');
+      final url = Uri.parse('https://api.zarqmessenger.com/users/search?q=$query');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -1006,7 +1012,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
       final token = await user.getIdToken();
       final response = await http.post(
-        Uri.parse('http://192.168.29.81:8080/friends/remove'),
+        Uri.parse('https://api.zarqmessenger.com/friends/remove'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
@@ -1062,7 +1068,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
       // Start or get conversation
       final token = await user.getIdToken();
       final response = await http.post(
-        Uri.parse('http://192.168.29.81:8080/conversations/start'),
+        Uri.parse('https://api.zarqmessenger.com/conversations/start'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
@@ -1118,7 +1124,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     }
   }
 
-  Widget _buildTabContent(List<Friend> listData, FriendTab currentTab) {
+  Widget _buildTabContent(List<Friend> listData, FriendTab currentTab, bool isDarkTheme) {
     final screenWidth = MediaQuery.of(context).size.width;
     final screenHeight = MediaQuery.of(context).size.height;
 
@@ -1143,8 +1149,10 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     final spacing4 = (screenWidth * 0.015).clamp(4.0, 8.0);
 
     if (_isLoading) {
-      return const Center(
-        child: CircularProgressIndicator(color: Colors.lightBlueAccent),
+      return Center(
+        child: CircularProgressIndicator(
+          color: isDarkTheme ? Colors.cyanAccent : Colors.lightBlueAccent,
+        ),
       );
     }
 
@@ -1156,9 +1164,12 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
             margin: EdgeInsets.all(16),
             padding: EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: Colors.blue[50],
+              color: isDarkTheme ? const Color(0xFF1E1E1E) : Colors.blue[50],
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.blue[200]!, width: 2),
+              border: Border.all(
+                color: isDarkTheme ? Colors.cyanAccent.withOpacity(0.3) : Colors.blue[200]!,
+                width: 2,
+              ),
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1168,13 +1179,13 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
-                    color: Colors.black87,
+                    color: isDarkTheme ? Colors.white : Colors.black87,
                   ),
                 ),
                 Container(
                   padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
-                    color: Colors.blue[600],
+                    color: isDarkTheme ? Colors.cyanAccent.withOpacity(0.8) : Colors.blue[600],
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text(
@@ -1182,7 +1193,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
-                      color: Colors.white,
+                      color: isDarkTheme ? Colors.black : Colors.white,
                     ),
                   ),
                 ),
@@ -1195,7 +1206,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
                   child: Text(
                     _statusMessage,
                     style: TextStyle(
-                      color: Colors.black87,
+                      color: isDarkTheme ? Colors.white70 : Colors.black87,
                       fontSize: nameFontSize,
                     ),
                   ),
@@ -1258,7 +1269,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
           trailingWidget = IconButton(
             icon: Icon(
               Icons.person_add_alt_1_outlined,
-              color: Colors.white,
+              color: isDarkTheme ? Colors.white : Colors.black,
               size: actionIconSize,
             ),
             tooltip: 'Send Friend Request',
@@ -1271,9 +1282,12 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
         return Container(
           margin: itemMargin,
           decoration: BoxDecoration(
-            color: Colors.lightBlue[50],
+            color: isDarkTheme ? const Color(0xFF1E1E1E) : Colors.lightBlue[50],
             borderRadius: BorderRadius.circular(12.0),
-            border: Border.all(color: Colors.lightBlue[200]!, width: 1.0),
+            border: Border.all(
+              color: isDarkTheme ? Colors.cyanAccent.withOpacity(0.3) : Colors.lightBlue[200]!,
+              width: 1.0,
+            ),
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withOpacity(0.1),
@@ -1288,7 +1302,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
             title: Text(
               friend.primaryDisplay,
               style: TextStyle(
-                color: Colors.black,
+                color: isDarkTheme ? Colors.white : Colors.black,
                 fontWeight: FontWeight.bold,
                 fontSize: nameFontSize,
               ),
@@ -1301,7 +1315,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
                 Text(
                   '@${friend.username}',
                   style: TextStyle(
-                    color: Colors.black87,
+                    color: isDarkTheme ? Colors.grey.shade400 : Colors.black87,
                     fontSize: usernameFontSize,
                   ),
                 ),
@@ -1313,14 +1327,14 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
                       Icon(
                         Icons.phone,
                         size: phoneIconSize,
-                        color: Colors.grey[600],
+                        color: isDarkTheme ? Colors.grey[500] : Colors.grey[600],
                       ),
                       SizedBox(width: spacing3),
                       Flexible(
                         child: Text(
                           friend.phoneNumber!.replaceFirst('+91', ''),
                           style: TextStyle(
-                            color: Colors.grey[700],
+                            color: isDarkTheme ? Colors.grey[400] : Colors.grey[700],
                             fontSize: phoneFontSize,
                           ),
                           overflow: TextOverflow.ellipsis,
@@ -1330,7 +1344,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
                       Text(
                         '· From Contacts',
                         style: TextStyle(
-                          color: Colors.lightBlueAccent,
+                          color: isDarkTheme ? Colors.cyanAccent : Colors.lightBlueAccent,
                           fontSize: phoneFontSize,
                           fontStyle: FontStyle.italic,
                         ),
@@ -1362,62 +1376,67 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
   @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final appBarTitleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
-    final tabFontSize = (screenWidth * 0.03).clamp(11.0, 14.0);
-    final tabIconSize = (screenWidth * 0.06).clamp(20.0, 26.0);
+    return Consumer<UserSettingsProvider>(
+      builder: (context, userSettings, child) {
+        final isDarkTheme = userSettings.findFriendsScreenStyle == 'dark';
+        final screenWidth = MediaQuery.of(context).size.width;
+        final appBarTitleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+        final tabFontSize = (screenWidth * 0.03).clamp(11.0, 14.0);
+        final tabIconSize = (screenWidth * 0.06).clamp(20.0, 26.0);
 
-    return CallAwareScreen(
-      screenName: 'FindFriendsScreen',
-      child: Scaffold(
-        backgroundColor: Colors.white,
-        appBar: AppBar(
-        title: Text(
-          'Find Friends',
-          style: TextStyle(
-            color: Colors.black,
-            fontWeight: FontWeight.bold,
-            fontSize: appBarTitleSize,
+        return CallAwareScreen(
+          screenName: 'FindFriendsScreen',
+          child: Scaffold(
+            backgroundColor: isDarkTheme ? const Color(0xFF121212) : Colors.white,
+            appBar: AppBar(
+            title: Text(
+              'Find Friends',
+              style: TextStyle(
+                color: isDarkTheme ? Colors.white : Colors.black,
+                fontWeight: FontWeight.bold,
+                fontSize: appBarTitleSize,
+              ),
+            ),
+            backgroundColor: isDarkTheme ? const Color(0xFF0a1128) : Colors.white,
+            elevation: 0,
+            iconTheme: IconThemeData(color: isDarkTheme ? Colors.white : Colors.black),
+            bottom: TabBar(
+              controller: _tabController,
+              labelColor: isDarkTheme ? Colors.cyanAccent : Colors.black,
+              unselectedLabelColor: isDarkTheme ? Colors.white54 : Colors.black54,
+              indicatorColor: isDarkTheme ? Colors.cyanAccent : Colors.black,
+              labelStyle: TextStyle(fontSize: tabFontSize),
+              unselectedLabelStyle: TextStyle(fontSize: tabFontSize),
+              tabs: [
+                Tab(text: 'My Friends', icon: Icon(Icons.people, size: tabIconSize)),
+                Tab(text: 'Sent', icon: Icon(Icons.outbox, size: tabIconSize)),
+                Tab(text: 'Received', icon: Icon(Icons.inbox, size: tabIconSize)),
+                Tab(text: 'Search', icon: Icon(Icons.search, size: tabIconSize)),
+              ],
+            ),
           ),
-        ),
-        backgroundColor: Colors.white,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.black),
-        bottom: TabBar(
-          controller: _tabController,
-          labelColor: Colors.black,
-          unselectedLabelColor: Colors.black54,
-          indicatorColor: Colors.black,
-          labelStyle: TextStyle(fontSize: tabFontSize),
-          unselectedLabelStyle: TextStyle(fontSize: tabFontSize),
-          tabs: [
-            Tab(text: 'My Friends', icon: Icon(Icons.people, size: tabIconSize)),
-            Tab(text: 'Sent', icon: Icon(Icons.outbox, size: tabIconSize)),
-            Tab(text: 'Received', icon: Icon(Icons.inbox, size: tabIconSize)),
-            Tab(text: 'Search', icon: Icon(Icons.search, size: tabIconSize)),
-          ],
-        ),
-      ),
-      body: SafeArea(
-        child: TabBarView(
-          controller: _tabController,
-          children: [
-            _buildTabContent(_myFriends, FriendTab.myFriends),
-            // --- CHANGE ---
-            // No longer need to map the list, as it's already List<Friend>.
-            _buildTabContent(_sentRequests, FriendTab.sentRequests),
-            // --- CHANGE ---
-            // No longer need to map the list, as it's already List<Friend>.
-            _buildTabContent(_receivedRequests, FriendTab.receivedRequests),
-            _buildSearchTab(),
-          ],
-        ),
-      ),
-      )
+          body: SafeArea(
+            child: TabBarView(
+              controller: _tabController,
+              children: [
+                _buildTabContent(_myFriends, FriendTab.myFriends, isDarkTheme),
+                // --- CHANGE ---
+                // No longer need to map the list, as it's already List<Friend>.
+                _buildTabContent(_sentRequests, FriendTab.sentRequests, isDarkTheme),
+                // --- CHANGE ---
+                // No longer need to map the list, as it's already List<Friend>.
+                _buildTabContent(_receivedRequests, FriendTab.receivedRequests, isDarkTheme),
+                _buildSearchTab(isDarkTheme),
+              ],
+            ),
+          ),
+          ),
+        );
+      },
     );
   }
 
-  Widget _buildSearchTab() {
+  Widget _buildSearchTab(bool isDarkTheme) {
     final screenWidth = MediaQuery.of(context).size.width;
     final screenHeight = MediaQuery.of(context).size.height;
 
@@ -1453,14 +1472,27 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
               Expanded(
                 child: TextField(
                   controller: _searchController,
-                  style: TextStyle(color: Colors.black87, fontSize: searchFontSize),
+                  style: TextStyle(
+                    color: isDarkTheme ? Colors.white : Colors.black87,
+                    fontSize: searchFontSize,
+                  ),
                   decoration: InputDecoration(
                     labelText: 'Search by Username',
-                    labelStyle: TextStyle(color: Colors.black54, fontSize: searchFontSize),
-                    hintStyle: TextStyle(color: Colors.black38, fontSize: searchFontSize),
-                    prefixIcon: Icon(Icons.search, color: Colors.black54, size: searchIconSize),
+                    labelStyle: TextStyle(
+                      color: isDarkTheme ? Colors.grey.shade400 : Colors.black54,
+                      fontSize: searchFontSize,
+                    ),
+                    hintStyle: TextStyle(
+                      color: isDarkTheme ? Colors.grey.shade600 : Colors.black38,
+                      fontSize: searchFontSize,
+                    ),
+                    prefixIcon: Icon(
+                      Icons.search,
+                      color: isDarkTheme ? Colors.cyanAccent : Colors.black54,
+                      size: searchIconSize,
+                    ),
                     filled: true,
-                    fillColor: Colors.lightBlue[50],
+                    fillColor: isDarkTheme ? const Color(0xFF1E1E1E) : Colors.lightBlue[50],
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(30.0),
                       borderSide: BorderSide.none,
@@ -1468,14 +1500,16 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
                     enabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(30.0),
                       borderSide: BorderSide(
-                        color: Colors.lightBlue[200]!,
+                        color: isDarkTheme
+                          ? Colors.cyanAccent.withOpacity(0.3)
+                          : Colors.lightBlue[200]!,
                         width: 1.0,
                       ),
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(30.0),
-                      borderSide: const BorderSide(
-                        color: Colors.lightBlueAccent,
+                      borderSide: BorderSide(
+                        color: isDarkTheme ? Colors.cyanAccent : Colors.lightBlueAccent,
                         width: 2.0,
                       ),
                     ),
@@ -1483,7 +1517,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
                         ? IconButton(
                             icon: Icon(
                               Icons.clear,
-                              color: Colors.black54,
+                              color: isDarkTheme ? Colors.grey.shade400 : Colors.black54,
                               size: searchIconSize,
                             ),
                             onPressed: () => _searchController.clear(),
@@ -1535,14 +1569,16 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
         _isLoading
             ? Padding(
                 padding: EdgeInsets.all(spacing2),
-                child: const CircularProgressIndicator(color: Colors.lightBlueAccent),
+                child: CircularProgressIndicator(
+                  color: isDarkTheme ? Colors.cyanAccent : Colors.lightBlueAccent,
+                ),
               )
             : Padding(
                 padding: EdgeInsets.all(spacing3),
                 child: Text(
                   _statusMessage,
                   style: TextStyle(
-                    color: Colors.black87,
+                    color: isDarkTheme ? Colors.white70 : Colors.black87,
                     fontSize: statusFontSize,
                   ),
                 ),
@@ -1556,12 +1592,12 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
                         : "Enter a username or scan contacts to search.",
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      color: Colors.black87,
+                      color: isDarkTheme ? Colors.white70 : Colors.black87,
                       fontSize: emptyTextSize,
                     ),
                   ),
                 )
-              : _buildTabContent(filteredFriends, FriendTab.search),
+              : _buildTabContent(filteredFriends, FriendTab.search, isDarkTheme),
         ),
       ],
     );

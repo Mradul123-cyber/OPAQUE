@@ -139,8 +139,12 @@ class WebSocketService with ChangeNotifier {
     final completer = Completer<void>();
 
     try {
-      final String host = kIsWeb ? 'ws://192.168.29.81:8080/ws' : 'ws://192.168.29.81:8080/ws';
-      final uri = Uri.parse('$host?token=$token');
+      final uri = Uri(
+        scheme: 'wss',
+        host: 'api.zarqmessenger.com',
+        path: '/ws',
+        queryParameters: {'token': token},
+      );
       _channel = WebSocketChannel.connect(uri);
 
       _isConnected = true;
@@ -528,6 +532,12 @@ class WebSocketService with ChangeNotifier {
         case 'group_deleted':
           _handleGroupDeleted(messageData);
           break;
+        case 'reaction_added':
+          _handleReactionAdded(messageData);
+          break;
+        case 'reaction_removed':
+          _handleReactionRemoved(messageData);
+          break;
         case 'call_offer':
         case 'call_answer':
         case 'ice_candidate':
@@ -582,10 +592,44 @@ class WebSocketService with ChangeNotifier {
     }
   }
 
-  void _handleAttachmentUploaded(Map<String, dynamic> attachmentData) {
+  Future<void> _handleAttachmentUploaded(Map<String, dynamic> attachmentData) async {
     // print('[WebSocketService] Attachment uploaded notification: $attachmentData');
 
-    // Forward ALL data to UI via stream (including encryption metadata!)
+    // Extract data
+    final messageId = attachmentData['message_id'] as int?;
+    final attachmentId = attachmentData['attachment_id'] as int?;
+    final conversationId = attachmentData['conversation_id'] as int?;
+
+    if (messageId != null && attachmentId != null && conversationId != null) {
+      // Update message in database immediately (even if chat screen is not open)
+      try {
+        final dbService = DatabaseService.instance;
+
+        // Get the existing message from database
+        final messages = await dbService.getAllMessagesInConversation(conversationId);
+        final existingMessage = messages.where((msg) => msg.id == messageId).firstOrNull;
+
+        if (existingMessage != null) {
+          // Update the message with attachment metadata
+          final updatedMessage = existingMessage.copyWith(
+            attachmentId: attachmentId,
+            attachmentType: attachmentData['file_type'] as String?,
+            hasAttachment: true,
+            mediaEncryptionKey: attachmentData['media_encryption_key'] as String?,
+            mediaEncryptionIv: attachmentData['media_encryption_iv'] as String?,
+            senderDeviceId: attachmentData['sender_device_id'] as int? ?? existingMessage.senderDeviceId,
+          );
+
+          // Save updated message to database
+          await dbService.insertMessage(updatedMessage);
+          // print('[WebSocketService] ✅ Updated message $messageId in database with attachment $attachmentId');
+        }
+      } catch (e) {
+        // print('[WebSocketService] ❌ Error updating message in database: $e');
+      }
+    }
+
+    // Forward ALL data to UI via stream (for chat screen if it's open)
     _streamController.add(attachmentData);
   }
 
@@ -995,6 +1039,53 @@ class WebSocketService with ChangeNotifier {
     }
   }
 
+  // Send reaction to backend
+  void addReaction({
+    required int messageId,
+    required String emoji,
+  }) {
+    if (!_isConnected || _channel == null) {
+      // print("[WebSocketService] ❌ Cannot add reaction - not connected");
+      return;
+    }
+
+    try {
+      final reactionMessage = {
+        'type': 'add_reaction',
+        'message_id': messageId,
+        'emoji': emoji,
+      };
+
+      _channel!.sink.add(jsonEncode(reactionMessage));
+      // print("[WebSocketService] ✅ Sent add_reaction: messageId=$messageId, emoji=$emoji");
+    } catch (e) {
+      // print("[WebSocketService] ❌ Error adding reaction: $e");
+    }
+  }
+
+  void removeReaction({
+    required int messageId,
+    required String emoji,
+  }) {
+    if (!_isConnected || _channel == null) {
+      // print("[WebSocketService] ❌ Cannot remove reaction - not connected");
+      return;
+    }
+
+    try {
+      final reactionMessage = {
+        'type': 'remove_reaction',
+        'message_id': messageId,
+        'emoji': emoji,
+      };
+
+      _channel!.sink.add(jsonEncode(reactionMessage));
+      // print("[WebSocketService] ✅ Sent remove_reaction: messageId=$messageId, emoji=$emoji");
+    } catch (e) {
+      // print("[WebSocketService] ❌ Error removing reaction: $e");
+    }
+  }
+
   // Query user presence status
   void queryPresenceStatus(String targetUid) {
     if (!_isConnected || _channel == null) {
@@ -1118,21 +1209,22 @@ class WebSocketService with ChangeNotifier {
         // print('  - encrypted: $encrypted');
         // print('  - sdp length: ${sdp?.length}');
 
+        // 🧪 TESTING: Decryption DISABLED
         // Decrypt SDP if encrypted
-        if (encrypted == true && sdp != null && callerUid != null) {
-          // print('[WebSocketService] 🔓 Decrypting call_offer SDP...');
-          final decryptedSdp = await SignalService.decryptMessage(
-            senderUid: callerUid,
-            ciphertextB64: sdp,
-            deviceId: senderDeviceId ?? 1,
-          );
-          if (decryptedSdp != null) {
-            sdp = decryptedSdp;
-            // print('[WebSocketService] ✅ Successfully decrypted call_offer SDP');
-          } else {
-            // print('[WebSocketService] ⚠️ Failed to decrypt SDP');
-          }
-        }
+        // if (encrypted == true && sdp != null && callerUid != null) {
+        //   // print('[WebSocketService] 🔓 Decrypting call_offer SDP...');
+        //   final decryptedSdp = await SignalService.decryptMessage(
+        //     senderUid: callerUid,
+        //     ciphertextB64: sdp,
+        //     deviceId: senderDeviceId ?? 1,
+        //   );
+        //   if (decryptedSdp != null) {
+        //     sdp = decryptedSdp;
+        //     // print('[WebSocketService] ✅ Successfully decrypted call_offer SDP');
+        //   } else {
+        //     // print('[WebSocketService] ⚠️ Failed to decrypt SDP');
+        //   }
+        // }
 
         if (callerUid != null && callerName != null && callTypeStr != null && sdp != null && conversationId != null) {
           final callType = callTypeStr == 'video' ? CallType.video : CallType.voice;
@@ -1209,8 +1301,8 @@ class WebSocketService with ChangeNotifier {
         break;
 
       case 'ice_candidate':
+        print('[WebSocketService] 📥 Received ICE candidate from remote peer');
         _globalCallManager!.handleIceCandidate(messageData);
-        // print('[WebSocketService] Received ICE candidate');
         break;
 
       case 'call_rejected':
@@ -1290,6 +1382,39 @@ class WebSocketService with ChangeNotifier {
     // print("[WebSocketService] 🗑️ Group deleted: $deleteData");
     // Forward to stream so home_screen can remove the group
     _streamController.add(deleteData);
+  }
+
+  void _handleReactionAdded(Map<String, dynamic> reactionData) {
+    try {
+      // print("[WebSocketService] 👍 Reaction added: $reactionData");
+
+      // Forward to stream for UI update
+      _streamController.add({
+        'type': 'reaction_added',
+        'message_id': reactionData['message_id'],
+        'user_uid': reactionData['user_uid'],
+        'username': reactionData['username'],
+        'emoji': reactionData['emoji'],
+      });
+    } catch (e) {
+      // print("[WebSocketService] Error handling reaction_added: $e");
+    }
+  }
+
+  void _handleReactionRemoved(Map<String, dynamic> reactionData) {
+    try {
+      // print("[WebSocketService] 👎 Reaction removed: $reactionData");
+
+      // Forward to stream for UI update
+      _streamController.add({
+        'type': 'reaction_removed',
+        'message_id': reactionData['message_id'],
+        'user_uid': reactionData['user_uid'],
+        'emoji': reactionData['emoji'],
+      });
+    } catch (e) {
+      // print("[WebSocketService] Error handling reaction_removed: $e");
+    }
   }
 
   // ✅ CONNECTIVITY MONITORING

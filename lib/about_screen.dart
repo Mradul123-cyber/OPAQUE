@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'dart:ui';
 import 'profile_background.dart';
 import 'widgets/call_aware_screen.dart';
+import 'screens/markdown_viewer_screen.dart';
 
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});
@@ -176,7 +177,15 @@ class AboutScreen extends StatelessWidget {
                           _buildLinkButton(
                             icon: Icons.privacy_tip_outlined,
                             text: 'Privacy Policy',
-                            onTap: () => _showComingSoonDialog(context, 'Privacy Policy'),
+                            onTap: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => const MarkdownViewerScreen(
+                                  title: 'Privacy Policy',
+                                  assetPath: 'assets/privacy_policy.md',
+                                ),
+                              ),
+                            ),
                             iconSize: iconSize * 0.8,
                             bodyTextSize: bodyTextSize,
                             spacing3: spacing3,
@@ -187,7 +196,15 @@ class AboutScreen extends StatelessWidget {
                           _buildLinkButton(
                             icon: Icons.description_outlined,
                             text: 'Terms of Service',
-                            onTap: () => _showComingSoonDialog(context, 'Terms of Service'),
+                            onTap: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => const MarkdownViewerScreen(
+                                  title: 'Terms of Service',
+                                  assetPath: 'assets/terms_of_service.md',
+                                ),
+                              ),
+                            ),
                             iconSize: iconSize * 0.8,
                             bodyTextSize: bodyTextSize,
                             spacing3: spacing3,
@@ -198,7 +215,15 @@ class AboutScreen extends StatelessWidget {
                           _buildLinkButton(
                             icon: Icons.support_agent,
                             text: 'Contact Support',
-                            onTap: () => _showComingSoonDialog(context, 'Support'),
+                            onTap: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => const MarkdownViewerScreen(
+                                  title: 'Contact & Support',
+                                  assetPath: 'assets/contact_support.md',
+                                ),
+                              ),
+                            ),
                             iconSize: iconSize * 0.8,
                             bodyTextSize: bodyTextSize,
                             spacing3: spacing3,
@@ -326,41 +351,4 @@ class AboutScreen extends StatelessWidget {
     );
   }
 
-  void _showComingSoonDialog(BuildContext context, String feature) {
-    showDialog(
-      context: context,
-      builder: (BuildContext dialogContext) {
-        return AlertDialog(
-          backgroundColor: Colors.grey[900],
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: Row(
-            children: [
-              const Icon(Icons.construction, color: Colors.orange),
-              const SizedBox(width: 10),
-              Text(
-                'Coming Soon',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: (MediaQuery.of(context).size.width * 0.045).clamp(16.0, 20.0),
-                ),
-              ),
-            ],
-          ),
-          content: Text(
-            '$feature will be available in a future update.',
-            style: TextStyle(
-              color: Colors.white70,
-              fontSize: (MediaQuery.of(context).size.width * 0.035).clamp(13.0, 16.0),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('OK', style: TextStyle(color: Colors.cyanAccent)),
-            ),
-          ],
-        );
-      },
-    );
-  }
 }

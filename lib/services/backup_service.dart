@@ -14,6 +14,9 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 import 'database_service.dart';
 import 'SignalService.dart';
+import 'secure_storage_service.dart';
+import 'google_drive_media_service.dart';
+import 'backup_notification_service.dart';
 
 /// Backup Data Model
 class BackupData {
@@ -207,10 +210,10 @@ class AutoBackupSettings {
         'wifiOnly': wifiOnly,
         'mediaAgeLimitDays': mediaAgeLimitDays,
         'lastBackupTime': lastBackupTime?.toIso8601String(),
-        'lastBackupPassphrase': lastBackupPassphrase,
+        // Passphrase NOT stored in SharedPreferences - stored securely in SecureStorageService
       };
 
-  factory AutoBackupSettings.fromJson(Map<String, dynamic> json) => AutoBackupSettings(
+  factory AutoBackupSettings.fromJson(Map<String, dynamic> json, {String? passphrase}) => AutoBackupSettings(
         enabled: json['enabled'] as bool? ?? false,
         frequency: BackupFrequency.fromString(json['frequency'] as String? ?? 'disabled'),
         destination: BackupDestination.fromString(json['destination'] as String? ?? 'local'),
@@ -219,7 +222,7 @@ class AutoBackupSettings {
         lastBackupTime: json['lastBackupTime'] != null
             ? DateTime.parse(json['lastBackupTime'] as String)
             : null,
-        lastBackupPassphrase: json['lastBackupPassphrase'] as String?,
+        lastBackupPassphrase: passphrase, // Loaded separately from SecureStorageService
       );
 
   AutoBackupSettings copyWith({
@@ -252,12 +255,20 @@ class BackupService {
   static const int nonceSize = 12; // GCM nonce
   static const int authTagSize = 16; // GCM auth tag
 
+  // Singleton pattern to persist authentication state across screens
+  static final BackupService _instance = BackupService._internal();
+  factory BackupService() => _instance;
+  BackupService._internal();
+
   final DatabaseService _dbService = DatabaseService.instance;
 
   // ================== LOCAL BACKUP CREATION ==================
 
   /// Create a complete backup of messages and attachments
-  Future<BackupData> createLocalBackup({int? excludeMediaOlderThanDays}) async {
+  Future<BackupData> createLocalBackup({
+    int? excludeMediaOlderThanDays,
+    bool includeMedia = true, // Default: include media (for backward compatibility)
+  }) async {
     try {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) {
@@ -270,6 +281,7 @@ class BackupService {
       final timestamp = DateTime.now().millisecondsSinceEpoch;
 
       debugPrint('[BackupService] Creating backup for user: $userUid, device: $deviceId');
+      debugPrint('[BackupService] Include media: $includeMedia');
 
       // 1. Export all messages
       final messages = await _exportMessages();
@@ -283,11 +295,13 @@ class BackupService {
       final signalState = await _exportSignalProtocolState();
       debugPrint('[BackupService] Exported Signal Protocol state');
 
-      // 4. Collect attachments (with date filter)
-      final attachments = await _collectAttachments(
-        messages: messages,
-        excludeOlderThanDays: excludeMediaOlderThanDays,
-      );
+      // 4. Collect attachments (skip if includeMedia is false)
+      final attachments = includeMedia
+          ? await _collectAttachments(
+              messages: messages,
+              excludeOlderThanDays: excludeMediaOlderThanDays,
+            )
+          : <BackupAttachment>[]; // Empty list when media is excluded
       debugPrint('[BackupService] Collected ${attachments.length} attachments');
 
       final backupData = BackupData(
@@ -329,10 +343,27 @@ class BackupService {
     return conversationMap.values.toList();
   }
 
-  /// Export all messages from database
+  /// Export messages from database (excluding deleted messages)
   Future<List<Map<String, dynamic>>> _exportMessages() async {
     final db = _dbService.database;
-    final messages = await db.query('messages', orderBy: 'timestamp ASC');
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) {
+      throw Exception('User not authenticated');
+    }
+
+    // CRITICAL: Exclude both "delete for me" and "delete for everyone" messages
+    // 1. Use LEFT JOIN to exclude messages in deleted_messages table (delete for me)
+    // 2. Filter out messages with deletion placeholder content (delete for everyone)
+    final messages = await db.rawQuery('''
+      SELECT m.* FROM messages m
+      LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
+      WHERE dm.message_id IS NULL
+        AND m.content NOT LIKE 'This message was deleted%'
+        AND m.content NOT LIKE '%deleted this message%'
+      ORDER BY m.timestamp ASC
+    ''', [currentUser.uid]);
+
+    debugPrint('[BackupService] Exported ${messages.length} messages (excluded deleted messages)');
     return messages;
   }
 
@@ -513,22 +544,52 @@ class BackupService {
     return derivator.process(Uint8List.fromList(utf8.encode(passphrase)));
   }
 
-  /// Encrypt backup data with AES-256-GCM
+  /// Encrypt backup data with AES-256-GCM (runs in background isolate)
   Future<File> encryptBackup(BackupData backupData, String passphrase) async {
     try {
-      debugPrint('[BackupService] Encrypting backup...');
+      debugPrint('[BackupService] Starting backup encryption in background...');
+
+      // Run heavy encryption work in background isolate to prevent UI freeze
+      final encryptedData = await compute(_encryptBackupInIsolate, {
+        'backupData': backupData.toJson(),
+        'passphrase': passphrase,
+      });
+
+      // Save to temporary file (fast operation, safe on main thread)
+      final tempDir = await getTemporaryDirectory();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final encryptedFile = File(path.join(tempDir.path, 'zarq_backup_$timestamp.encrypted'));
+      await encryptedFile.writeAsBytes(encryptedData);
+
+      debugPrint('[BackupService] Backup encrypted successfully: ${encryptedFile.path}');
+      return encryptedFile;
+    } catch (e) {
+      debugPrint('[BackupService] Encryption error: $e');
+      rethrow;
+    }
+  }
+
+  /// Static method for isolate - encrypts backup data
+  static Uint8List _encryptBackupInIsolate(Map<String, dynamic> params) {
+    try {
+      final backupDataJson = params['backupData'] as Map<String, dynamic>;
+      final passphrase = params['passphrase'] as String;
 
       // Convert backup data to JSON
-      final jsonString = jsonEncode(backupData.toJson());
+      final jsonString = jsonEncode(backupDataJson);
       final plaintext = Uint8List.fromList(utf8.encode(jsonString));
 
       // Generate random salt and nonce
-      final random = SecureRandom('Fortuna')..seed(KeyParameter(Uint8List.fromList(List.generate(32, (_) => DateTime.now().microsecondsSinceEpoch % 256))));
+      final random = SecureRandom('Fortuna')
+        ..seed(KeyParameter(Uint8List.fromList(
+            List.generate(32, (_) => DateTime.now().microsecondsSinceEpoch % 256))));
       final salt = random.nextBytes(32);
       final nonce = random.nextBytes(nonceSize);
 
       // Derive encryption key from passphrase
-      final key = _deriveKey(passphrase, salt);
+      final derivator = PBKDF2KeyDerivator(HMac(SHA256Digest(), 64))
+        ..init(Pbkdf2Parameters(salt, pbkdf2Iterations, aesKeySize));
+      final key = derivator.process(Uint8List.fromList(utf8.encode(passphrase)));
 
       // Encrypt with AES-256-GCM
       final cipher = GCMBlockCipher(AESEngine())
@@ -540,29 +601,58 @@ class BackupService {
       final ciphertext = cipher.process(plaintext);
 
       // Combine: salt (32) + nonce (12) + ciphertext + authTag (16)
-      final encryptedData = Uint8List.fromList([...salt, ...nonce, ...ciphertext]);
-
-      // Save to temporary file
-      final tempDir = await getTemporaryDirectory();
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final encryptedFile = File(path.join(tempDir.path, 'zarq_backup_$timestamp.encrypted'));
-      await encryptedFile.writeAsBytes(encryptedData);
-
-      debugPrint('[BackupService] Backup encrypted: ${encryptedFile.path}');
-      return encryptedFile;
+      return Uint8List.fromList([...salt, ...nonce, ...ciphertext]);
     } catch (e) {
-      debugPrint('[BackupService] Encryption error: $e');
-      rethrow;
+      throw Exception('Encryption failed in isolate: $e');
     }
   }
 
-  /// Decrypt backup data with AES-256-GCM
+  /// Decrypt backup data with AES-256-GCM (runs in background isolate)
   Future<BackupData> decryptBackup(File encryptedFile, String passphrase) async {
     try {
-      debugPrint('[BackupService] Decrypting backup...');
+      debugPrint('[BackupService] Starting backup decryption in background...');
 
-      // Read encrypted data
+      // Read encrypted data (fast operation)
       final encryptedData = await encryptedFile.readAsBytes();
+
+      // Start periodic notification updates to keep it alive during decryption
+      bool decryptionComplete = false;
+      int notificationProgress = 26;
+      Timer.periodic(const Duration(seconds: 2), (timer) {
+        if (decryptionComplete) {
+          timer.cancel();
+          return;
+        }
+        notificationProgress = (notificationProgress + 1).clamp(26, 34);
+        BackupNotificationService.showProgressNotification(
+          'Decrypting backup...',
+          notificationProgress,
+        );
+      });
+
+      // Run heavy decryption work in background isolate to prevent UI freeze
+      final jsonData = await compute(_decryptBackupInIsolate, {
+        'encryptedData': encryptedData,
+        'passphrase': passphrase,
+      });
+
+      decryptionComplete = true; // Stop the periodic updates
+
+      final backupData = BackupData.fromJson(jsonData);
+      debugPrint('[BackupService] Backup decrypted successfully');
+
+      return backupData;
+    } catch (e) {
+      debugPrint('[BackupService] Decryption error: $e');
+      throw Exception('Failed to decrypt backup. Incorrect passphrase or corrupted file.');
+    }
+  }
+
+  /// Static method for isolate - decrypts backup data
+  static Map<String, dynamic> _decryptBackupInIsolate(Map<String, dynamic> params) {
+    try {
+      final encryptedData = params['encryptedData'] as Uint8List;
+      final passphrase = params['passphrase'] as String;
 
       // Extract components
       final salt = encryptedData.sublist(0, 32);
@@ -570,7 +660,9 @@ class BackupService {
       final ciphertext = encryptedData.sublist(32 + nonceSize);
 
       // Derive decryption key
-      final key = _deriveKey(passphrase, salt);
+      final derivator = PBKDF2KeyDerivator(HMac(SHA256Digest(), 64))
+        ..init(Pbkdf2Parameters(salt, pbkdf2Iterations, aesKeySize));
+      final key = derivator.process(Uint8List.fromList(utf8.encode(passphrase)));
 
       // Decrypt with AES-256-GCM
       final cipher = GCMBlockCipher(AESEngine())
@@ -583,15 +675,9 @@ class BackupService {
 
       // Parse JSON
       final jsonString = utf8.decode(plaintext);
-      final jsonData = jsonDecode(jsonString) as Map<String, dynamic>;
-
-      final backupData = BackupData.fromJson(jsonData);
-      debugPrint('[BackupService] Backup decrypted successfully');
-
-      return backupData;
+      return jsonDecode(jsonString) as Map<String, dynamic>;
     } catch (e) {
-      debugPrint('[BackupService] Decryption error: $e');
-      throw Exception('Failed to decrypt backup. Incorrect passphrase or corrupted file.');
+      throw Exception('Decryption failed in isolate: $e');
     }
   }
 
@@ -688,7 +774,7 @@ class BackupService {
     }
   }
 
-  /// Restore messages
+  /// Restore messages (optimized with batch insert)
   Future<void> _restoreMessages(List<Map<String, dynamic>> messages) async {
     final db = _dbService.database;
 
@@ -698,38 +784,38 @@ class BackupService {
     await db.delete('messages');
     debugPrint('[BackupService] Cleared existing messages');
 
-    // Insert messages one by one to ensure proper persistence
-    int successCount = 0;
-    for (final message in messages) {
-      try {
-        // Log encryption metadata for messages with attachments
-        if (message['has_attachment'] == 1) {
-          final attachmentId = message['attachment_id'];
-          final encryptedKey = message['encrypted_media_key'];
-          final encryptionType = message['media_encryption_type'];
-          final iv = message['media_encryption_iv'];
+    // Use batch insert for performance (100x faster than one-by-one)
+    final batch = db.batch();
+    int batchCount = 0;
+    const batchSize = 100; // Insert in chunks of 100
 
-          debugPrint('[BackupService] ══════ Message ${message['id']} with attachment ══════');
-          debugPrint('[BackupService]   attachment_id: $attachmentId');
-          debugPrint('[BackupService]   encrypted_key exists: ${encryptedKey != null}');
-          debugPrint('[BackupService]   encryption_type: $encryptionType');
-          debugPrint('[BackupService]   iv exists: ${iv != null}');
-          debugPrint('[BackupService] ══════════════════════════════════════════');
-        }
+    for (int i = 0; i < messages.length; i++) {
+      final message = messages[i];
 
-        final result = await db.insert(
-          'messages',
-          message,
-          conflictAlgorithm: ConflictAlgorithm.replace,
+      batch.insert(
+        'messages',
+        message,
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      batchCount++;
+
+      // Commit batch every 100 messages or at the end
+      if (batchCount >= batchSize || i == messages.length - 1) {
+        await batch.commit(noResult: true);
+        debugPrint('[BackupService] Inserted batch of $batchCount messages (${i + 1}/${messages.length})');
+
+        // CRITICAL: Update notification to keep it alive during long restore
+        final progress = 40 + ((i + 1) / messages.length * 8).toInt(); // 40-48%
+        await BackupNotificationService.showProgressNotification(
+          'Restoring messages (${i + 1}/${messages.length})',
+          progress,
         );
-        debugPrint('[BackupService] Inserted message ID: ${message['id']}, result: $result');
-        successCount++;
-      } catch (e) {
-        debugPrint('[BackupService] Error inserting message ${message['id']}: $e');
+
+        batchCount = 0;
       }
     }
 
-    debugPrint('[BackupService] Successfully inserted $successCount/${messages.length} messages');
+    debugPrint('[BackupService] Successfully inserted ${messages.length} messages');
 
     // Verify insertion
     final count = await db.rawQuery('SELECT COUNT(*) as count FROM messages');
@@ -761,46 +847,59 @@ class BackupService {
     if (currentUser == null) return;
 
     final userUid = currentUser.uid;
-    final dir = await getApplicationDocumentsDirectory();
+    int skippedCount = 0;
+    int restoredCount = 0;
 
     for (final attachment in attachments) {
       try {
-        final encryptedBytes = base64.decode(attachment.encryptedDataBase64);
-
-        // Determine storage path
+        // Determine storage path - Use EXTERNAL storage (WhatsApp approach)
         String storagePath;
         Directory storageDir;
 
         if (attachment.type == 'image') {
-          storageDir = Directory(path.join(dir.path, 'images', userUid));
+          storageDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Images/$userUid');
           storagePath = path.join(storageDir.path, 'attachment_${attachment.attachmentId}.jpg');
         } else if (attachment.type == 'video') {
-          storageDir = Directory(path.join(dir.path, 'videos', userUid));
+          storageDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Videos/$userUid');
           storagePath = path.join(storageDir.path, 'attachment_${attachment.attachmentId}.mp4');
         } else if (attachment.type == 'audio') {
-          storageDir = Directory(path.join(dir.path, 'audios', userUid));
+          storageDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Audio/$userUid');
           storagePath = path.join(storageDir.path, 'attachment_${attachment.attachmentId}.aac');
         } else if (attachment.type == 'document') {
-          storageDir = Directory(path.join(dir.path, 'documents', userUid));
+          storageDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Documents/$userUid');
           storagePath = path.join(storageDir.path, 'attachment_${attachment.attachmentId}${attachment.extension}');
         } else {
           continue;
         }
+
+        final file = File(storagePath);
+
+        // WhatsApp approach: Skip if file already exists (avoids duplication & saves bandwidth)
+        if (await file.exists()) {
+          skippedCount++;
+          debugPrint('[BackupService] ⏭️ Media already exists, skipping: ${attachment.attachmentId}');
+          continue;
+        }
+
+        // File doesn't exist, restore it from backup
+        final encryptedBytes = base64.decode(attachment.encryptedDataBase64);
 
         // Create directory if needed
         if (!await storageDir.exists()) {
           await storageDir.create(recursive: true);
         }
 
-        // Write encrypted file
-        final file = File(storagePath);
+        // Write encrypted file to EXTERNAL storage (persists after uninstall)
         await file.writeAsBytes(encryptedBytes);
+        restoredCount++;
 
-        debugPrint('[BackupService] Restored attachment: ${attachment.attachmentId}');
+        debugPrint('[BackupService] ✅ Restored attachment to external storage: ${attachment.attachmentId}');
       } catch (e) {
-        debugPrint('[BackupService] Error restoring attachment ${attachment.attachmentId}: $e');
+        debugPrint('[BackupService] ❌ Error restoring attachment ${attachment.attachmentId}: $e');
       }
     }
+
+    debugPrint('[BackupService] 📊 Media restore summary: $restoredCount restored, $skippedCount skipped (already exist)');
   }
 
   // ================== UTILITY ==================
@@ -829,24 +928,35 @@ class BackupService {
 
   GoogleSignIn? _googleSignInInstance;
   GoogleSignInAccount? _cachedAccount;
+  drive.DriveApi? _cachedDriveApi; // Cache DriveApi instance to avoid repeated authentication
 
-  /// Get authenticated Google Drive API client
+  /// Get authenticated Google Drive API client with persistent scopes
+  /// Uses cached instance to avoid repeated authentication
   Future<drive.DriveApi?> getDriveApi() async {
     try {
+      // Return cached instance if available (no authentication needed)
+      if (_cachedDriveApi != null) {
+        debugPrint('[BackupService] ✅ Using cached Drive API instance (no authentication needed)');
+        return _cachedDriveApi;
+      }
+
       debugPrint('[BackupService] Authenticating with Google Drive...');
 
       // Initialize GoogleSignIn instance if not already done
       _googleSignInInstance ??= GoogleSignIn.instance;
 
-      // Initialize without scopes (v7.x doesn't accept scopes in initialize)
+      // Initialize
       await _googleSignInInstance!.initialize();
 
       // Try lightweight authentication first (if user already signed in before)
-      // In v7.x, these methods return the account directly, no currentUser property
+      debugPrint('[BackupService] Attempting lightweight authentication...');
       var account = await _googleSignInInstance!.attemptLightweightAuthentication();
 
       // If lightweight auth failed, do full authentication
-      account ??= await _googleSignInInstance!.authenticate();
+      if (account == null) {
+        debugPrint('[BackupService] Lightweight auth failed, showing account picker...');
+        account = await _googleSignInInstance!.authenticate();
+      }
 
       if (account == null) {
         debugPrint('[BackupService] User cancelled sign-in');
@@ -856,31 +966,90 @@ class BackupService {
       _cachedAccount = account;
       debugPrint('[BackupService] Signed in as: ${account.email}');
 
-      // Request authorization for Drive scopes using v7.x API
-      debugPrint('[BackupService] Requesting authorization for Drive scopes...');
-      final authorization = await account.authorizationClient.authorizationForScopes(_driveScopes);
+      // Get authorization for Drive scopes (automatically persisted by GoogleSignIn)
+      debugPrint('[BackupService] Checking authorization for Drive scopes...');
+      var authorization = await account.authorizationClient.authorizationForScopes(_driveScopes);
 
+      // If no existing authorization, explicitly authorize scopes
+      // This will prompt user once, then persist for future app launches
       if (authorization == null) {
-        debugPrint('[BackupService] ❌ Failed to get authorization for Drive scopes');
-        throw Exception('Failed to get authorization for Drive scopes');
-      }
+        debugPrint('[BackupService] No existing authorization, requesting Drive permissions from user...');
+        authorization = await account.authorizationClient.authorizeScopes(_driveScopes);
 
-      debugPrint('[BackupService] ✅ Got authorization for Drive scopes');
+        if (authorization == null) {
+          debugPrint('[BackupService] ❌ User denied Drive API permissions or authorization failed');
+          return null;
+        }
+
+        debugPrint('[BackupService] ✅ Drive API scopes authorized and persisted');
+      } else {
+        debugPrint('[BackupService] ✅ Using existing Drive API authorization (persisted)');
+      }
 
       // Get authenticated HTTP client using extension
       final authClient = authorization.authClient(scopes: _driveScopes);
 
       debugPrint('[BackupService] ✅ Got authenticated client');
 
-      // Create and return Drive API instance
-      final driveApi = drive.DriveApi(authClient);
-      debugPrint('[BackupService] ✅ Google Drive API authenticated successfully');
+      // Create Drive API instance and cache it for future use
+      _cachedDriveApi = drive.DriveApi(authClient);
+      debugPrint('[BackupService] ✅ Google Drive API authenticated and cached successfully');
 
-      return driveApi;
+      return _cachedDriveApi;
     } catch (e, stackTrace) {
       debugPrint('[BackupService] ❌ Error getting Drive API: $e');
       debugPrint('[BackupService] Stack trace: $stackTrace');
+
+      // Clear cache on error (token might be expired)
+      _clearDriveCache();
+
       return null;
+    }
+  }
+
+  /// Clear cached Drive API instance (called on sign out or authentication errors)
+  void _clearDriveCache() {
+    _cachedDriveApi = null;
+    debugPrint('[BackupService] Cleared Drive API cache');
+  }
+
+  /// Execute Drive API operation with automatic retry on authentication errors
+  /// Clears cache and retries once if 401 Unauthorized error occurs
+  Future<T?> _executeDriveOperation<T>(
+    Future<T> Function(drive.DriveApi driveApi) operation, {
+    String operationName = 'Drive operation',
+  }) async {
+    try {
+      final driveApi = await getDriveApi();
+      if (driveApi == null) {
+        debugPrint('[BackupService] ❌ $operationName failed: No DriveApi available');
+        return null;
+      }
+
+      return await operation(driveApi);
+    } catch (e) {
+      // Check if it's an authentication error (401 Unauthorized)
+      if (e.toString().contains('401') || e.toString().toLowerCase().contains('unauthorized')) {
+        debugPrint('[BackupService] ⚠️ $operationName failed with auth error, clearing cache and retrying...');
+        _clearDriveCache();
+
+        // Retry once with fresh authentication
+        try {
+          final driveApi = await getDriveApi();
+          if (driveApi == null) {
+            debugPrint('[BackupService] ❌ $operationName retry failed: No DriveApi available');
+            return null;
+          }
+
+          return await operation(driveApi);
+        } catch (retryError) {
+          debugPrint('[BackupService] ❌ $operationName retry failed: $retryError');
+          rethrow;
+        }
+      }
+
+      // Not an auth error, rethrow
+      rethrow;
     }
   }
 
@@ -890,6 +1059,7 @@ class BackupService {
       if (_googleSignInInstance != null) {
         await _googleSignInInstance!.disconnect();
         _cachedAccount = null;
+        _clearDriveCache(); // Clear cached DriveApi instance
         debugPrint('[BackupService] Signed out from Google Drive');
       }
     } catch (e) {
@@ -898,19 +1068,57 @@ class BackupService {
   }
 
   /// Check if user is signed in to Google Drive
+  /// Returns true if account is authenticated, even if Drive scopes need to be re-authorized
   Future<bool> isSignedInToGoogleDrive() async {
     try {
-      return _cachedAccount != null;
+      // Return cached state immediately if available
+      if (_cachedAccount != null) {
+        debugPrint('[BackupService] User is signed in (cached): ${_cachedAccount!.email}');
+        return true; // Account exists, consider signed in
+      }
+
+      // Initialize GoogleSignIn instance if not already done
+      _googleSignInInstance ??= GoogleSignIn.instance;
+      await _googleSignInInstance!.initialize();
+
+      // Check if user is already signed in (persisted authentication)
+      final account = await _googleSignInInstance!.attemptLightweightAuthentication();
+
+      if (account != null) {
+        _cachedAccount = account; // Update cache
+        debugPrint('[BackupService] User is signed in: ${account.email}');
+        return true; // Account exists, consider signed in (scopes will be requested when needed)
+      }
+
+      debugPrint('[BackupService] User is not signed in');
+      return false;
     } catch (e) {
       debugPrint('[BackupService] Error checking Google Drive sign-in status: $e');
       return false;
     }
   }
 
-  /// Get current Google Drive account email
+  /// Get current Google Drive account email (instant response from cache)
   Future<String?> getGoogleDriveAccountEmail() async {
     try {
-      return _cachedAccount?.email;
+      // Return cached email immediately if available
+      if (_cachedAccount != null) {
+        return _cachedAccount!.email;
+      }
+
+      // Initialize GoogleSignIn instance if not already done
+      _googleSignInInstance ??= GoogleSignIn.instance;
+      await _googleSignInInstance!.initialize();
+
+      // Get current signed in account (persisted authentication)
+      final account = await _googleSignInInstance!.attemptLightweightAuthentication();
+
+      if (account != null) {
+        _cachedAccount = account; // Update cache
+        return account.email;
+      }
+
+      return null;
     } catch (e) {
       debugPrint('[BackupService] Error getting Google Drive account email: $e');
       return null;
@@ -987,7 +1195,7 @@ class BackupService {
     }
   }
 
-  /// List all backups from Google Drive
+  /// List all backup folders from Google Drive
   Future<List<drive.File>> listBackupsFromGoogleDrive() async {
     try {
       debugPrint('[BackupService] Listing backups from Google Drive...');
@@ -997,33 +1205,33 @@ class BackupService {
         throw Exception('Failed to authenticate with Google Drive');
       }
 
-      // Find backup folder
-      final folderName = 'Zarq Messenger Backups';
-      final folderQuery = "name='$folderName' and mimeType='application/vnd.google-apps.folder' and trashed=false";
-      final folderList = await driveApi.files.list(
-        q: folderQuery,
+      // Find root backup folder
+      final rootFolderName = 'Zarq Messenger Backups';
+      final rootFolderQuery = "name='$rootFolderName' and mimeType='application/vnd.google-apps.folder' and trashed=false";
+      final rootFolderList = await driveApi.files.list(
+        q: rootFolderQuery,
         spaces: 'drive',
         $fields: 'files(id)',
       );
 
-      if (folderList.files == null || folderList.files!.isEmpty) {
-        debugPrint('[BackupService] No backup folder found');
+      if (rootFolderList.files == null || rootFolderList.files!.isEmpty) {
+        debugPrint('[BackupService] No root backup folder found');
         return [];
       }
 
-      final folderId = folderList.files!.first.id;
+      final rootFolderId = rootFolderList.files!.first.id;
 
-      // List all backup files in folder
-      final fileQuery = "'$folderId' in parents and trashed=false";
-      final fileList = await driveApi.files.list(
-        q: fileQuery,
+      // List all backup folders (Backup_timestamp) inside root folder
+      final backupFolderQuery = "'$rootFolderId' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false";
+      final backupFolderList = await driveApi.files.list(
+        q: backupFolderQuery,
         spaces: 'drive',
         orderBy: 'createdTime desc',
-        $fields: 'files(id, name, size, createdTime, modifiedTime)',
+        $fields: 'files(id, name, createdTime, modifiedTime)',
       );
 
-      debugPrint('[BackupService] Found ${fileList.files?.length ?? 0} backups');
-      return fileList.files ?? [];
+      debugPrint('[BackupService] Found ${backupFolderList.files?.length ?? 0} backup folders');
+      return backupFolderList.files ?? [];
     } catch (e) {
       debugPrint('[BackupService] Error listing backups: $e');
       return [];
@@ -1035,10 +1243,16 @@ class BackupService {
     try {
       debugPrint('[BackupService] Downloading backup from Google Drive...');
 
+      // Keep notification alive during authentication (can take 5-10 seconds)
+      await BackupNotificationService.showProgressNotification('Authenticating with Google Drive...', 12);
+
       final driveApi = await getDriveApi();
       if (driveApi == null) {
         throw Exception('Failed to authenticate with Google Drive');
       }
+
+      // Update notification after authentication
+      await BackupNotificationService.showProgressNotification('Starting download...', 15);
 
       // Download file
       final media = await driveApi.files.get(
@@ -1116,7 +1330,7 @@ class BackupService {
 
   static const String _autoBackupSettingsKey = 'auto_backup_settings';
 
-  /// Get auto-backup settings
+  /// Get auto-backup settings (with passphrase loaded from secure storage)
   Future<AutoBackupSettings> getAutoBackupSettings() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -1127,16 +1341,29 @@ class BackupService {
       }
 
       final jsonData = jsonDecode(jsonString) as Map<String, dynamic>;
-      return AutoBackupSettings.fromJson(jsonData);
+
+      // Load passphrase from secure storage (NOT from SharedPreferences)
+      final secureStorage = SecureStorageService();
+      final passphrase = await secureStorage.getAutoBackupPassphrase();
+
+      return AutoBackupSettings.fromJson(jsonData, passphrase: passphrase);
     } catch (e) {
       debugPrint('[BackupService] Error loading auto-backup settings: $e');
       return AutoBackupSettings();
     }
   }
 
-  /// Save auto-backup settings
+  /// Save auto-backup settings (with passphrase saved to secure storage)
   Future<void> saveAutoBackupSettings(AutoBackupSettings settings) async {
     try {
+      // Save passphrase to secure storage (NOT to SharedPreferences)
+      if (settings.lastBackupPassphrase != null) {
+        final secureStorage = SecureStorageService();
+        await secureStorage.saveAutoBackupPassphrase(settings.lastBackupPassphrase!);
+        debugPrint('[BackupService] Auto-backup passphrase saved to secure storage');
+      }
+
+      // Save other settings to SharedPreferences
       final prefs = await SharedPreferences.getInstance();
       final jsonString = jsonEncode(settings.toJson());
       await prefs.setString(_autoBackupSettingsKey, jsonString);
@@ -1177,6 +1404,313 @@ class BackupService {
         return difference.inDays >= 30;
       case BackupFrequency.disabled:
         return false;
+    }
+  }
+
+  // ================== GOOGLE DRIVE WITH MEDIA ==================
+
+  /// Create Google Drive backup with separate media upload (WhatsApp approach)
+  /// Returns backup folder ID from Google Drive
+  Future<String?> createGoogleDriveBackup({
+    required String passphrase,
+    int? excludeMediaOlderThanDays,
+    GoogleDriveMediaProgressCallback? onMediaProgress,
+    bool Function()? shouldCancel, // Cancellation checker callback
+  }) async {
+    try {
+      debugPrint('[BackupService] Creating Google Drive backup with media...');
+
+      // 1. Create backup data (messages only, no embedded media)
+      debugPrint('[BackupService] Collecting messages...');
+      await BackupNotificationService.showProgressNotification('Collecting messages...', 12);
+
+      final backupData = await createLocalBackup(
+        includeMedia: false, // Don't embed media in backup file
+        excludeMediaOlderThanDays: excludeMediaOlderThanDays,
+      );
+
+      // 2. Encrypt backup
+      debugPrint('[BackupService] Encrypting backup...');
+      await BackupNotificationService.showProgressNotification('Encrypting backup...', 15);
+
+      final encryptedFile = await encryptBackup(backupData, passphrase);
+
+      // Check cancellation after encryption
+      if (shouldCancel?.call() == true) {
+        debugPrint('[BackupService] Backup cancelled after encryption');
+        await encryptedFile.delete(); // Clean up
+        throw Exception('Backup cancelled by user');
+      }
+
+      // 3. Get root backup folder
+      debugPrint('[BackupService] Preparing Google Drive...');
+      await BackupNotificationService.showProgressNotification('Preparing Google Drive...', 20);
+
+      final driveApi = await getDriveApi();
+      if (driveApi == null) {
+        throw Exception('Failed to authenticate with Google Drive');
+      }
+
+      // Check cancellation after authentication
+      if (shouldCancel?.call() == true) {
+        debugPrint('[BackupService] Backup cancelled after authentication');
+        await encryptedFile.delete(); // Clean up
+        throw Exception('Backup cancelled by user');
+      }
+
+      final rootFolderName = 'Zarq Messenger Backups';
+      final rootFolderId = await _findOrCreateFolder(driveApi, rootFolderName);
+      if (rootFolderId == null) {
+        throw Exception('Failed to get root backup folder');
+      }
+
+      // 4. Create a new backup-specific folder (Backup_timestamp)
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final backupFolderName = 'Backup_$timestamp';
+      final backupFolderMetadata = drive.File()
+        ..name = backupFolderName
+        ..mimeType = 'application/vnd.google-apps.folder'
+        ..parents = [rootFolderId];
+
+      final backupFolder = await driveApi.files.create(backupFolderMetadata);
+      final backupFolderId = backupFolder.id!;
+      debugPrint('[BackupService] Created backup folder: $backupFolderName (ID: $backupFolderId)');
+
+      // Check cancellation after folder creation
+      if (shouldCancel?.call() == true) {
+        debugPrint('[BackupService] Backup cancelled after folder creation');
+        await encryptedFile.delete(); // Clean up
+        // TODO: Optionally delete the empty folder
+        throw Exception('Backup cancelled by user');
+      }
+
+      // 5. Upload encrypted backup file inside backup folder
+      debugPrint('[BackupService] Uploading messages backup...');
+      await BackupNotificationService.showProgressNotification('Uploading messages backup...', 25);
+
+      final fileMetadata = drive.File()
+        ..name = 'backup.encrypted'
+        ..parents = [backupFolderId]
+        ..description = 'Zarq Messenger E2EE Backup';
+
+      final fileStream = encryptedFile.openRead();
+      final media = drive.Media(fileStream, encryptedFile.lengthSync());
+
+      final uploadedFile = await driveApi.files.create(
+        fileMetadata,
+        uploadMedia: media,
+      );
+
+      debugPrint('[BackupService] Backup file uploaded: ${uploadedFile.id}');
+
+      // Check cancellation after message backup upload
+      if (shouldCancel?.call() == true) {
+        debugPrint('[BackupService] Backup cancelled after message upload');
+        await encryptedFile.delete(); // Clean up
+        // TODO: Optionally delete the backup folder and uploaded file
+        throw Exception('Backup cancelled by user');
+      }
+
+      // 6. Starting media upload
+      debugPrint('[BackupService] Starting media upload...');
+      await BackupNotificationService.showProgressNotification('Preparing media upload...', 28);
+
+      // 6. Upload media files separately (inside backup folder)
+      final mediaService = GoogleDriveMediaService(this);
+      final messages = await _exportMessages();
+
+      final uploadedMedia = await mediaService.uploadMediaFiles(
+        driveApi: driveApi, // CRITICAL: Pass authenticated instance to avoid re-auth hang
+        backupFolderId: backupFolderId,
+        messages: messages,
+        excludeMediaOlderThanDays: excludeMediaOlderThanDays,
+        onProgress: onMediaProgress,
+        shouldCancel: shouldCancel, // Pass cancellation checker
+      );
+
+      debugPrint('[BackupService] Uploaded ${uploadedMedia.length} media files');
+
+      // Check cancellation after media upload
+      if (shouldCancel?.call() == true) {
+        debugPrint('[BackupService] Backup cancelled after media upload');
+        await encryptedFile.delete(); // Clean up
+        throw Exception('Backup cancelled by user');
+      }
+
+      // 7. Create and upload media manifest (inside backup folder)
+      if (uploadedMedia.isNotEmpty) {
+        await mediaService.uploadMediaManifest(
+          driveApi: driveApi, // CRITICAL: Pass authenticated instance to avoid re-auth hang
+          backupFolderId: backupFolderId,
+          uploadedFiles: uploadedMedia,
+        );
+        debugPrint('[BackupService] Media manifest uploaded');
+
+        // Check cancellation after manifest upload
+        if (shouldCancel?.call() == true) {
+          debugPrint('[BackupService] Backup cancelled after manifest upload');
+          await encryptedFile.delete(); // Clean up
+          throw Exception('Backup cancelled by user');
+        }
+      }
+
+      // Clean up temp encrypted file
+      await encryptedFile.delete();
+
+      // Final cancellation check before returning success
+      if (shouldCancel?.call() == true) {
+        debugPrint('[BackupService] Backup cancelled at final stage');
+        throw Exception('Backup cancelled by user');
+      }
+
+      debugPrint('[BackupService] ✅ Google Drive backup complete (folder: $backupFolderId, media: ${uploadedMedia.length} files)');
+      return backupFolderId;
+    } catch (e, stackTrace) {
+      debugPrint('[BackupService] Error creating Google Drive backup: $e');
+      debugPrint('[BackupService] Stack trace: $stackTrace');
+      rethrow;
+    }
+  }
+
+  /// Restore from Google Drive with media download
+  Future<void> restoreFromGoogleDrive({
+    required String backupFolderId,
+    required String passphrase,
+    GoogleDriveMediaProgressCallback? onMediaProgress,
+    bool Function()? shouldCancel, // Cancellation checker callback
+  }) async {
+    try {
+      debugPrint('[BackupService] Restoring from Google Drive with media...');
+      debugPrint('[BackupService] Cancellation callback provided: ${shouldCancel != null}');
+
+      final driveApi = await getDriveApi();
+      if (driveApi == null) {
+        throw Exception('Failed to authenticate with Google Drive');
+      }
+
+      // Check cancellation after authentication
+      if (shouldCancel?.call() == true) {
+        debugPrint('[BackupService] Restore cancelled after authentication');
+        throw Exception('Restore cancelled by user');
+      }
+
+      // 1. Find backup.encrypted file inside backup folder
+      final backupFileQuery = "'$backupFolderId' in parents and name='backup.encrypted' and trashed=false";
+      final backupFileList = await driveApi.files.list(
+        q: backupFileQuery,
+        spaces: 'drive',
+        $fields: 'files(id, name)',
+      );
+
+      if (backupFileList.files == null || backupFileList.files!.isEmpty) {
+        throw Exception('Backup file not found in folder');
+      }
+
+      final backupFileId = backupFileList.files!.first.id!;
+      debugPrint('[BackupService] Found backup file: $backupFileId');
+
+      // Check cancellation before download
+      if (shouldCancel?.call() == true) {
+        debugPrint('[BackupService] Restore cancelled before backup download');
+        throw Exception('Restore cancelled by user');
+      }
+
+      // 2. Download encrypted backup file
+      final encryptedFile = await downloadFromGoogleDrive(backupFileId);
+      if (encryptedFile == null) {
+        throw Exception('Failed to download backup from Google Drive');
+      }
+
+      // Update notification after download
+      await BackupNotificationService.showProgressNotification('Backup downloaded', 20);
+
+      // CRITICAL: Check cancellation after download
+      final cancelledAfterDownload = shouldCancel?.call() == true;
+      debugPrint('[BackupService] Cancellation check after download: $cancelledAfterDownload');
+      if (cancelledAfterDownload) {
+        debugPrint('[BackupService] ⚠️ Restore cancelled after backup download');
+        await encryptedFile.delete(); // Clean up
+        throw Exception('Restore cancelled by user');
+      }
+
+      // 3. Decrypt backup
+      debugPrint('[BackupService] Starting decryption...');
+      await BackupNotificationService.showProgressNotification('Decrypting backup...', 25);
+      final backupData = await decryptBackup(encryptedFile, passphrase);
+      debugPrint('[BackupService] Decryption complete');
+      await BackupNotificationService.showProgressNotification('Backup decrypted', 35);
+
+      // CRITICAL: Check cancellation after decryption
+      final cancelledAfterDecryption = shouldCancel?.call() == true;
+      debugPrint('[BackupService] Cancellation check after decryption: $cancelledAfterDecryption');
+      if (cancelledAfterDecryption) {
+        debugPrint('[BackupService] ⚠️ Restore cancelled after decryption');
+        await encryptedFile.delete(); // Clean up
+        throw Exception('Restore cancelled by user');
+      }
+
+      // 4. Restore messages and Signal Protocol state
+      debugPrint('[BackupService] Starting database restore...');
+      await BackupNotificationService.showProgressNotification('Restoring messages...', 40);
+      await restoreBackup(backupData);
+      debugPrint('[BackupService] Database restore complete');
+      await BackupNotificationService.showProgressNotification('Messages restored', 48);
+
+      // CRITICAL: Check cancellation after restore
+      final cancelledAfterRestore = shouldCancel?.call() == true;
+      debugPrint('[BackupService] Cancellation check after restore: $cancelledAfterRestore');
+      if (cancelledAfterRestore) {
+        debugPrint('[BackupService] ⚠️ Restore cancelled after message restore');
+        await encryptedFile.delete(); // Clean up
+        throw Exception('Restore cancelled by user');
+      }
+
+      // 5. Download media files from Google Drive (from same backup folder)
+      await BackupNotificationService.showProgressNotification('Checking for media files...', 50);
+      final mediaService = GoogleDriveMediaService(this);
+      final mediaMetadata = await mediaService.downloadMediaManifest(
+        driveApi: driveApi, // CRITICAL: Pass authenticated instance to avoid re-auth hang
+        backupFolderId: backupFolderId,
+      );
+
+      // Check cancellation after manifest download
+      if (shouldCancel?.call() == true) {
+        debugPrint('[BackupService] Restore cancelled after manifest download');
+        await encryptedFile.delete(); // Clean up
+        throw Exception('Restore cancelled by user');
+      }
+
+      if (mediaMetadata != null && mediaMetadata.isNotEmpty) {
+        debugPrint('[BackupService] Found ${mediaMetadata.length} media files to download');
+        await BackupNotificationService.showProgressNotification(
+          'Found ${mediaMetadata.length} media files',
+          52,
+        );
+
+        // Download all media files
+        await mediaService.downloadMediaFiles(
+          driveApi: driveApi, // CRITICAL: Pass authenticated instance to avoid re-auth hang
+          mediaMetadata: mediaMetadata,
+          onProgress: onMediaProgress,
+          shouldCancel: shouldCancel, // Pass cancellation checker
+        );
+
+        debugPrint('[BackupService] ✅ Downloaded ${mediaMetadata.length} media files');
+        await BackupNotificationService.showProgressNotification('All media downloaded', 95);
+      } else {
+        debugPrint('[BackupService] No media manifest found or empty');
+        await BackupNotificationService.showProgressNotification('No media files to download', 95);
+      }
+
+      // Clean up temp encrypted file
+      await encryptedFile.delete();
+
+      debugPrint('[BackupService] ✅ Google Drive restore complete');
+      await BackupNotificationService.showProgressNotification('Restore complete', 98);
+    } catch (e, stackTrace) {
+      debugPrint('[BackupService] Error restoring from Google Drive: $e');
+      debugPrint('[BackupService] Stack trace: $stackTrace');
+      rethrow;
     }
   }
 }

@@ -27,7 +27,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
   bool _isLoading = false;
   bool _isGoogleLoading = false;
   bool _isPasswordVisible = false;
-  final String backendBaseUrl = 'http://192.168.29.81:8080';
+  final String backendBaseUrl = 'https://api.zarqmessenger.com';
   String _passwordStrength = '';
   Color _passwordStrengthColor = Colors.transparent;
   final GoogleAuthService _googleAuthService = GoogleAuthService();
@@ -285,22 +285,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
       // print("[SignUp Screen] -> SUCCESS: Google Sign-In successful for ${user.email}");
 
-      // Check if email verification is enabled (Google emails are pre-verified)
-      if (ENABLE_EMAIL_VERIFICATION && !user.emailVerified) {
-        // print("[SignUp Screen] -> Email not verified (unlikely for Google)");
-        if (mounted) {
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute(
-              builder: (context) => EmailVerificationScreen(
-                user: user,
-                username: user.displayName ?? 'User',
-              ),
-            ),
-          );
-        }
-        return;
-      }
-
+      // Google users don't need email verification - already verified by Google
+      // Google automatically sets emailVerified = true, so we skip verification
       if (mounted) {
         // Navigate to AuthGate which will check if profile exists
         Navigator.of(context).pushReplacement(

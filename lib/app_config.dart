@@ -1,5 +1,11 @@
 // App Configuration
 // Modify these values as needed for development/production
 
-// TODO: Set to true when app is production ready
-const bool ENABLE_EMAIL_VERIFICATION = false;
+// Backend API URL
+class AppConfig {
+  static const String baseUrl = 'https://api.zarqmessenger.com';
+  static const String momentsBaseUrl = 'https://api.zarqmessenger.com/v1';
+}
+
+// Email verification enabled for production
+const bool ENABLE_EMAIL_VERIFICATION = true;

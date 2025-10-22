@@ -204,7 +204,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
     final token = await user.getIdToken();
 
     try {
-      final url = Uri.parse('http://192.168.29.81:8080/friends/list');
+      final url = Uri.parse('https://api.zarqmessenger.com/friends/list');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -382,7 +382,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
     final token = await user.getIdToken();
 
     try {
-      final url = Uri.parse('http://192.168.29.81:8080/conversations/create-group');
+      final url = Uri.parse('https://api.zarqmessenger.com/conversations/create-group');
       final response = await http.post(
         url,
         headers: {

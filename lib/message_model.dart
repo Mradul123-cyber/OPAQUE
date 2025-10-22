@@ -47,6 +47,14 @@ class Message {
   final String? mediaSenderUid;
   final int? mediaSenderDeviceId;
 
+  // Reply metadata
+  final int? replyToMessageId; // ID of the message being replied to
+  final String? repliedMessageContent; // Content of replied message (for display)
+  final String? repliedMessageSenderName; // Name of replied message sender
+
+  // Reactions
+  final List<dynamic>? reactions; // List of MessageReaction objects
+
   Message({
     required this.id,
     required this.conversationId,
@@ -75,6 +83,10 @@ class Message {
     this.mediaGroupId,
     this.mediaSenderUid,
     this.mediaSenderDeviceId,
+    this.replyToMessageId,
+    this.repliedMessageContent,
+    this.repliedMessageSenderName,
+    this.reactions,
   });
 
   factory Message.fromJson(Map<String, dynamic> json) {
@@ -158,6 +170,10 @@ class Message {
       mediaGroupId: json['media_group_id'] as String?,
       mediaSenderUid: json['media_sender_uid'] as String?,
       mediaSenderDeviceId: json['media_sender_device_id'] as int?,
+      replyToMessageId: json['reply_to_message_id'] as int?,
+      repliedMessageContent: json['replied_message_content'] as String?,
+      repliedMessageSenderName: json['replied_message_sender_name'] as String?,
+      reactions: json['reactions'] as List<dynamic>?,
     );
   }
 
@@ -192,6 +208,10 @@ class Message {
     if (mediaGroupId != null) json['media_group_id'] = mediaGroupId;
     if (mediaSenderUid != null) json['media_sender_uid'] = mediaSenderUid;
     if (mediaSenderDeviceId != null) json['media_sender_device_id'] = mediaSenderDeviceId;
+    if (replyToMessageId != null) json['reply_to_message_id'] = replyToMessageId;
+    if (repliedMessageContent != null) json['replied_message_content'] = repliedMessageContent;
+    if (repliedMessageSenderName != null) json['replied_message_sender_name'] = repliedMessageSenderName;
+    if (reactions != null) json['reactions'] = reactions;
 
     return json;
   }
@@ -224,6 +244,10 @@ class Message {
     String? mediaGroupId,
     String? mediaSenderUid,
     int? mediaSenderDeviceId,
+    int? replyToMessageId,
+    String? repliedMessageContent,
+    String? repliedMessageSenderName,
+    List<dynamic>? reactions,
   }) {
     return Message(
       id: id ?? this.id,
@@ -253,6 +277,10 @@ class Message {
       mediaGroupId: mediaGroupId ?? this.mediaGroupId,
       mediaSenderUid: mediaSenderUid ?? this.mediaSenderUid,
       mediaSenderDeviceId: mediaSenderDeviceId ?? this.mediaSenderDeviceId,
+      replyToMessageId: replyToMessageId ?? this.replyToMessageId,
+      repliedMessageContent: repliedMessageContent ?? this.repliedMessageContent,
+      repliedMessageSenderName: repliedMessageSenderName ?? this.repliedMessageSenderName,
+      reactions: reactions ?? this.reactions,
     );
   }
 

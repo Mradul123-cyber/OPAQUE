@@ -18,6 +18,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
 
     <!-- Storage permissions for backup/restore -->
@@ -25,7 +26,8 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+        android:maxSdkVersion="32"
+        tools:replace="android:maxSdkVersion" />
 
     <!-- For Android 13+ (API 33+) including Android 15 -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
@@ -36,9 +38,20 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
+    <!-- Battery optimization exemption for reliable auto-backup -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- AlarmManager permissions for exact-time auto-backup -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+
+    <!-- Explicitly remove AD_ID permission added by Firebase Analytics -->
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove"/>
+
     <application
         android:usesCleartextTraffic="true"
-        android:label="zarq_messenger"
+        android:label="Zarq Messenger"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
@@ -104,9 +117,36 @@
             android:name=".SentMessageReceiver"
             android:exported="false">
             <intent-filter>
-                <action android:name="com.example.zarq_messenger.MESSAGE_SENT" />
+                <action android:name="com.zarq.messenger.MESSAGE_SENT" />
             </intent-filter>
         </receiver>
+
+        <!-- Backup Cancel Receiver -->
+        <receiver
+            android:name=".BackupCancelReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.zarq.messenger.CANCEL_BACKUP" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Auto-Backup Alarm Receiver (for exact-time backups) -->
+        <receiver
+            android:name=".AutoBackupAlarmReceiver"
+            android:exported="false"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="com.zarq.messenger.TRIGGER_AUTO_BACKUP" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Auto-Backup Foreground Service (runs in foreground to bypass background restrictions) -->
+        <service
+            android:name=".AutoBackupService"
+            android:exported="false"
+            android:enabled="true"
+            android:foregroundServiceType="dataSync">
+        </service>
 
     </application>
     <!-- Required to query activities that can process text, see:
@@ -119,5 +159,24 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!-- Required for speech recognition on Android 11+ -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+
+        <!-- UPI Intent queries for Razorpay - Required for Android 11+ (API 30+) -->
+        <!-- This allows the app to detect installed UPI apps -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="upi" />
+        </intent>
+
+        <!-- Query specific UPI apps for better detection -->
+        <package android:name="com.google.android.apps.nbu.paisa.user" /> <!-- Google Pay -->
+        <package android:name="net.one97.paytm" /> <!-- Paytm -->
+        <package android:name="com.phonepe.app" /> <!-- PhonePe -->
+        <package android:name="in.org.npci.upiapp" /> <!-- BHIM -->
+        <package android:name="com.amazon.mobile.shopping" /> <!-- Amazon Pay -->
+        <package android:name="com.dreamplug.androidapp" /> <!-- CRED -->
     </queries>
 </manifest>

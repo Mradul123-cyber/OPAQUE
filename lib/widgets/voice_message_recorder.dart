@@ -57,12 +57,12 @@ class _VoiceMessageRecorderState extends State<VoiceMessageRecorder> {
       final tempDir = await getTemporaryDirectory();
       _audioPath = path.join(tempDir.path, 'voice_${DateTime.now().millisecondsSinceEpoch}.aac');
 
-      // Start recording
+      // Start recording (16kHz for Vosk transcription compatibility)
       await _audioRecorder.startRecorder(
         toFile: _audioPath,
         codec: Codec.aacADTS,
         bitRate: 64000,
-        sampleRate: 44100,
+        sampleRate: 16000,  // Match Vosk's expected sample rate
       );
 
       setState(() {
@@ -91,21 +91,22 @@ class _VoiceMessageRecorderState extends State<VoiceMessageRecorder> {
     try {
       _timer?.cancel();
 
-      final path = await _audioRecorder.stopRecorder();
+      final recordedPath = await _audioRecorder.stopRecorder();
 
       setState(() {
         _isRecording = false;
       });
 
-      if (path != null) {
-        // print('[VoiceRecorder] Recording saved: $path (${_recordDuration}s)');
-        widget.onRecordingComplete(path, _recordDuration);
+      if (recordedPath != null) {
+        print('[VoiceRecorder] Recording saved: $recordedPath (${_recordDuration}s)');
+
+        widget.onRecordingComplete(recordedPath, _recordDuration);
       } else {
-        // print('[VoiceRecorder] Recording failed - no path');
+        print('[VoiceRecorder] Recording failed - no path');
         widget.onCancel();
       }
     } catch (e) {
-      // print('[VoiceRecorder] Error stopping recording: $e');
+      print('[VoiceRecorder] Error stopping recording: $e');
       widget.onCancel();
     }
   }
@@ -169,7 +170,7 @@ class _VoiceMessageRecorderState extends State<VoiceMessageRecorder> {
 
           const SizedBox(width: 12),
 
-          // Duration
+          // Duration (removed live transcription display)
           Expanded(
             child: Text(
               _formatDuration(_recordDuration),

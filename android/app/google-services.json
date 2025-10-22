@@ -44,41 +44,20 @@
     },
     {
       "client_info": {
-        "mobilesdk_app_id": "1:463692732659:android:d41c5adad5b876d03cff86",
+        "mobilesdk_app_id": "1:463692732659:android:35d62248982fe8ad3cff86",
         "android_client_info": {
-          "package_name": "com.example.zarq_messenger.zarq_messenger_new"
+          "package_name": "com.zarq.messenger"
         }
       },
       "oauth_client": [
         {
-          "client_id": "463692732659-ubbqoobj13731lf6pav6ib6gem81bj88.apps.googleusercontent.com",
-          "client_type": 3
-        }
-      ],
-      "api_key": [
-        {
-          "current_key": "AIzaSyDysX-_VI4BJjviLhDtouZX10mJIiXOQ7c"
-        }
-      ],
-      "services": {
-        "appinvite_service": {
-          "other_platform_oauth_client": [
-            {
-              "client_id": "463692732659-ubbqoobj13731lf6pav6ib6gem81bj88.apps.googleusercontent.com",
-              "client_type": 3
-            }
-          ]
-        }
-      }
-    },
-    {
-      "client_info": {
-        "mobilesdk_app_id": "1:463692732659:android:4ba468a0fdbb200b3cff86",
-        "android_client_info": {
-          "package_name": "com.example.zarq_messenger_frontend"
-        }
-      },
-      "oauth_client": [
+          "client_id": "463692732659-2hhktm0rbitt594886giob0pmsli6aa4.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.zarq.messenger",
+            "certificate_hash": "bf7567fa9404a7ec0658ad0d31da6d580deab9d8"
+          }
+        },
         {
           "client_id": "463692732659-ubbqoobj13731lf6pav6ib6gem81bj88.apps.googleusercontent.com",
           "client_type": 3

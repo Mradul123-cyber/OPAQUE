@@ -17,6 +17,7 @@ import 'package:zarq_messenger/services/user_settings_provider.dart';
 import 'package:zarq_messenger/services/backup_service.dart';
 import 'package:zarq_messenger/services/backup_settings_provider.dart';
 import 'package:zarq_messenger/services/auto_backup_manager.dart';
+import 'package:zarq_messenger/services/backup_notification_service.dart';
 import 'package:path/path.dart' as path;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:restart_app/restart_app.dart';
@@ -94,40 +95,203 @@ void main() async {
   );
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
   static final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
   @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  // IMPORTANT: Use a SEPARATE channel for Kotlin->Flutter triggers
+  // to avoid conflicts with the bidirectional com.zarq/backup channel
+  static const MethodChannel _backupTriggerChannel = MethodChannel('com.zarq/backup_trigger');
+
+  @override
+  void initState() {
+    super.initState();
+    _setupBackupHandler();
+  }
+
+  void _setupBackupHandler() {
+    debugPrint('🔧 [MyApp] Setting up PERSISTENT backup MethodChannel handler...');
+    debugPrint('🔧 [MyApp] Channel: com.zarq/backup_trigger (one-way Kotlin->Flutter)');
+    debugPrint('🔧 [MyApp] Handler address: ${_backupTriggerChannel.hashCode}');
+    _backupTriggerChannel.setMethodCallHandler((call) async {
+      debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      debugPrint('📞 [MyApp] ⚡ HANDLER TRIGGERED! Method: ${call.method}');
+      debugPrint('📞 [MyApp] Timestamp: ${DateTime.now()}');
+      debugPrint('📞 [MyApp] Thread: ${Zone.current}');
+      debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+      if (call.method == 'executeAutoBackupNow') {
+        debugPrint('');
+        debugPrint('╔════════════════════════════════════════════════════════════╗');
+        debugPrint('║ 🔥 FLUTTER RECEIVED AUTO-BACKUP TRIGGER!                  ║');
+        debugPrint('╚════════════════════════════════════════════════════════════╝');
+        debugPrint('');
+
+        try {
+          debugPrint('[MyApp] Step 1: Creating BackupService instance...');
+          final backupService = BackupService();
+
+          debugPrint('[MyApp] Step 2: Loading auto-backup settings...');
+          final settings = await backupService.getAutoBackupSettings();
+          debugPrint('[MyApp] Settings loaded - Enabled: ${settings.enabled}');
+
+          if (settings.enabled) {
+            // Show initial progress notification
+            await BackupNotificationService.showProgressNotification('Starting auto-backup...', 0);
+
+            debugPrint('[MyApp] Step 3: Creating local backup...');
+
+            // Create local backup (WhatsApp approach: Media stays on device, only messages + keys)
+            await BackupNotificationService.showProgressNotification('Collecting messages...', 20);
+            final backupData = await backupService.createLocalBackup(
+              includeMedia: false, // Consistent with manual backup - media stays on device
+            );
+            debugPrint('[MyApp] Step 4: Backup data created');
+
+            // Encrypt the backup
+            debugPrint('[MyApp] Step 5: Encrypting backup...');
+            await BackupNotificationService.showProgressNotification('Encrypting backup...', 50);
+            final encryptedFile = await backupService.encryptBackup(
+              backupData,
+              settings.lastBackupPassphrase ?? '',
+            );
+            debugPrint('[MyApp] Step 6: Backup encrypted');
+
+            // Save to Downloads folder (like manual backup)
+            debugPrint('[MyApp] Step 7: Saving to Downloads folder...');
+            await BackupNotificationService.showProgressNotification('Saving to local storage...', 70);
+            final downloadsDir = Directory('/storage/emulated/0/Download/Zarq_Backups');
+            if (!await downloadsDir.exists()) {
+              await downloadsDir.create(recursive: true);
+              debugPrint('[MyApp] Created Zarq_Backups directory');
+            }
+
+            // Use "auto_backup_" prefix to differentiate from manual backups
+            final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+            final backupPath = '${downloadsDir.path}/auto_backup_$timestamp.encrypted';
+            await encryptedFile.copy(backupPath);
+            debugPrint('[MyApp] Backup copied to: $backupPath');
+
+            // Clean up old auto-backups (keep only 2 most recent)
+            debugPrint('[MyApp] Step 8: Cleaning up old auto-backups...');
+            await _cleanupOldAutoBackups(downloadsDir);
+
+            // Update last backup time
+            debugPrint('[MyApp] Step 9: Updating last backup time...');
+            await BackupNotificationService.showProgressNotification('Finalizing...', 95);
+            await backupService.updateLastBackupTime(DateTime.now());
+
+            debugPrint('');
+            debugPrint('╔════════════════════════════════════════════════════════════╗');
+            debugPrint('║ ✅ AUTO-BACKUP COMPLETED SUCCESSFULLY!                    ║');
+            debugPrint('╠════════════════════════════════════════════════════════════╣');
+            debugPrint('║ File: $backupPath');
+            debugPrint('╚════════════════════════════════════════════════════════════╝');
+            debugPrint('');
+
+            // Show success notification
+            await BackupNotificationService.showSuccessNotification('Auto');
+          } else {
+            debugPrint('[MyApp] ⚠️ Auto-backup is disabled in settings, skipping');
+          }
+        } catch (e, stackTrace) {
+          debugPrint('');
+          debugPrint('╔════════════════════════════════════════════════════════════╗');
+          debugPrint('║ ❌ AUTO-BACKUP FAILED!                                    ║');
+          debugPrint('╠════════════════════════════════════════════════════════════╣');
+          debugPrint('║ Error: $e');
+          debugPrint('║ Stack: $stackTrace');
+          debugPrint('╚════════════════════════════════════════════════════════════╝');
+          debugPrint('');
+
+          // Show failure notification
+          await BackupNotificationService.showFailureNotification(
+            'Auto',
+            e.toString().length > 100 ? 'Backup error occurred' : e.toString(),
+          );
+        }
+      } else {
+        debugPrint('[MyApp] ⚠️ Received unknown method: ${call.method}');
+      }
+
+      return null;
+    });
+    debugPrint('✅ [MyApp] Backup MethodChannel handler set up complete');
+  }
+
+  /// Clean up old auto-backups, keeping only the 2 most recent
+  /// Manual backups (filename starts with "backup_") are NOT deleted
+  Future<void> _cleanupOldAutoBackups(Directory backupDir) async {
+    try {
+      debugPrint('[MyApp] Cleaning up old auto-backups...');
+
+      // List all files in backup directory
+      final files = await backupDir.list().toList();
+
+      // Filter only auto-backups (filename starts with "auto_backup_")
+      final autoBackups = files
+          .where((f) => f is File && f.path.contains('auto_backup_'))
+          .cast<File>()
+          .toList();
+
+      debugPrint('[MyApp] Found ${autoBackups.length} auto-backup files');
+
+      // If 2 or fewer auto-backups exist, don't delete anything
+      if (autoBackups.length <= 2) {
+        debugPrint('[MyApp] Only ${autoBackups.length} auto-backups, no cleanup needed');
+        return;
+      }
+
+      // Sort by modification time (newest first)
+      autoBackups.sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
+
+      // Keep only the 2 most recent, delete the rest
+      final backupsToDelete = autoBackups.sublist(2);
+      debugPrint('[MyApp] Deleting ${backupsToDelete.length} old auto-backups (keeping 2 most recent)');
+
+      for (final backup in backupsToDelete) {
+        try {
+          await backup.delete();
+          debugPrint('[MyApp] ✅ Deleted old auto-backup: ${backup.path}');
+        } catch (e) {
+          debugPrint('[MyApp] ❌ Failed to delete ${backup.path}: $e');
+        }
+      }
+
+      debugPrint('[MyApp] Auto-backup cleanup complete');
+    } catch (e) {
+      debugPrint('[MyApp] Error during cleanup: $e');
+      // Don't rethrow - cleanup failure shouldn't stop backup creation
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     // Initialize navigation handler for Kotlin communication
-    NavigationHandler.initialize(navigatorKey);
+    NavigationHandler.initialize(MyApp.navigatorKey);
 
     return MaterialApp(
       title: 'Zarq Messenger',
       theme: zarqDarkTheme,
-      navigatorKey: navigatorKey,
+      navigatorKey: MyApp.navigatorKey,
       home: const AuthGate(),
       builder: (context, child) {
         return Consumer<GlobalCallManager>(
           builder: (context, callManager, _) {
             // print('[Main] Builder - isInCall: ${callManager.isInCall}');
-            return WillPopScope(
-              onWillPop: () async {
-                // print('[Main] 🔙 WillPopScope triggered');
-                // print('[Main]   - isInCall: ${callManager.isInCall}');
-                // print('[Main]   - isMinimized: ${GlobalCallOverlay.isMinimized}');
-
-                // Priority: If call is active AND not minimized, minimize it first
-                if (callManager.isInCall && !GlobalCallOverlay.isMinimized) {
+            return PopScope(
+              canPop: !callManager.isInCall || GlobalCallOverlay.isMinimized,
+              onPopInvokedWithResult: (didPop, result) {
+                // print('[Main] 🔙 PopScope triggered - didPop: $didPop');
+                if (!didPop && callManager.isInCall && !GlobalCallOverlay.isMinimized) {
                   // print('[Main] 🔙 Call is maximized - minimizing overlay');
                   GlobalCallOverlay.minimize();
-                  return false; // Don't pop - just minimize
                 }
-
-                // If call is minimized or no call - allow normal navigation
-                // print('[Main] ✅ Allowing navigation');
-                return true; // Allow pop
               },
               child: Stack(
                 children: [
@@ -175,7 +339,17 @@ class AuthGate extends StatelessWidget {
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return Scaffold(
+            backgroundColor: const Color(0xFF0a1128),
+            body: Center(
+              child: Image.asset(
+                'assets/zarq_logo_circle.png',
+                width: 200,
+                height: 200,
+                fit: BoxFit.contain,
+              ),
+            ),
+          );
         }
 
         if (snapshot.hasData) {
@@ -206,6 +380,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   // Progress tracking
   final ValueNotifier<double> _initProgress = ValueNotifier<double>(0.0);
   final ValueNotifier<String> _initStep = ValueNotifier<String>('Starting...');
+  final ValueNotifier<bool> _showProgressBar = ValueNotifier<bool>(true);
 
   @override
   void initState() {
@@ -221,6 +396,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _initProgress.dispose();
     _initStep.dispose();
+    _showProgressBar.dispose();
     super.dispose();
   }
 
@@ -448,6 +624,13 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       if (alreadyInitialized) {
         // print("Fast startup for returning user");
 
+        // Check if device needs re-registration (after restore)
+        final prefs = await SharedPreferences.getInstance();
+        final needsReregistration = prefs.getBool('needs_device_reregistration') ?? false;
+
+        // Hide progress bar for normal fast startup, show for restore flow
+        _showProgressBar.value = needsReregistration;
+
         // Run these in PARALLEL
         _updateProgress(0.1, 'Starting up...');
         await Future.wait([
@@ -462,11 +645,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
         ]);
 
         _updateProgress(0.3, 'Verifying session...');
-        await Future.delayed(const Duration(milliseconds: 300));
-
-        // Check if device needs re-registration (after restore)
-        final prefs = await SharedPreferences.getInstance();
-        final needsReregistration = prefs.getBool('needs_device_reregistration') ?? false;
 
         if (needsReregistration) {
           // print("[AuthWrapper] 🔄 Device needs re-registration after restore");
@@ -517,23 +695,18 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
         } else {
           // Normal fast startup without re-registration
           _updateProgress(0.5, 'Loading encryption keys...');
-          await Future.delayed(const Duration(milliseconds: 400));
 
           _updateProgress(0.7, 'Preparing secure connection...');
-          await Future.delayed(const Duration(milliseconds: 400));
         }
 
         _updateProgress(0.85, 'Loading conversations...');
-        await Future.delayed(const Duration(milliseconds: 300));
 
         // Only these need to be sequential (depend on WebSocket)
         await _markUndeliveredMessagesAsDelivered(websocketService, dbService);
 
         _updateProgress(0.95, 'Finalizing...');
-        await Future.delayed(const Duration(milliseconds: 300));
 
         _updateProgress(1.0, 'Ready!');
-        await Future.delayed(const Duration(milliseconds: 200));
 
         // print("Fast initialization done");
         return true;
@@ -644,7 +817,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
         // print("[AuthWrapper] Using device ID: $actualDeviceId");
 
         final token = await user.getIdToken();
-        final url = Uri.parse('http://192.168.29.81:8080/v1/fcm/token');
+        final url = Uri.parse('https://api.zarqmessenger.com/v1/fcm/token');
 
         final response = await http.post(
           url,
@@ -687,7 +860,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
   Future<bool> _checkIfProfileExists() async {
     final token = await widget.user.getIdToken(true);
-    final url = Uri.parse('http://192.168.29.81:8080/profiles/me');
+    final url = Uri.parse('https://api.zarqmessenger.com/profiles/me');
     final response = await http.get(url, headers: {'Authorization': 'Bearer $token'});
     return response.statusCode == 200;
   }
@@ -835,93 +1008,70 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return Scaffold(
+            backgroundColor: const Color(0xFF0a1128),
             body: Center(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 40.0),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    // App Name
-                    const Text(
-                      "Zarq",
-                      style: TextStyle(
-                        fontSize: 48,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.cyanAccent,
-                        letterSpacing: 2,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    // Tagline/Quote
-                    const Text(
-                      "Privacy First, Always Encrypted",
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w400,
-                        color: Colors.white70,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 50),
-                    const Text(
-                      "Initializing Secure Messaging",
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 30),
-                    ValueListenableBuilder<double>(
-                      valueListenable: _initProgress,
-                      builder: (context, progress, child) {
-                        return Column(
-                          children: [
-                            Stack(
-                              alignment: Alignment.center,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Zarq Logo circular
+                  Image.asset(
+                    'assets/zarq_logo_circle.png',
+                    width: 200,
+                    height: 200,
+                    fit: BoxFit.contain,
+                  ),
+                  const SizedBox(height: 60),
+                  // Loading bar - conditionally shown
+                  ValueListenableBuilder<bool>(
+                    valueListenable: _showProgressBar,
+                    builder: (context, showProgress, child) {
+                      if (!showProgress) {
+                        return const SizedBox.shrink();
+                      }
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 60.0),
+                        child: ValueListenableBuilder<double>(
+                          valueListenable: _initProgress,
+                          builder: (context, progress, child) {
+                            return Column(
                               children: [
-                                SizedBox(
-                                  width: 120,
-                                  height: 120,
-                                  child: CircularProgressIndicator(
-                                    value: progress,
-                                    strokeWidth: 8,
-                                    backgroundColor: Colors.grey.shade800,
-                                    valueColor: const AlwaysStoppedAnimation<Color>(
-                                      Colors.cyanAccent,
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(10),
+                                  child: SizedBox(
+                                    height: 8,
+                                    width: double.infinity,
+                                    child: LinearProgressIndicator(
+                                      value: progress,
+                                      backgroundColor: Colors.grey.shade800,
+                                      valueColor: const AlwaysStoppedAnimation<Color>(
+                                        Color(0xFF00D9FF),
+                                      ),
                                     ),
                                   ),
                                 ),
-                                Text(
-                                  '${(progress * 100).toInt()}%',
-                                  style: const TextStyle(
-                                    fontSize: 28,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
-                                  ),
+                                const SizedBox(height: 16),
+                                ValueListenableBuilder<String>(
+                                  valueListenable: _initStep,
+                                  builder: (context, step, child) {
+                                    return Text(
+                                      step,
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        color: Colors.white70,
+                                        fontWeight: FontWeight.w400,
+                                      ),
+                                    );
+                                  },
                                 ),
                               ],
-                            ),
-                            const SizedBox(height: 24),
-                            ValueListenableBuilder<String>(
-                              valueListenable: _initStep,
-                              builder: (context, step, child) {
-                                return Text(
-                                  step,
-                                  textAlign: TextAlign.center,
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    color: Colors.white70,
-                                  ),
-                                );
-                              },
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-                  ],
-                ),
+                            );
+                          },
+                        ),
+                      );
+                    },
+                  ),
+                ],
               ),
             ),
           );
@@ -1558,3 +1708,4 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
     return const HomeScreen();
   }
 }
+

@@ -1,0 +1,89 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+/// Secure Storage Service - Wrapper for flutter_secure_storage
+/// Uses Android Keystore (Android) and Keychain (iOS) for secure storage
+class SecureStorageService {
+  // Singleton instance
+  static final SecureStorageService _instance = SecureStorageService._internal();
+  factory SecureStorageService() => _instance;
+  SecureStorageService._internal();
+
+  // Flutter secure storage instance with Android-specific options
+  final _storage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(
+      encryptedSharedPreferences: true,
+      // This uses Android Keystore under the hood
+      resetOnError: true, // Reset if corrupted
+    ),
+    iOptions: IOSOptions(
+      accessibility: KeychainAccessibility.first_unlock,
+    ),
+  );
+
+  // Storage keys
+  static const String _keyAutoBackupPassphrase = 'auto_backup_passphrase';
+
+  /// Save auto-backup passphrase securely
+  Future<void> saveAutoBackupPassphrase(String passphrase) async {
+    try {
+      await _storage.write(
+        key: _keyAutoBackupPassphrase,
+        value: passphrase,
+      );
+      debugPrint('[SecureStorage] Auto-backup passphrase saved securely');
+    } catch (e) {
+      debugPrint('[SecureStorage] Error saving passphrase: $e');
+      rethrow;
+    }
+  }
+
+  /// Get auto-backup passphrase
+  Future<String?> getAutoBackupPassphrase() async {
+    try {
+      final passphrase = await _storage.read(key: _keyAutoBackupPassphrase);
+      if (passphrase != null) {
+        debugPrint('[SecureStorage] Auto-backup passphrase retrieved');
+      } else {
+        debugPrint('[SecureStorage] No passphrase found');
+      }
+      return passphrase;
+    } catch (e) {
+      debugPrint('[SecureStorage] Error reading passphrase: $e');
+      return null;
+    }
+  }
+
+  /// Delete auto-backup passphrase
+  Future<void> deleteAutoBackupPassphrase() async {
+    try {
+      await _storage.delete(key: _keyAutoBackupPassphrase);
+      debugPrint('[SecureStorage] Auto-backup passphrase deleted');
+    } catch (e) {
+      debugPrint('[SecureStorage] Error deleting passphrase: $e');
+      rethrow;
+    }
+  }
+
+  /// Check if auto-backup passphrase exists
+  Future<bool> hasAutoBackupPassphrase() async {
+    try {
+      final passphrase = await _storage.read(key: _keyAutoBackupPassphrase);
+      return passphrase != null && passphrase.isNotEmpty;
+    } catch (e) {
+      debugPrint('[SecureStorage] Error checking passphrase: $e');
+      return false;
+    }
+  }
+
+  /// Delete all secure storage data (use with caution!)
+  Future<void> deleteAll() async {
+    try {
+      await _storage.deleteAll();
+      debugPrint('[SecureStorage] All secure data deleted');
+    } catch (e) {
+      debugPrint('[SecureStorage] Error deleting all data: $e');
+      rethrow;
+    }
+  }
+}

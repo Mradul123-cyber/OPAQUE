@@ -43,3 +43,10 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Keystore files (NEVER commit these!)
+*.jks
+*.keystore
+/android/key.properties
+/android/app/*.jks
+/android/app/*.keystore

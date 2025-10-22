@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // 🔧 FIX: For getting current user UID
 import 'webrtc_service.dart';
 import 'SignalService.dart';
 import 'system_overlay_service.dart';
+import 'device_service.dart'; // 🔧 FIX: Import DeviceService for getting recipient device ID
 
 class CallInfo {
   final String callerUid;
@@ -209,8 +211,14 @@ class GlobalCallManager with ChangeNotifier {
 
       // Setup callbacks
       _webrtcService!.onSendSignal = (signalData) async {
+        // 🔧 FIX: Add sender's device ID so receiver can decrypt
+        final myDeviceId = await SignalService.getDeviceId();
+        final myUid = await _getCurrentUserUid();
+
         signalData['recipient_uid'] = recipientUid;
         signalData['conversation_id'] = conversationId;
+        signalData['sender_uid'] = myUid; // 🔧 FIX: Add sender UID
+        signalData['sender_device_id'] = myDeviceId; // 🔧 FIX: Add sender device ID
 
         // Encrypt SDP and ICE candidates using Signal Protocol
         await _encryptCallSignal(signalData, recipientUid);
@@ -265,8 +273,14 @@ class GlobalCallManager with ChangeNotifier {
 
       // Setup callbacks
       _webrtcService!.onSendSignal = (signalData) async {
+        // 🔧 FIX: Add sender's device ID so receiver can decrypt
+        final myDeviceId = await SignalService.getDeviceId();
+        final myUid = await _getCurrentUserUid();
+
         signalData['recipient_uid'] = _activeCall!.callerUid;
         signalData['conversation_id'] = _activeCall!.conversationId;
+        signalData['sender_uid'] = myUid; // 🔧 FIX: Add sender UID
+        signalData['sender_device_id'] = myDeviceId; // 🔧 FIX: Add sender device ID
 
         // Encrypt SDP and ICE candidates using Signal Protocol
         await _encryptCallSignal(signalData, _activeCall!.callerUid);
@@ -349,17 +363,18 @@ class GlobalCallManager with ChangeNotifier {
     if (_webrtcService != null) {
       String decryptedSdp = sdp;
 
+      // 🧪 TESTING: Decryption DISABLED
       // Decrypt SDP if encrypted
-      if (encrypted == true && senderUid != null) {
-        // print('[GlobalCallManager] 🔓 Decrypting call_answer SDP...');
-        final decrypted = await _decryptCallSignal(sdp, senderUid, senderDeviceId);
-        if (decrypted != null) {
-          decryptedSdp = decrypted;
-          // print('[GlobalCallManager] ✅ Successfully decrypted call_answer SDP');
-        } else {
-          // print('[GlobalCallManager] ⚠️ Failed to decrypt SDP, using original');
-        }
-      }
+      // if (encrypted == true && senderUid != null) {
+      //   // print('[GlobalCallManager] 🔓 Decrypting call_answer SDP...');
+      //   final decrypted = await _decryptCallSignal(sdp, senderUid, senderDeviceId);
+      //   if (decrypted != null) {
+      //     decryptedSdp = decrypted;
+      //     // print('[GlobalCallManager] ✅ Successfully decrypted call_answer SDP');
+      //   } else {
+      //     // print('[GlobalCallManager] ⚠️ Failed to decrypt SDP, using original');
+      //   }
+      // }
 
       await _webrtcService!.handleAnswer(decryptedSdp);
 
@@ -384,23 +399,25 @@ class GlobalCallManager with ChangeNotifier {
 
   Future<void> handleIceCandidate(Map<String, dynamic> candidateData) async {
     if (_webrtcService != null) {
+      // 🧪 TESTING: Decryption DISABLED
       // Decrypt ICE candidate if encrypted
-      if (candidateData['encrypted'] == true) {
-        final encryptedCandidate = candidateData['candidate'] as String?;
-        final senderUid = candidateData['sender_uid'] as String?;
-        final senderDeviceId = candidateData['sender_device_id'] as int?;
+      // if (candidateData['encrypted'] == true) {
+      //   final encryptedCandidate = candidateData['candidate'] as String?;
+      //   final senderUid = candidateData['sender_uid'] as String?;
+      //   final senderDeviceId = candidateData['sender_device_id'] as int?;
 
-        if (encryptedCandidate != null && senderUid != null) {
-          // print('[GlobalCallManager] 🔓 Decrypting ICE candidate...');
-          final decrypted = await _decryptCallSignal(encryptedCandidate, senderUid, senderDeviceId);
-          if (decrypted != null) {
-            candidateData['candidate'] = decrypted;
-            // print('[GlobalCallManager] ✅ Successfully decrypted ICE candidate');
-          } else {
-            // print('[GlobalCallManager] ⚠️ Failed to decrypt ICE candidate');
-          }
-        }
-      }
+      //   if (encryptedCandidate != null && senderUid != null) {
+      //     print('[GlobalCallManager] 🔓 Decrypting ICE candidate...');
+      //     final decrypted = await _decryptCallSignal(encryptedCandidate, senderUid, senderDeviceId);
+      //     if (decrypted != null) {
+      //       candidateData['candidate'] = decrypted;
+      //       print('[GlobalCallManager] ✅ Successfully decrypted ICE candidate');
+      //     } else {
+      //       print('[GlobalCallManager] ❌ FAILED to decrypt ICE candidate - will be dropped!');
+      //       return; // Don't pass failed decrypt to WebRTC
+      //     }
+      //   }
+      // }
 
       await _webrtcService!.handleIceCandidate(candidateData);
     }
@@ -518,47 +535,70 @@ class GlobalCallManager with ChangeNotifier {
 
   bool get isCallConnected => _webrtcService?.callState == CallState.connected;
 
+  // ==================== Helper Methods ====================
+
+  /// Get current user's UID from Firebase Auth
+  Future<String?> _getCurrentUserUid() async {
+    final user = FirebaseAuth.instance.currentUser;
+    return user?.uid;
+  }
+
   // ==================== Signal Protocol Encryption ====================
 
   /// Encrypt call signaling data (SDP/ICE) using Signal Protocol
   Future<void> _encryptCallSignal(Map<String, dynamic> signalData, String recipientUid) async {
-    try {
-      final type = signalData['type'] as String?;
+    // 🧪 TESTING: Signal Protocol encryption DISABLED for WebRTC signaling
+    // Testing if encryption latency is causing ICE timing issues
+    print('[GlobalCallManager] 🧪 TESTING MODE: Skipping encryption for ${signalData['type']}');
+    return;
 
-      if (type == 'call_offer' || type == 'call_answer') {
-        // Encrypt SDP
-        final sdp = signalData['sdp'] as String?;
-        if (sdp != null) {
-          final encryptedSdp = await SignalService.encryptMessage(
-            recipientUid: recipientUid,
-            plaintext: sdp,
-          );
-          if (encryptedSdp != null) {
-            signalData['sdp'] = encryptedSdp;
-            signalData['encrypted'] = true;
-            // print('[GlobalCallManager] 🔒 Encrypted SDP for $type');
-          } else {
-            // print('[GlobalCallManager] ⚠️ Failed to encrypt SDP, sending unencrypted');
-          }
-        }
-      } else if (type == 'ice_candidate') {
-        // Encrypt ICE candidate
-        final candidate = signalData['candidate'] as String?;
-        if (candidate != null) {
-          final encryptedCandidate = await SignalService.encryptMessage(
-            recipientUid: recipientUid,
-            plaintext: candidate,
-          );
-          if (encryptedCandidate != null) {
-            signalData['candidate'] = encryptedCandidate;
-            signalData['encrypted'] = true;
-            // print('[GlobalCallManager] 🔒 Encrypted ICE candidate');
-          }
-        }
-      }
-    } catch (e) {
-      // print('[GlobalCallManager] ❌ Encryption error: $e - sending unencrypted');
-    }
+    // 🔧 ORIGINAL CODE (temporarily disabled):
+    // try {
+    //   final type = signalData['type'] as String?;
+
+    //   // 🔧 FIX: Get recipient's ACTUAL device ID (not fallback to sender's)
+    //   final recipientDeviceId = await DeviceService.getActiveDeviceId(recipientUid);
+    //   if (recipientDeviceId == null) {
+    //     print('[GlobalCallManager] ⚠️ Could not get recipient device ID - skipping encryption');
+    //     return;
+    //   }
+
+    //   if (type == 'call_offer' || type == 'call_answer') {
+    //     // Encrypt SDP
+    //     final sdp = signalData['sdp'] as String?;
+    //     if (sdp != null) {
+    //       final encryptedSdp = await SignalService.encryptMessage(
+    //         recipientUid: recipientUid,
+    //         plaintext: sdp,
+    //         deviceId: recipientDeviceId, // 🔧 FIX: Pass recipient's device ID
+    //       );
+    //       if (encryptedSdp != null) {
+    //         signalData['sdp'] = encryptedSdp;
+    //         signalData['encrypted'] = true;
+    //         print('[GlobalCallManager] 🔒 Encrypted SDP for $type with device ID: $recipientDeviceId');
+    //       } else {
+    //         print('[GlobalCallManager] ⚠️ Failed to encrypt SDP, sending unencrypted');
+    //       }
+    //     }
+    //   } else if (type == 'ice_candidate') {
+    //     // Encrypt ICE candidate
+    //     final candidate = signalData['candidate'] as String?;
+    //     if (candidate != null) {
+    //       final encryptedCandidate = await SignalService.encryptMessage(
+    //         recipientUid: recipientUid,
+    //         plaintext: candidate,
+    //         deviceId: recipientDeviceId, // 🔧 FIX: Pass recipient's device ID
+    //       );
+    //       if (encryptedCandidate != null) {
+    //         signalData['candidate'] = encryptedCandidate;
+    //         signalData['encrypted'] = true;
+    //         print('[GlobalCallManager] 🔒 Encrypted ICE candidate with device ID: $recipientDeviceId');
+    //       }
+    //     }
+    //   }
+    // } catch (e) {
+    //   print('[GlobalCallManager] ❌ Encryption error: $e - sending unencrypted');
+    // }
   }
 
   /// Decrypt call signaling data (SDP/ICE) using Signal Protocol
