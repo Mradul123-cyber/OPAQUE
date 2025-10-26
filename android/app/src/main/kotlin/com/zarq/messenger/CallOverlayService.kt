@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import android.view.*
 import android.widget.ImageView
@@ -24,9 +25,17 @@ class CallOverlayService : Service() {
         private const val CHANNEL_ID = "call_overlay_channel"
         private const val OVERLAY_CHANNEL = "com.zarq/overlay"
 
+        // Keep reference to current service instance for state updates
+        private var currentInstance: CallOverlayService? = null
+
         fun stop(context: Context) {
             val intent = Intent(context, CallOverlayService::class.java)
             context.stopService(intent)
+        }
+
+        // 🔧 FIX: Update mute state from app
+        fun updateMuteState(context: Context, isMuted: Boolean) {
+            currentInstance?.updateMuteButton(isMuted)
         }
     }
 
@@ -44,9 +53,13 @@ class CallOverlayService : Service() {
     private var autoCollapseRunnable: Runnable? = null
     private val AUTO_COLLAPSE_DELAY = 30000L // 30 seconds
 
+    // Wake lock to keep microphone active when app is minimized
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "CallOverlayService created")
+        currentInstance = this
         createNotificationChannel()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         autoCollapseHandler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -66,19 +79,27 @@ class CallOverlayService : Service() {
         Log.d(TAG, "Is Muted: $isMuted")
         Log.d(TAG, "=================================")
 
+        // 🔧 FIX: Acquire wake lock to keep microphone active when app is minimized
+        // This prevents Android from suspending the audio system in the background
+        acquireWakeLock()
+
         // Start as foreground service
         val notification = createNotification(callerName, isVideo)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             // Android 10+ requires specifying service type
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
+            // CRITICAL: Include MICROPHONE type for Android 14+ to access mic in background
+            val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            } else {
                 android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
-            )
+            }
+            startForeground(NOTIFICATION_ID, notification, serviceType)
+            Log.d(TAG, "Foreground service started with types: phoneCall + microphone")
         } else {
             startForeground(NOTIFICATION_ID, notification)
+            Log.d(TAG, "Foreground service started (legacy)")
         }
-        Log.d(TAG, "Foreground service started with notification")
 
         // Show overlay if permission is granted
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -337,6 +358,18 @@ class CallOverlayService : Service() {
         }
     }
 
+    // 🔧 FIX: Update mute state from app (called via companion object)
+    private fun updateMuteButton(newMuteState: Boolean) {
+        isMuted = newMuteState
+        Log.d(TAG, "Updating mute button from app: isMuted=$isMuted")
+
+        // Find and update the mute button if overlay is visible
+        overlayView?.findViewById<ImageView>(R.id.mute_btn)?.let { muteBtn ->
+            updateMuteButton(muteBtn)
+            Log.d(TAG, "Mute button updated in overlay")
+        }
+    }
+
     private fun toggleMute() {
         isMuted = !isMuted
         Log.d(TAG, "Mute toggled: $isMuted")
@@ -472,10 +505,42 @@ class CallOverlayService : Service() {
         autoCollapseRunnable = null
     }
 
+    private fun acquireWakeLock() {
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "Zarq::CallWakeLock"
+            ).apply {
+                setReferenceCounted(false)
+                acquire(60 * 60 * 1000L) // 1 hour max (safety timeout)
+            }
+            Log.d(TAG, "🔋 Wake lock acquired - microphone will stay active in background")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error acquiring wake lock: ${e.message}")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                    Log.d(TAG, "🔋 Wake lock released")
+                }
+            }
+            wakeLock = null
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error releasing wake lock: ${e.message}")
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "CallOverlayService onDestroy called!")
+        currentInstance = null
         cancelAutoCollapseTimer()
+        releaseWakeLock()
         hideOverlay()
         Log.d(TAG, "CallOverlayService destroyed")
     }

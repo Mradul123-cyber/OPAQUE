@@ -687,6 +687,10 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
             _updateProgress(0.75, 'Synchronizing sessions...');
             await Future.delayed(const Duration(milliseconds: 400));
 
+            // 🔧 FIX: Upload FCM token after restore (only when re-registration happens)
+            print("[AuthWrapper] 📤 Uploading FCM token after restore...");
+            await _uploadFCMTokenToServer();
+
             // Clear the flag
             await prefs.setBool('needs_device_reregistration', false);
           } else {
@@ -803,18 +807,21 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   Future<void> _uploadFCMTokenToServer() async {
     try {
       final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
+      if (user == null) {
+        print("[AuthWrapper] ⚠️ No user logged in, skipping FCM upload");
+        return;
+      }
 
       // Get FCM token from Kotlin
       const utilityChannel = MethodChannel('com.zarq/utility');
       final fcmToken = await utilityChannel.invokeMethod('getFCMToken');
 
       if (fcmToken != null && fcmToken.isNotEmpty) {
-        // print("[AuthWrapper] Uploading FCM token to server: ${fcmToken.substring(0, 20)}...");
+        print("[AuthWrapper] 📤 Uploading FCM token to server: ${fcmToken.substring(0, 20)}...");
 
         // Get actual device ID
         final actualDeviceId = await SignalService.getDeviceId();
-        // print("[AuthWrapper] Using device ID: $actualDeviceId");
+        print("[AuthWrapper] Using device ID: $actualDeviceId");
 
         final token = await user.getIdToken();
         final url = Uri.parse('https://api.zarqmessenger.com/v1/fcm/token');
@@ -827,21 +834,25 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
           },
           body: jsonEncode({
             'fcm_token': fcmToken,
-            'device_id': actualDeviceId,  // ← Fixed
+            'device_id': actualDeviceId,
             'platform': 'android',
           }),
         );
 
         if (response.statusCode == 200) {
-          // print("[AuthWrapper] FCM token uploaded successfully");
+          print("[AuthWrapper] ✅ FCM token uploaded successfully");
         } else {
-          // print("[AuthWrapper] FCM token upload failed: ${response.statusCode} - ${response.body}");
+          print("[AuthWrapper] ❌ FCM token upload failed: ${response.statusCode} - ${response.body}");
         }
       } else {
-        // print("[AuthWrapper] No FCM token available yet");
+        print("[AuthWrapper] ⚠️ No FCM token available yet - will retry on next app start");
+        // Schedule retry after 2 seconds (token might be generated soon)
+        Future.delayed(const Duration(seconds: 2), () {
+          _uploadFCMTokenToServer();
+        });
       }
     } catch (e) {
-      // print("[AuthWrapper] Error uploading FCM token: $e");
+      print("[AuthWrapper] ❌ Error uploading FCM token: $e");
     }
   }
 

@@ -116,38 +116,36 @@ class NavigationHandler {
       if (autoAnswer) {
         // Store the caller UID for auto-answering when call_offer arrives
         _autoAnswerCallerUid = callerUid;
-        // print('[NavigationHandler] ✅ Auto-answer enabled for caller: $callerUid');
-        // print('[NavigationHandler] Call will be automatically accepted when call_offer arrives');
+        print('[NavigationHandler] ✅ Auto-answer enabled for caller: $callerUid');
+        print('[NavigationHandler] Call will be automatically accepted when call_offer arrives');
       }
 
       // CRITICAL: Force WebSocket reconnection when app opens from notification
       final context = _navigatorKey?.currentContext;
       if (context != null) {
-        // print('[NavigationHandler] 🔄 Getting WebSocketService from context...');
+        print('[NavigationHandler] 🔄 Getting WebSocketService from context...');
 
         try {
           final wsService = Provider.of<WebSocketService>(context, listen: false);
 
           if (!wsService.isConnected) {
-            // print('[NavigationHandler] ⚠️ WebSocket NOT connected, forcing reconnection...');
+            print('[NavigationHandler] ⚠️ WebSocket NOT connected, forcing reconnection...');
             await wsService.reconnect();
-            // print('[NavigationHandler] ✅ WebSocket reconnection initiated');
-
-            // Give it a moment to establish connection
-            await Future.delayed(const Duration(milliseconds: 500));
+            print('[NavigationHandler] ✅ WebSocket reconnection initiated');
+            // No delay needed - WebSocket will queue messages if not connected yet
           } else {
-            // print('[NavigationHandler] ✅ WebSocket already connected');
+            print('[NavigationHandler] ✅ WebSocket already connected');
           }
         } catch (e) {
-          // print('[NavigationHandler] ⚠️ Could not get WebSocketService: $e');
-          // print('[NavigationHandler] Will wait for natural reconnection in main.dart');
+          print('[NavigationHandler] ⚠️ Could not get WebSocketService: $e');
+          print('[NavigationHandler] Will wait for natural reconnection in main.dart');
         }
       } else {
-        // print('[NavigationHandler] ⚠️ No navigator context available for WebSocket access');
+        print('[NavigationHandler] ⚠️ No navigator context available for WebSocket access');
       }
 
-      // print('[NavigationHandler] App opened for incoming call from $callerName');
-      // print('[NavigationHandler] Waiting for call_offer via WebSocket...');
+      print('[NavigationHandler] App opened for incoming call from $callerName');
+      print('[NavigationHandler] Waiting for call_offer via WebSocket...');
 
       // The call flow:
       // 1. FCM notification opens app (we are here)

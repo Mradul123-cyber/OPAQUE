@@ -8,7 +8,9 @@ import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.os.Bundle
 import android.util.Base64
 import android.util.Rational
@@ -946,6 +948,29 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
                         val success = backupNotificationHelper.requestBatteryOptimizationExemption()
                         result.success(success)
                     }
+                    "canScheduleExactAlarms" -> {
+                        // Check if app can schedule exact alarms (Android 12+)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                            val canSchedule = alarmManager.canScheduleExactAlarms()
+                            result.success(canSchedule)
+                        } else {
+                            // Below Android 12, no permission needed
+                            result.success(true)
+                        }
+                    }
+                    "requestExactAlarmPermission" -> {
+                        // Open settings for user to grant exact alarm permission
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                                data = Uri.parse("package:$packageName")
+                            }
+                            startActivity(intent)
+                            result.success(true)
+                        } else {
+                            result.success(true)
+                        }
+                    }
                     "scheduleExactAlarm" -> {
                         val hour = call.argument<Int>("hour") ?: 2
                         val minute = call.argument<Int>("minute") ?: 0
@@ -1178,6 +1203,12 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
                     "requestOverlayPermission" -> {
                         Log.d(TAG, "requestOverlayPermission called")
                         requestOverlayPermission()
+                        result.success(true)
+                    }
+                    "updateMuteState" -> {
+                        val isMuted = call.argument<Boolean>("isMuted") ?: false
+                        Log.d(TAG, "updateMuteState called: $isMuted")
+                        CallOverlayService.updateMuteState(this, isMuted)
                         result.success(true)
                     }
 

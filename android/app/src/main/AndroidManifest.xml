@@ -17,6 +17,7 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
@@ -44,7 +45,6 @@
 
     <!-- AlarmManager permissions for exact-time auto-backup -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
     <!-- Explicitly remove AD_ID permission added by Firebase Analytics -->
     <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove"/>
@@ -100,11 +100,12 @@
         </service>
 
         <!-- Call Overlay Foreground Service -->
+        <!-- CRITICAL: microphone type required for Android 14+ to access mic in background -->
         <service
             android:name=".CallOverlayService"
             android:exported="false"
             android:enabled="true"
-            android:foregroundServiceType="phoneCall">
+            android:foregroundServiceType="phoneCall|microphone">
         </service>
 
         <!-- Notification Action Receiver -->

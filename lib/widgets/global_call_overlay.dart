@@ -1088,6 +1088,19 @@ class _GlobalCallOverlayState extends State<GlobalCallOverlay> with WidgetsBindi
             inactiveColor: Colors.white.withOpacity(0.2),
           ),
 
+          SizedBox(width: buttonSpacing),
+          // Speaker button
+          _buildModernControlButton(
+            icon: callManager.isSpeakerOn ? Icons.volume_up_rounded : Icons.volume_down_rounded,
+            label: 'Speaker',
+            onPressed: () async {
+              await callManager.toggleSpeaker();
+            },
+            isActive: callManager.isSpeakerOn,
+            activeColor: Colors.white,
+            inactiveColor: Colors.white.withOpacity(0.2),
+          ),
+
           if (callType == CallType.video) ...[
             SizedBox(width: buttonSpacing),
             // Camera toggle
@@ -1399,6 +1412,14 @@ class _GlobalCallOverlayState extends State<GlobalCallOverlay> with WidgetsBindi
                         icon: callManager.isMuted ? Icons.mic_off : Icons.mic,
                         color: callManager.isMuted ? Colors.red : Colors.white,
                         onTap: () => callManager.toggleMicrophone(),
+                      ),
+                      SizedBox(width: spacing2),
+                      // Speaker button
+                      _buildMiniButton(
+                        context: context,
+                        icon: callManager.isSpeakerOn ? Icons.volume_up : Icons.volume_down,
+                        color: callManager.isSpeakerOn ? Colors.greenAccent : Colors.white,
+                        onTap: () => callManager.toggleSpeaker(),
                       ),
                       SizedBox(width: spacing2),
                       // End call button

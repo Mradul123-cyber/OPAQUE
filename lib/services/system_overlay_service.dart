@@ -87,4 +87,14 @@ class SystemOverlayService {
       developer.log('Error hiding system overlay: $e', name: 'SystemOverlay');
     }
   }
+
+  /// Update mute state in overlay when toggled from app
+  static Future<void> updateMuteState(bool isMuted) async {
+    try {
+      await _channel.invokeMethod('updateMuteState', {'isMuted': isMuted});
+      developer.log('Overlay mute state updated: $isMuted', name: 'SystemOverlay');
+    } catch (e) {
+      developer.log('Error updating overlay mute state: $e', name: 'SystemOverlay');
+    }
+  }
 }

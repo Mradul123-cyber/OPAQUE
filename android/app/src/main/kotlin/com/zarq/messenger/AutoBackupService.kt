@@ -35,6 +35,8 @@ class AutoBackupService : Service() {
         Thread {
             try {
                 executeBackup()
+                // Keep service running for a bit to ensure notification is visible
+                Thread.sleep(10000) // Show notification for 10 seconds (enough time for video capture)
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Error executing backup: ${e.message}", e)
             } finally {
@@ -53,21 +55,28 @@ class AutoBackupService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Auto Backup Service",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_DEFAULT // Changed from LOW to DEFAULT for better visibility
             ).apply {
-                description = "Running auto-backup in background"
+                description = "Scheduled auto-backup notifications"
+                setShowBadge(true)
             }
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.createNotificationChannel(channel)
         }
 
-        // Build notification
+        // Build notification with current time
+        val currentTime = java.text.SimpleDateFormat("hh:mm:ss a", java.util.Locale.getDefault())
+            .format(java.util.Date())
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Auto Backup")
-            .setContentText("Running automatic backup...")
-            .setSmallIcon(android.R.drawable.ic_menu_save)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentTitle("Auto Backup Triggered")
+            .setContentText("Scheduled backup triggered at $currentTime")
+            .setSubText("Backup will start when you open the app")
+            .setSmallIcon(R.mipmap.ic_launcher) // Use app icon instead of deprecated system icon
+            .setPriority(NotificationCompat.PRIORITY_HIGH) // Changed to HIGH for maximum visibility
             .setOngoing(true)
+            .setAutoCancel(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC) // Show on lock screen
             .build()
     }
 

@@ -449,9 +449,11 @@ class SignalService {
       return result as String?;
     } on PlatformException catch (e) {
       // print('SignalService.decryptMessage PlatformException: ${e.code} - ${e.message}');
+      // print('SignalService.decryptMessage PlatformException details: $e');
       return null;
-    } catch (e) {
-      print ('SignalService.decryptMessage error: $e');
+    } catch (e, stackTrace) {
+      // print('SignalService.decryptMessage error: $e');
+      // print('SignalService.decryptMessage stackTrace: $stackTrace');
       return null;
     }
   }

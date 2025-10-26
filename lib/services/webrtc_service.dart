@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
+import 'turn_service.dart';
 
 enum CallState {
   idle,
@@ -54,64 +55,55 @@ class WebRTCService {
   Function(Map<String, dynamic>)? onSendSignal;
   Function()? onCallEnded;
 
-  // 🔧 Generate time-limited TURN credentials (prevents "Mismatched allocation" errors)
-  // Time-limited credentials ensure each call gets unique credentials that expire
-  Map<String, String> _generateTurnCredentials() {
-    const secret = 'zarq_secret_key_12345'; // Matches Coturn static-auth-secret
-    final timestamp = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 86400; // Valid for 24 hours
-    final username = '$timestamp:zarquser';
+  // 🔒 PRODUCTION: TURN credentials now fetched from backend
+  // This ensures the secret is never exposed in client code
+  Map<String, dynamic>? _cachedConfiguration;
 
-    // Generate HMAC-SHA1 password
-    final key = utf8.encode(secret);
-    final bytes = utf8.encode(username);
-    final hmac = Hmac(sha1, key);
-    final digest = hmac.convert(bytes);
-    final password = base64.encode(digest.bytes);
+  // Get TURN configuration from backend (cached for performance)
+  Future<Map<String, dynamic>> _getConfiguration() async {
+    // Use cached configuration if available
+    if (_cachedConfiguration != null) {
+      return _cachedConfiguration!;
+    }
 
-    return {'username': username, 'credential': password};
-  }
+    // Fetch credentials from backend
+    final credentials = await TurnService.getTurnCredentials();
 
-  // STUN/TURN servers configuration - Production-ready with time-limited credentials
-  Map<String, dynamic> get _configuration {
-    final turnCreds = _generateTurnCredentials();
-
-    return {
-      'iceServers': [
-        // Google STUN servers (backup, free, unlimited, reliable)
-        {'urls': 'stun:stun.l.google.com:19302'},
-        {'urls': 'stun:stun1.l.google.com:19302'},
-
-        // 🎯 YOUR OWN Coturn TURN Server (DigitalOcean)
-        // Running on zarqmessenger.com (64.227.191.148)
-        // ✅ Time-limited credentials (prevents allocation conflicts)
-        {
-          'urls': 'turn:zarqmessenger.com:3478',
-          'username': turnCreds['username'],
-          'credential': turnCreds['credential'],
+    if (credentials != null && credentials['ice_servers'] != null) {
+      // Use backend-provided configuration
+      _cachedConfiguration = {
+        'iceServers': credentials['ice_servers'],
+        'sdpSemantics': 'unified-plan',
+        'bundlePolicy': 'max-bundle',
+        'rtcpMuxPolicy': 'require',
+        // Add security constraints
+        'mandatory': {
+          'DtlsSrtpKeyAgreement': true,
+          'encryption': 'mandatory',
         },
-        {
-          'urls': 'turn:zarqmessenger.com:3478?transport=tcp',
-          'username': turnCreds['username'],
-          'credential': turnCreds['credential'],
+        'iceCandidatePoolSize': 2,
+      };
+
+      print('[WebRTC] ✅ Using backend TURN configuration');
+    } else {
+      // Fallback configuration (for development only)
+      print('[WebRTC] ⚠️ Using fallback configuration - backend unavailable');
+      _cachedConfiguration = {
+        'iceServers': [
+          {'urls': 'stun:stun.l.google.com:19302'},
+          {'urls': 'stun:stun1.l.google.com:19302'},
+        ],
+        'sdpSemantics': 'unified-plan',
+        'bundlePolicy': 'max-bundle',
+        'rtcpMuxPolicy': 'require',
+        'mandatory': {
+          'DtlsSrtpKeyAgreement': true,
+          'encryption': 'mandatory',
         },
-        // Backup using direct IP in case domain resolution fails
-        {
-          'urls': 'turn:64.227.191.148:3478',
-          'username': turnCreds['username'],
-          'credential': turnCreds['credential'],
-        },
-        {
-          'urls': 'turn:64.227.191.148:3478?transport=tcp',
-          'username': turnCreds['username'],
-          'credential': turnCreds['credential'],
-        },
-      ],
-      'sdpSemantics': 'unified-plan',
-      // ✅ REMOVED 'iceTransportPolicy': 'relay' (known flutter_webrtc issue #545)
-      // Let ICE choose best connection: P2P → STUN → TURN
-      'bundlePolicy': 'max-bundle',
-      'rtcpMuxPolicy': 'require',
-    };
+      };
+    }
+
+    return _cachedConfiguration!;
   }
 
   // Media constraints
@@ -154,6 +146,10 @@ class WebRTCService {
       // Get local media stream
       final constraints = callType == CallType.video ? _videoConstraints : _voiceConstraints;
       _localStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      // 🔧 FIX: Enable audio tracks to stay active in background
+      _enableBackgroundAudio();
+
       _localStreamController.add(_localStream);
 
       // Create peer connection
@@ -209,6 +205,10 @@ class WebRTCService {
       // Get local media stream
       final constraints = callType == CallType.video ? _videoConstraints : _voiceConstraints;
       _localStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      // 🔧 FIX: Enable audio tracks to stay active in background
+      _enableBackgroundAudio();
+
       _localStreamController.add(_localStream);
 
       // Create peer connection
@@ -262,12 +262,8 @@ class WebRTCService {
 
       print('[WebRTC] ✅ Answer created and local description set');
 
-      // ⏱️ CRITICAL FIX: Wait 2 seconds for relay (TURN) candidates to generate
-      // This prevents timing issues where answer is sent before TURN allocation completes
-      // Note: We don't wait for "Complete" state as it's unreliable in flutter_webrtc
-      print('[WebRTC] ⏱️ Waiting 2 seconds for TURN relay candidates to allocate...');
-      await Future.delayed(const Duration(seconds: 2));
-      print('[WebRTC] ✅ TURN allocation time elapsed - sending answer with all candidates');
+      // TEST: No delay - testing immediate answer creation
+      print('[WebRTC] ⚡ NO DELAY - Creating answer immediately');
 
       // Send answer via signaling
       onSendSignal?.call(<String, dynamic>{
@@ -306,13 +302,10 @@ class WebRTCService {
       final sdpPreview = sdp.length > 500 ? sdp.substring(0, 500) : sdp;
       print('[WebRTC] 📋 SDP ANSWER preview: $sdpPreview');
 
-      // ⏱️ CRITICAL FIX: Wait 2 seconds for receiver's trickle ICE candidates to arrive
-      // The receiver is generating relay (TURN) candidates which take 1-2 seconds
-      // Those candidates are sent via trickle ICE (separate signaling messages)
-      // If we set remote description too early, ICE checking starts with 0 remote candidates!
-      print('[WebRTC] ⏱️ Waiting 2 seconds for remote ICE candidates to arrive via trickle ICE...');
-      await Future.delayed(const Duration(seconds: 2));
-      print('[WebRTC] ✅ Wait complete - ${_iceCandidates.length} remote candidates buffered');
+      // ⏱️ OPTIMIZED: Reduced wait from 2s to 1s for faster call setup
+      // The receiver sends host/srflx candidates immediately, relay candidates follow via trickle ICE
+      // TEST: No delay - testing if trickle ICE alone is sufficient
+      print('[WebRTC] ⚡ NO DELAY - Testing without wait (${_iceCandidates.length} candidates already buffered)');
 
       // 🔧 CRITICAL: Set remote description first to enable candidate adding
       final description = RTCSessionDescription(sdp, 'answer');
@@ -327,9 +320,8 @@ class WebRTCService {
       }
       _iceCandidates.clear();
 
-      // 🔧 Give a moment for candidates to be processed by WebRTC engine
-      await Future.delayed(const Duration(milliseconds: 100));
-      print('[WebRTC] ✅ All buffered candidates added and processed');
+      // TEST: No delay - candidates should be processed immediately
+      print('[WebRTC] ⚡ NO DELAY - All buffered candidates added');
 
       _updateCallState(CallState.connecting);
       print('[WebRTC] ✅ Answer handling complete');
@@ -379,12 +371,11 @@ class WebRTCService {
 
   /// Create peer connection with all event handlers
   Future<void> _createPeerConnection() async {
-    // 🔧 FIX: Wait a bit before creating new peer connection
-    // This ensures previous TURN allocations are fully released
-    await Future.delayed(const Duration(milliseconds: 500));
+    // TEST: No delay - create peer connection immediately
 
     print('[WebRTC] 🔧 Creating new peer connection...');
-    _peerConnection = await createPeerConnection(_configuration);
+    final configuration = await _getConfiguration();
+    _peerConnection = await createPeerConnection(configuration);
     print('[WebRTC] ✅ Peer connection created successfully');
 
     // Handle ICE candidates
@@ -434,12 +425,8 @@ class WebRTCService {
       if (state == RTCIceConnectionState.RTCIceConnectionStateChecking) {
         print('[WebRTC] 🔍 ICE connectivity checks started - analyzing candidate pairs...');
 
-        // ⏱️ CRITICAL FIX: Wait 1 second for buffered candidates to be added and processed
-        // setRemoteDescription() triggers this event SYNCHRONOUSLY before buffered candidates are added!
-        // Increased to 1000ms to give ICE agent more time to process relay candidates
-        print('[WebRTC] ⏱️ Waiting 1 second for buffered candidates to be added and ICE pairs to form...');
-        await Future.delayed(const Duration(milliseconds: 1000));
-        print('[WebRTC] ✅ Wait complete - querying stats now');
+        // TEST: No delay - query stats immediately
+        print('[WebRTC] ⚡ NO DELAY - Querying stats immediately');
 
         try {
           final stats = await _peerConnection!.getStats();
@@ -696,6 +683,33 @@ class WebRTCService {
     // print('[WebRTC] Peer connection created');
   }
 
+  /// Enable background audio mode to keep microphone active when app is minimized
+  void _enableBackgroundAudio() {
+    if (_localStream == null) return;
+
+    try {
+      // Enable audio track to stay active in background
+      final audioTracks = _localStream!.getAudioTracks();
+      for (var track in audioTracks) {
+        // Keep track enabled
+        track.enabled = true;
+        print('[WebRTC] 🎤 Audio track configured for background mode: ${track.id}');
+      }
+
+      // Enable background mode for Android specifically
+      // inCommunication mode keeps audio active during calls even when app is minimized
+      Helper.setAndroidAudioConfiguration(
+        AndroidAudioConfiguration(
+          androidAudioMode: AndroidAudioMode.inCommunication,
+          androidAudioFocusMode: AndroidAudioFocusMode.gain,
+        ),
+      );
+      print('[WebRTC] 🎤 Android audio configuration set: inCommunication mode with focus gain');
+    } catch (e) {
+      print('[WebRTC] ⚠️ Error enabling background audio: $e');
+    }
+  }
+
   /// Toggle microphone mute/unmute
   Future<void> toggleMicrophone() async {
     if (_localStream != null) {
@@ -725,6 +739,22 @@ class WebRTCService {
     }
   }
 
+  /// Toggle speaker on/off
+  bool _isSpeakerOn = false;
+  bool get isSpeakerOn => _isSpeakerOn;
+
+  Future<void> toggleSpeaker() async {
+    _isSpeakerOn = !_isSpeakerOn;
+    await Helper.setSpeakerphoneOn(_isSpeakerOn);
+    print('[WebRTC] 🔊 Speaker ${_isSpeakerOn ? "enabled" : "disabled"}');
+  }
+
+  /// Enable speaker (useful for auto-enabling on call start)
+  Future<void> enableSpeaker(bool enable) async {
+    _isSpeakerOn = enable;
+    await Helper.setSpeakerphoneOn(enable);
+    print('[WebRTC] 🔊 Speaker ${enable ? "enabled" : "disabled"}');
+  }
 
   /// End the call and cleanup resources
   Future<void> endCall() async {
@@ -797,10 +827,18 @@ class WebRTCService {
     await endCall();
   }
 
+  /// Clear cached TURN configuration (call on logout)
+  void clearTurnCache() {
+    _cachedConfiguration = null;
+    TurnService.clearCache();
+    print('[WebRTC] TURN cache cleared');
+  }
+
   void dispose() {
     _callStateController.close();
     _remoteStreamController.close();
     _localStreamController.close();
+    clearTurnCache();
     endCall();
   }
 }

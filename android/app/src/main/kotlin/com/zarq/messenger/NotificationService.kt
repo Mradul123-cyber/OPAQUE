@@ -183,7 +183,7 @@ class ZarqNotificationService : FirebaseMessagingService() {
 
         // Build notification
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_email) // Default email icon
+            .setSmallIcon(R.mipmap.ic_launcher) // Use app icon
             .setContentTitle(senderName)
             .setContentText(messageText)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -313,7 +313,7 @@ class ZarqNotificationService : FirebaseMessagingService() {
 
         // Build full-screen call notification
         val notification = NotificationCompat.Builder(this, CALL_CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_call)
+            .setSmallIcon(R.mipmap.ic_launcher) // 🔧 FIX: Use app icon instead of default call icon
             .setContentTitle("Incoming ${callType} call")
             .setContentText(callerName)
             .setPriority(NotificationCompat.PRIORITY_MAX)

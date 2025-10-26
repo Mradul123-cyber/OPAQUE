@@ -40,6 +40,9 @@ class GlobalCallManager with ChangeNotifier {
   bool _isInCall = false;
   bool _isEndingCall = false; // Guard to prevent multiple endCall executions
 
+  // 🔧 FIX: Buffer ICE candidates that arrive before peer connection is created
+  final List<Map<String, dynamic>> _bufferedIceCandidates = [];
+
   // System overlay state
   bool _isAppInBackground = false;
   bool _isSystemOverlayShown = false;
@@ -57,6 +60,7 @@ class GlobalCallManager with ChangeNotifier {
   // Call control states
   bool _isMuted = false;
   bool _isCameraOff = false;
+  bool _isSpeakerOn = false;
 
   // Call duration tracking
   DateTime? _callStartTime;
@@ -73,7 +77,11 @@ class GlobalCallManager with ChangeNotifier {
   WebRTCService? get webrtcService => _webrtcService;
   bool get isMuted => _isMuted;
   bool get isCameraOff => _isCameraOff;
+  bool get isSpeakerOn => _isSpeakerOn;
   Duration get callDuration => _currentDuration;
+
+  // Get count of buffered ICE candidates (for auto-answer timing)
+  int getBufferedCandidatesCount() => _bufferedIceCandidates.length;
 
   // Callback for sending call signals
   Function(Map<String, dynamic>)? onSendSignal;
@@ -307,6 +315,18 @@ class GlobalCallManager with ChangeNotifier {
         }
       });
 
+      // 🔧 FIX: Pass buffered ICE candidates to WebRTC service
+      if (_bufferedIceCandidates.isNotEmpty) {
+        print('[GlobalCallManager] 📦 Passing ${_bufferedIceCandidates.length} buffered ICE candidates to WebRTC service');
+        for (var candidateData in _bufferedIceCandidates) {
+          await _webrtcService!.handleIceCandidate(candidateData);
+        }
+        _bufferedIceCandidates.clear();
+        print('[GlobalCallManager] ✅ All buffered candidates passed to WebRTC service');
+      } else {
+        print('[GlobalCallManager] ⚠️ No buffered candidates - caller might not have sent any yet');
+      }
+
       // Accept call
       await _webrtcService!.acceptCall(callType: _activeCall!.callType);
       await _webrtcService!.handleOffer(_activeCall!.sdp);
@@ -363,18 +383,17 @@ class GlobalCallManager with ChangeNotifier {
     if (_webrtcService != null) {
       String decryptedSdp = sdp;
 
-      // 🧪 TESTING: Decryption DISABLED
       // Decrypt SDP if encrypted
-      // if (encrypted == true && senderUid != null) {
-      //   // print('[GlobalCallManager] 🔓 Decrypting call_answer SDP...');
-      //   final decrypted = await _decryptCallSignal(sdp, senderUid, senderDeviceId);
-      //   if (decrypted != null) {
-      //     decryptedSdp = decrypted;
-      //     // print('[GlobalCallManager] ✅ Successfully decrypted call_answer SDP');
-      //   } else {
-      //     // print('[GlobalCallManager] ⚠️ Failed to decrypt SDP, using original');
-      //   }
-      // }
+      if (encrypted == true && senderUid != null) {
+        print('[GlobalCallManager] 🔓 Decrypting call_answer SDP...');
+        final decrypted = await _decryptCallSignal(sdp, senderUid, senderDeviceId);
+        if (decrypted != null) {
+          decryptedSdp = decrypted;
+          print('[GlobalCallManager] ✅ Successfully decrypted call_answer SDP');
+        } else {
+          print('[GlobalCallManager] ⚠️ Failed to decrypt SDP, using original');
+        }
+      }
 
       await _webrtcService!.handleAnswer(decryptedSdp);
 
@@ -398,28 +417,31 @@ class GlobalCallManager with ChangeNotifier {
   }
 
   Future<void> handleIceCandidate(Map<String, dynamic> candidateData) async {
+    // Decrypt ICE candidate if encrypted
+    if (candidateData['encrypted'] == true) {
+      final encryptedCandidate = candidateData['candidate'] as String?;
+      final senderUid = candidateData['sender_uid'] as String?;
+      final senderDeviceId = candidateData['sender_device_id'] as int?;
+
+      if (encryptedCandidate != null && senderUid != null) {
+        print('[GlobalCallManager] 🔓 Decrypting ICE candidate...');
+        final decrypted = await _decryptCallSignal(encryptedCandidate, senderUid, senderDeviceId);
+        if (decrypted != null) {
+          candidateData['candidate'] = decrypted;
+          print('[GlobalCallManager] ✅ Successfully decrypted ICE candidate');
+        } else {
+          print('[GlobalCallManager] ❌ FAILED to decrypt ICE candidate - will be dropped!');
+          return; // Don't pass failed decrypt to WebRTC
+        }
+      }
+    }
+
+    // 🔧 FIX: Buffer candidates if WebRTC service doesn't exist yet
     if (_webrtcService != null) {
-      // 🧪 TESTING: Decryption DISABLED
-      // Decrypt ICE candidate if encrypted
-      // if (candidateData['encrypted'] == true) {
-      //   final encryptedCandidate = candidateData['candidate'] as String?;
-      //   final senderUid = candidateData['sender_uid'] as String?;
-      //   final senderDeviceId = candidateData['sender_device_id'] as int?;
-
-      //   if (encryptedCandidate != null && senderUid != null) {
-      //     print('[GlobalCallManager] 🔓 Decrypting ICE candidate...');
-      //     final decrypted = await _decryptCallSignal(encryptedCandidate, senderUid, senderDeviceId);
-      //     if (decrypted != null) {
-      //       candidateData['candidate'] = decrypted;
-      //       print('[GlobalCallManager] ✅ Successfully decrypted ICE candidate');
-      //     } else {
-      //       print('[GlobalCallManager] ❌ FAILED to decrypt ICE candidate - will be dropped!');
-      //       return; // Don't pass failed decrypt to WebRTC
-      //     }
-      //   }
-      // }
-
       await _webrtcService!.handleIceCandidate(candidateData);
+    } else {
+      _bufferedIceCandidates.add(candidateData);
+      print('[GlobalCallManager] 📦 ICE candidate buffered (no WebRTC service yet, count: ${_bufferedIceCandidates.length})');
     }
   }
 
@@ -488,6 +510,12 @@ class GlobalCallManager with ChangeNotifier {
         _webrtcService = null;
       }
 
+      // 🔧 FIX: Clear buffered ICE candidates
+      if (_bufferedIceCandidates.isNotEmpty) {
+        print('[GlobalCallManager] 🧹 Clearing ${_bufferedIceCandidates.length} buffered ICE candidates');
+        _bufferedIceCandidates.clear();
+      }
+
       // Clear renderers safely
       // print('[GlobalCallManager] 🧹 Clearing video renderers...');
       try {
@@ -519,6 +547,12 @@ class GlobalCallManager with ChangeNotifier {
     await _webrtcService?.toggleMicrophone();
     _isMuted = !_isMuted;
     // print('[GlobalCallManager] 🎤 Microphone ${_isMuted ? "muted" : "unmuted"}');
+
+    // 🔧 FIX: Update overlay mute state when toggled from app
+    if (_isSystemOverlayShown) {
+      await SystemOverlayService.updateMuteState(_isMuted);
+    }
+
     notifyListeners();
   }
 
@@ -531,6 +565,13 @@ class GlobalCallManager with ChangeNotifier {
 
   Future<void> switchCamera() async {
     await _webrtcService?.switchCamera();
+  }
+
+  Future<void> toggleSpeaker() async {
+    await _webrtcService?.toggleSpeaker();
+    _isSpeakerOn = !_isSpeakerOn;
+    print('[GlobalCallManager] 🔊 Speaker ${_isSpeakerOn ? "enabled" : "disabled"}');
+    notifyListeners();
   }
 
   bool get isCallConnected => _webrtcService?.callState == CallState.connected;
@@ -547,58 +588,52 @@ class GlobalCallManager with ChangeNotifier {
 
   /// Encrypt call signaling data (SDP/ICE) using Signal Protocol
   Future<void> _encryptCallSignal(Map<String, dynamic> signalData, String recipientUid) async {
-    // 🧪 TESTING: Signal Protocol encryption DISABLED for WebRTC signaling
-    // Testing if encryption latency is causing ICE timing issues
-    print('[GlobalCallManager] 🧪 TESTING MODE: Skipping encryption for ${signalData['type']}');
-    return;
+    try {
+      final type = signalData['type'] as String?;
 
-    // 🔧 ORIGINAL CODE (temporarily disabled):
-    // try {
-    //   final type = signalData['type'] as String?;
+      // 🔧 FIX: Get recipient's ACTUAL device ID (not fallback to sender's)
+      final recipientDeviceId = await DeviceService.getActiveDeviceId(recipientUid);
+      if (recipientDeviceId == null) {
+        print('[GlobalCallManager] ⚠️ Could not get recipient device ID - skipping encryption');
+        return;
+      }
 
-    //   // 🔧 FIX: Get recipient's ACTUAL device ID (not fallback to sender's)
-    //   final recipientDeviceId = await DeviceService.getActiveDeviceId(recipientUid);
-    //   if (recipientDeviceId == null) {
-    //     print('[GlobalCallManager] ⚠️ Could not get recipient device ID - skipping encryption');
-    //     return;
-    //   }
-
-    //   if (type == 'call_offer' || type == 'call_answer') {
-    //     // Encrypt SDP
-    //     final sdp = signalData['sdp'] as String?;
-    //     if (sdp != null) {
-    //       final encryptedSdp = await SignalService.encryptMessage(
-    //         recipientUid: recipientUid,
-    //         plaintext: sdp,
-    //         deviceId: recipientDeviceId, // 🔧 FIX: Pass recipient's device ID
-    //       );
-    //       if (encryptedSdp != null) {
-    //         signalData['sdp'] = encryptedSdp;
-    //         signalData['encrypted'] = true;
-    //         print('[GlobalCallManager] 🔒 Encrypted SDP for $type with device ID: $recipientDeviceId');
-    //       } else {
-    //         print('[GlobalCallManager] ⚠️ Failed to encrypt SDP, sending unencrypted');
-    //       }
-    //     }
-    //   } else if (type == 'ice_candidate') {
-    //     // Encrypt ICE candidate
-    //     final candidate = signalData['candidate'] as String?;
-    //     if (candidate != null) {
-    //       final encryptedCandidate = await SignalService.encryptMessage(
-    //         recipientUid: recipientUid,
-    //         plaintext: candidate,
-    //         deviceId: recipientDeviceId, // 🔧 FIX: Pass recipient's device ID
-    //       );
-    //       if (encryptedCandidate != null) {
-    //         signalData['candidate'] = encryptedCandidate;
-    //         signalData['encrypted'] = true;
-    //         print('[GlobalCallManager] 🔒 Encrypted ICE candidate with device ID: $recipientDeviceId');
-    //       }
-    //     }
-    //   }
-    // } catch (e) {
-    //   print('[GlobalCallManager] ❌ Encryption error: $e - sending unencrypted');
-    // }
+      if (type == 'call_offer' || type == 'call_answer') {
+        // Encrypt SDP
+        final sdp = signalData['sdp'] as String?;
+        if (sdp != null) {
+          final encryptedSdp = await SignalService.encryptMessage(
+            recipientUid: recipientUid,
+            plaintext: sdp,
+            deviceId: recipientDeviceId, // 🔧 FIX: Pass recipient's device ID
+          );
+          if (encryptedSdp != null) {
+            signalData['sdp'] = encryptedSdp;
+            signalData['encrypted'] = true;
+            print('[GlobalCallManager] 🔒 Encrypted SDP for $type with device ID: $recipientDeviceId');
+          } else {
+            print('[GlobalCallManager] ⚠️ Failed to encrypt SDP, sending unencrypted');
+          }
+        }
+      } else if (type == 'ice_candidate') {
+        // Encrypt ICE candidate
+        final candidate = signalData['candidate'] as String?;
+        if (candidate != null) {
+          final encryptedCandidate = await SignalService.encryptMessage(
+            recipientUid: recipientUid,
+            plaintext: candidate,
+            deviceId: recipientDeviceId, // 🔧 FIX: Pass recipient's device ID
+          );
+          if (encryptedCandidate != null) {
+            signalData['candidate'] = encryptedCandidate;
+            signalData['encrypted'] = true;
+            print('[GlobalCallManager] 🔒 Encrypted ICE candidate with device ID: $recipientDeviceId');
+          }
+        }
+      }
+    } catch (e) {
+      print('[GlobalCallManager] ❌ Encryption error: $e - sending unencrypted');
+    }
   }
 
   /// Decrypt call signaling data (SDP/ICE) using Signal Protocol

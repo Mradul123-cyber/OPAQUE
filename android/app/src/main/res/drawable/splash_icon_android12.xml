@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sized logo wrapper for Android 12+ splash screen API -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:width="192dp"
+        android:height="192dp"
+        android:gravity="center">
+        <bitmap
+            android:src="@drawable/zarq_splash_logo"
+            android:gravity="center" />
+    </item>
+</layer-list>

@@ -1180,6 +1180,37 @@ class WebSocketService with ChangeNotifier {
     }
   }
 
+  /// Wait for ICE candidates to arrive before auto-accepting call
+  Future<void> _waitForIceCandidatesAndAccept(String callerUid) async {
+    const int maxWaitMs = 0; // TEST: No delay - testing immediate answer
+    const int checkIntervalMs = 100; // Check every 100ms
+    const int minCandidates = 5; // Wait for at least 5 candidates
+
+    int elapsedMs = 0;
+
+    while (elapsedMs < maxWaitMs) {
+      // Check if we have buffered candidates
+      final bufferedCount = _globalCallManager!.getBufferedCandidatesCount();
+
+      if (bufferedCount >= minCandidates) {
+        print('[WebSocketService] ✅ Got $bufferedCount buffered ICE candidates after ${elapsedMs}ms - accepting call now');
+        await _globalCallManager!.acceptIncomingCall();
+        print('[WebSocketService] ✅ Auto-accept completed!');
+        return;
+      }
+
+      // Wait a bit before checking again
+      await Future.delayed(const Duration(milliseconds: checkIntervalMs));
+      elapsedMs += checkIntervalMs;
+    }
+
+    // Timeout reached - accept anyway (better to try than fail)
+    final bufferedCount = _globalCallManager!.getBufferedCandidatesCount();
+    print('[WebSocketService] ⚠️ Timeout reached after ${maxWaitMs}ms with only $bufferedCount candidates - accepting anyway');
+    await _globalCallManager!.acceptIncomingCall();
+    print('[WebSocketService] ✅ Auto-accept completed!');
+  }
+
   Future<void> _handleCallSignaling(Map<String, dynamic> messageData) async {
     if (_globalCallManager == null) {
       // print('[WebSocketService] ❌ GlobalCallManager not set, ignoring call signal');
@@ -1193,7 +1224,9 @@ class WebSocketService with ChangeNotifier {
     switch (type) {
       case 'call_offer':
         final callerUid = messageData['sender_uid'] as String?;
-        final callerName = messageData['sender_username'] as String?;
+        // 🔧 FIX: Use display_name instead of username for incoming calls
+        final callerName = messageData['sender_display_name'] as String? ??
+                          messageData['sender_username'] as String?;
         final callTypeStr = messageData['callType'] as String?;
         var sdp = messageData['sdp'] as String?;
         final conversationId = messageData['conversation_id'] as int?;
@@ -1209,22 +1242,21 @@ class WebSocketService with ChangeNotifier {
         // print('  - encrypted: $encrypted');
         // print('  - sdp length: ${sdp?.length}');
 
-        // 🧪 TESTING: Decryption DISABLED
         // Decrypt SDP if encrypted
-        // if (encrypted == true && sdp != null && callerUid != null) {
-        //   // print('[WebSocketService] 🔓 Decrypting call_offer SDP...');
-        //   final decryptedSdp = await SignalService.decryptMessage(
-        //     senderUid: callerUid,
-        //     ciphertextB64: sdp,
-        //     deviceId: senderDeviceId ?? 1,
-        //   );
-        //   if (decryptedSdp != null) {
-        //     sdp = decryptedSdp;
-        //     // print('[WebSocketService] ✅ Successfully decrypted call_offer SDP');
-        //   } else {
-        //     // print('[WebSocketService] ⚠️ Failed to decrypt SDP');
-        //   }
-        // }
+        if (encrypted == true && sdp != null && callerUid != null) {
+          print('[WebSocketService] 🔓 Decrypting call_offer SDP...');
+          final decryptedSdp = await SignalService.decryptMessage(
+            senderUid: callerUid,
+            ciphertextB64: sdp,
+            deviceId: senderDeviceId ?? 1,
+          );
+          if (decryptedSdp != null) {
+            sdp = decryptedSdp;
+            print('[WebSocketService] ✅ Successfully decrypted call_offer SDP');
+          } else {
+            print('[WebSocketService] ⚠️ Failed to decrypt SDP');
+          }
+        }
 
         if (callerUid != null && callerName != null && callTypeStr != null && sdp != null && conversationId != null) {
           final callType = callTypeStr == 'video' ? CallType.video : CallType.voice;
@@ -1256,18 +1288,15 @@ class WebSocketService with ChangeNotifier {
             final shouldAutoAnswer = NavigationHandler.shouldAutoAnswer(callerUid);
 
             if (shouldAutoAnswer) {
-              // print('[WebSocketService] 🎯 Auto-answering call from notification - skipping incoming call dialog!');
-              // print('[WebSocketService] 🎯 Setting incoming call and immediately accepting...');
+              print('[WebSocketService] 🎯 Auto-answering call from notification - waiting for ICE candidates');
 
               // Set the incoming call (required for acceptance)
               _globalCallManager!.setIncomingCall(callInfo);
 
-              // Immediately accept without showing dialog
-              Future.delayed(const Duration(milliseconds: 300), () async {
-                // print('[WebSocketService] 🎯 Executing auto-accept now...');
-                await _globalCallManager!.acceptIncomingCall();
-                // print('[WebSocketService] ✅ Auto-accept completed!');
-              });
+              // 🔧 CRITICAL: Wait for caller's ICE candidates to arrive
+              // Poll the buffered candidates count until we have at least some candidates
+              // This ensures we don't accept too early (before candidates arrive)
+              _waitForIceCandidatesAndAccept(callerUid);
             } else {
               // Normal flow - show incoming call dialog
               // print('[WebSocketService] ✅ Showing incoming call dialog for $callerName');

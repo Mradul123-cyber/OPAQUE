@@ -50,6 +50,20 @@ android {
         versionName = flutter.versionName
 
         multiDexEnabled = true
+
+        // ✅ FIX: Enable 16 KB page size alignment for Android 15+ devices
+        // This ensures native libraries work correctly on devices with 16 KB memory pages
+        ndk {
+            //noinspection ChromeOsAbiSupport
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+        }
+    }
+
+    // ✅ FIX: Disable legacy packaging to support 16 KB page alignment
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
     }
 
     signingConfigs {

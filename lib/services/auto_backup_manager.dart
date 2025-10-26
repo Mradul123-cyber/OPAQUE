@@ -25,16 +25,16 @@ class AutoBackupManager {
 
   /// Schedule auto-backup based on settings (using AlarmManager for exact-time execution)
   static Future<void> scheduleAutoBackup(AutoBackupSettings settings) async {
-    debugPrint('');
-    debugPrint('╔════════════════════════════════════════════════════════════╗');
-    debugPrint('║ 📅 SCHEDULING AUTO-BACKUP WITH ALARMMANAGER               ║');
-    debugPrint('╚════════════════════════════════════════════════════════════╝');
-    debugPrint('[AutoBackupManager] Current time: ${DateTime.now()}');
-    debugPrint('[AutoBackupManager] Settings enabled: ${settings.enabled}');
-    debugPrint('[AutoBackupManager] Frequency: ${settings.frequency.name}');
+    // debugPrint('');
+    //debugPrint('╔════════════════════════════════════════════════════════════╗');
+    //debugPrint('║ 📅 SCHEDULING AUTO-BACKUP WITH ALARMMANAGER               ║');
+    //debugPrint('╚════════════════════════════════════════════════════════════╝');
+    //debugPrint('[AutoBackupManager] Current time: ${DateTime.now()}');
+    // debugPrint('[AutoBackupManager] Settings enabled: ${settings.enabled}');
+    //  debugPrint('[AutoBackupManager] Frequency: ${settings.frequency.name}');
 
     // Cancel existing tasks first
-    await cancelAutoBackup();
+     await cancelAutoBackup();
 
     if (!settings.enabled || settings.frequency == BackupFrequency.disabled) {
       debugPrint('[AutoBackupManager] ❌ Auto-backup is disabled, not scheduling');
@@ -44,9 +44,21 @@ class AutoBackupManager {
     // For Android: Use AlarmManager for exact-time execution
     if (Platform.isAndroid) {
       try {
-        // Schedule alarm for 12:00 AM (midnight) - PRODUCTION
-        const int hour = 0;  // 0 = 12:00 AM (midnight)
-        const int minute = 0; // 0 minutes
+        // First check if we can schedule exact alarms (Android 12+)
+        if (Platform.isAndroid) {
+          final bool canSchedule = await _backupChannel.invokeMethod('canScheduleExactAlarms') ?? false;
+          if (!canSchedule) {
+            debugPrint('[AutoBackupManager] ⚠️ Cannot schedule exact alarms! User needs to grant permission.');
+            debugPrint('[AutoBackupManager] 📱 Opening settings for user to enable exact alarms...');
+
+            // Request permission from user
+            await _backupChannel.invokeMethod('requestExactAlarmPermission');
+            return; // Exit for now, user needs to re-enable after granting permission
+          }
+        }
+
+        const int hour = 0;
+        const int minute = 30;
 
         debugPrint('[AutoBackupManager] Scheduling AlarmManager for $hour:${minute.toString().padLeft(2, '0')}');
 
@@ -56,17 +68,17 @@ class AutoBackupManager {
         });
 
         if (success) {
-          debugPrint('[AutoBackupManager] ✅ AlarmManager scheduled successfully!');
-          debugPrint('[AutoBackupManager] ⏰ Backup will trigger at $hour:${minute.toString().padLeft(2, '0')} daily');
-          debugPrint('[AutoBackupManager] 📱 Ensure battery optimization is DISABLED!');
+         // debugPrint('[AutoBackupManager] ✅ AlarmManager scheduled successfully!');
+          //debugPrint('[AutoBackupManager] ⏰ Backup will trigger at $hour:${minute.toString().padLeft(2, '0')} daily');
+          //debugPrint('[AutoBackupManager] 📱 Ensure battery optimization is DISABLED!');
         } else {
-          debugPrint('[AutoBackupManager] ❌ Failed to schedule AlarmManager');
+          //debugPrint('[AutoBackupManager] ❌ Failed to schedule AlarmManager');
         }
 
         return;
       } catch (e) {
-        debugPrint('[AutoBackupManager] ❌ Error scheduling AlarmManager: $e');
-        debugPrint('[AutoBackupManager] Falling back to WorkManager...');
+        //debugPrint('[AutoBackupManager] ❌ Error scheduling AlarmManager: $e');
+        //debugPrint('[AutoBackupManager] Falling back to WorkManager...');
         // Fall through to WorkManager as backup
       }
     }
@@ -76,15 +88,15 @@ class AutoBackupManager {
     switch (settings.frequency) {
       case BackupFrequency.daily:
         frequency = const Duration(hours: 24);
-        debugPrint('[AutoBackupManager] Frequency duration: 24 hours');
+        //debugPrint('[AutoBackupManager] Frequency duration: 24 hours');
         break;
       case BackupFrequency.weekly:
         frequency = const Duration(days: 7);
-        debugPrint('[AutoBackupManager] Frequency duration: 7 days');
+        //debugPrint('[AutoBackupManager] Frequency duration: 7 days');
         break;
       case BackupFrequency.monthly:
         frequency = const Duration(days: 30);
-        debugPrint('[AutoBackupManager] Frequency duration: 30 days');
+        //debugPrint('[AutoBackupManager] Frequency duration: 30 days');
         break;
       case BackupFrequency.disabled:
         return;
@@ -94,11 +106,11 @@ class AutoBackupManager {
     // For iOS: Use one-off task that reschedules itself
     if (Platform.isAndroid) {
       final initialDelay = _calculateInitialDelay(settings);
-      debugPrint('[AutoBackupManager] Platform: Android');
-      debugPrint('[AutoBackupManager] Task name: $autoBackupTaskName');
-      debugPrint('[AutoBackupManager] Task tag: $autoBackupTaskTag');
-      debugPrint('[AutoBackupManager] Initial delay: ${initialDelay.inMinutes} minutes (${initialDelay.inSeconds} seconds)');
-      debugPrint('[AutoBackupManager] Constraints: networkType=notRequired, charging=false, batteryNotLow=false');
+      //debugPrint('[AutoBackupManager] Platform: Android');
+      //debugPrint('[AutoBackupManager] Task name: $autoBackupTaskName');
+      //debugPrint('[AutoBackupManager] Task tag: $autoBackupTaskTag');
+      //debugPrint('[AutoBackupManager] Initial delay: ${initialDelay.inMinutes} minutes (${initialDelay.inSeconds} seconds)');
+      //debugPrint('[AutoBackupManager] Constraints: networkType=notRequired, charging=false, batteryNotLow=false');
 
       await Workmanager().registerPeriodicTask(
         autoBackupTaskName,
@@ -112,11 +124,11 @@ class AutoBackupManager {
         initialDelay: initialDelay,
       );
 
-      debugPrint('[AutoBackupManager] ✅ WorkManager.registerPeriodicTask() called successfully');
-      debugPrint('[AutoBackupManager] ✅ Scheduled periodic backup (Android): ${settings.frequency.displayName}');
-      debugPrint('[AutoBackupManager] 🕐 Next backup scheduled for: ${DateTime.now().add(initialDelay)}');
-      debugPrint('[AutoBackupManager] 📱 Make sure battery optimization is DISABLED for this app!');
-      debugPrint('');
+      //debugPrint('[AutoBackupManager] ✅ WorkManager.registerPeriodicTask() called successfully');
+      //debugPrint('[AutoBackupManager] ✅ Scheduled periodic backup (Android): ${settings.frequency.displayName}');
+     // debugPrint('[AutoBackupManager] 🕐 Next backup scheduled for: ${DateTime.now().add(initialDelay)}');
+      //debugPrint('[AutoBackupManager] 📱 Make sure battery optimization is DISABLED for this app!');
+      //debugPrint('');
     } else {
       // iOS: Schedule one-off task (will reschedule itself after execution)
       await _scheduleOneOffBackup(settings);
@@ -137,7 +149,7 @@ class AutoBackupManager {
       existingWorkPolicy: ExistingWorkPolicy.replace,
       initialDelay: _calculateInitialDelay(settings),
     );
-    debugPrint('[AutoBackupManager] ✅ Scheduled one-off backup, delay: ${_calculateInitialDelay(settings)}');
+    //debugPrint('[AutoBackupManager] ✅ Scheduled one-off backup, delay: ${_calculateInitialDelay(settings)}');
   }
 
   /// Calculate initial delay before first backup (scheduled for 11:13 PM for testing)
@@ -149,16 +161,16 @@ class AutoBackupManager {
 
     // If it's already past 11:13 PM today, schedule for tomorrow at 11:13 PM
     if (now.isAfter(nextBackupTime)) {
-      debugPrint('[AutoBackupManager] ⏭️ Already past 11:13 PM today, scheduling for tomorrow');
+      //debugPrint('[AutoBackupManager] ⏭️ Already past 11:13 PM today, scheduling for tomorrow');
       nextBackupTime = nextBackupTime.add(const Duration(days: 1));
     }
 
     // If this is first time or last backup was a long time ago
     if (settings.lastBackupTime == null) {
-      debugPrint('[AutoBackupManager] 🆕 First time backup - no previous backup found');
-      debugPrint('[AutoBackupManager] 📅 First backup scheduled for: $nextBackupTime');
+     // debugPrint('[AutoBackupManager] 🆕 First time backup - no previous backup found');
+      //debugPrint('[AutoBackupManager] 📅 First backup scheduled for: $nextBackupTime');
       final delay = nextBackupTime.difference(now);
-      debugPrint('[AutoBackupManager] ⏱️ Time until backup: ${delay.inHours}h ${delay.inMinutes % 60}m ${delay.inSeconds % 60}s');
+      //debugPrint('[AutoBackupManager] ⏱️ Time until backup: ${delay.inHours}h ${delay.inMinutes % 60}m ${delay.inSeconds % 60}s');
       return delay;
     }
 
@@ -183,28 +195,28 @@ class AutoBackupManager {
 
     // If backup is overdue, schedule for next 11:13 PM
     if (timeSinceLastBackup >= targetInterval) {
-      debugPrint('[AutoBackupManager] ⏰ Backup is OVERDUE (last backup: $lastBackup)');
-      debugPrint('[AutoBackupManager] Backup overdue, scheduling for next 11:13 PM: $nextBackupTime');
+      //debugPrint('[AutoBackupManager] ⏰ Backup is OVERDUE (last backup: $lastBackup)');
+      //debugPrint('[AutoBackupManager] Backup overdue, scheduling for next 11:13 PM: $nextBackupTime');
       return nextBackupTime.difference(now);
     }
 
-    // Otherwise, schedule for the appropriate interval from last backup, but at 11:13 PM
+    // Otherwise, schedule for the appropriate interval from last backup
     final nextBackupDate = lastBackup.add(targetInterval);
     DateTime scheduledTime = DateTime(
       nextBackupDate.year,
       nextBackupDate.month,
       nextBackupDate.day,
-      23, // 11 PM
-      13, // 13 minutes
+      00, // 12 am
+      30, // 30 minutes
     );
 
     // If scheduled time is in the past, use next 11:13 PM
     if (scheduledTime.isBefore(now)) {
-      debugPrint('[AutoBackupManager] Calculated time is in the past, using next 11:13 PM');
+      //debugPrint('[AutoBackupManager] Calculated time is in the past, using next 11:13 PM');
       scheduledTime = nextBackupTime;
     }
 
-    debugPrint('[AutoBackupManager] Next backup scheduled for: $scheduledTime');
+    //debugPrint('[AutoBackupManager] Next backup scheduled for: $scheduledTime');
     final delay = scheduledTime.difference(now);
     debugPrint('[AutoBackupManager] ⏱️ Time until backup: ${delay.inHours}h ${delay.inMinutes % 60}m ${delay.inSeconds % 60}s');
     return delay;
@@ -227,27 +239,27 @@ class AutoBackupManager {
     if (Platform.isAndroid) {
       try {
         await _backupChannel.invokeMethod('cancelExactAlarm');
-        debugPrint('[AutoBackupManager] ❌ AlarmManager alarm cancelled');
+        //debugPrint('[AutoBackupManager] ❌ AlarmManager alarm cancelled');
       } catch (e) {
-        debugPrint('[AutoBackupManager] Error cancelling alarm: $e');
+        //debugPrint('[AutoBackupManager] Error cancelling alarm: $e');
       }
     }
 
     // Also cancel WorkManager task
     await Workmanager().cancelByUniqueName(autoBackupTaskName);
-    debugPrint('[AutoBackupManager] ❌ WorkManager task cancelled');
+    //debugPrint('[AutoBackupManager] ❌ WorkManager task cancelled');
   }
 
   /// Get scheduled tasks (for debugging)
   static Future<void> debugPrintScheduledTasks() async {
     try {
-      debugPrint('[AutoBackupManager] 🔍 Checking scheduled WorkManager tasks...');
+      //debugPrint('[AutoBackupManager] 🔍 Checking scheduled WorkManager tasks...');
       // Note: WorkManager doesn't expose a direct API to list tasks
       // But we can check if our task is scheduled by trying to cancel and reschedule
-      debugPrint('[AutoBackupManager] Task name: $autoBackupTaskName');
-      debugPrint('[AutoBackupManager] Task tag: $autoBackupTaskTag');
+      //debugPrint('[AutoBackupManager] Task name: $autoBackupTaskName');
+      //debugPrint('[AutoBackupManager] Task tag: $autoBackupTaskTag');
     } catch (e) {
-      debugPrint('[AutoBackupManager] Error checking scheduled tasks: $e');
+      //debugPrint('[AutoBackupManager] Error checking scheduled tasks: $e');
     }
   }
 

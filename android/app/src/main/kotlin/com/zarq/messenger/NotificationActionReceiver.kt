@@ -103,7 +103,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
 
         // Show a brief "Reply sent" notification that auto-dismisses
         val successNotification = NotificationCompat.Builder(context, "zarq_messages")
-            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("Reply sent")
             .setContentText("Your message was sent securely")
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -225,15 +225,63 @@ class NotificationActionReceiver : BroadcastReceiver() {
 
         Log.d(TAG, "Declining call from $callerName ($callerUid)")
 
-        // Send decline signal via WebSocket (if connected) or API
-        // For now, just dismiss the notification
-        // The Flutter app will handle the actual decline logic when the WebSocket receives the event
+        // Send call_rejected signal to backend
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val authToken = getFirebaseAuthToken()
+                if (authToken != null) {
+                    sendCallRejection(callerUid, authToken)
+                    Log.d(TAG, "Call rejection signal sent to backend")
+                } else {
+                    Log.e(TAG, "No auth token available for call rejection")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending call rejection: ${e.message}")
+            }
+        }
 
-        // Dismiss the call notification
+        // Dismiss the call notification immediately
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.cancel(ZarqNotificationService.CALL_NOTIFICATION_ID)
 
         Log.d(TAG, "Call declined and notification dismissed")
+    }
+
+    private suspend fun sendCallRejection(callerUid: String, authToken: String): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                val url = URL("$BASE_URL/v1/calls/reject")
+                val connection = url.openConnection() as HttpURLConnection
+
+                val jsonPayload = JSONObject().apply {
+                    put("recipient_uid", callerUid)
+                }
+
+                connection.apply {
+                    requestMethod = "POST"
+                    setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("Authorization", "Bearer $authToken")
+                    doOutput = true
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                }
+
+                connection.outputStream.use { os ->
+                    os.write(jsonPayload.toString().toByteArray())
+                    os.flush()
+                }
+
+                val responseCode = connection.responseCode
+                Log.d(TAG, "Call rejection response: $responseCode")
+
+                connection.disconnect()
+                responseCode in 200..299
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Network error sending call rejection: ${e.message}")
+                false
+            }
+        }
     }
 
     private fun showConfirmationNotification(context: Context, message: String) {
