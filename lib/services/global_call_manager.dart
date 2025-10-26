@@ -362,8 +362,8 @@ class GlobalCallManager with ChangeNotifier {
       await _webrtcService!.acceptCall(callType: _activeCall!.callType);
       await _webrtcService!.handleOffer(_activeCall!.sdp);
 
-      // 🔔 Stop incoming ringtone and play connecting tone
-      RingtoneService().playConnectingTone();
+      // 🔔 Keep ringtone playing during connecting state
+      // Ringtone will stop automatically when call reaches connected state
 
       // Start call duration timer
       _startCallDurationTimer();
@@ -434,8 +434,8 @@ class GlobalCallManager with ChangeNotifier {
 
       await _webrtcService!.handleAnswer(decryptedSdp);
 
-      // 🔔 Stop outgoing ringtone when answer is received
-      RingtoneService().playConnectingTone();
+      // 🔔 Keep ringtone playing during connecting state
+      // Ringtone will stop automatically when call reaches connected state
 
       // Start call duration timer (call is now connected)
       _startCallDurationTimer();
