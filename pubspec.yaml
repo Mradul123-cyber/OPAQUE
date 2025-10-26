@@ -120,6 +120,10 @@ flutter:
     - assets/terms_of_service.md
     - assets/contact_support.md
     - assets/zarq_logo_circle.png
+    # Ringtone assets for call states
+    - assets/ringtones/incoming.mp3
+    - assets/ringtones/outgoing.mp3
+    - assets/ringtones/connecting.mp3
 
   # To add assets to your application, add an assets section, like this:
   # assets:

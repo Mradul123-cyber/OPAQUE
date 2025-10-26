@@ -8,6 +8,7 @@ import 'webrtc_service.dart';
 import 'SignalService.dart';
 import 'system_overlay_service.dart';
 import 'device_service.dart'; // 🔧 FIX: Import DeviceService for getting recipient device ID
+import 'ringtone_service.dart'; // 🔔 Ringtone service for call states
 
 class CallInfo {
   final String callerUid;
@@ -89,6 +90,7 @@ class GlobalCallManager with ChangeNotifier {
   Future<void> initialize() async {
     await localRenderer.initialize();
     await remoteRenderer.initialize();
+    await RingtoneService().initialize(); // 🔔 Initialize ringtone service
     // print('[GlobalCallManager] Initialized');
   }
 
@@ -182,12 +184,20 @@ class GlobalCallManager with ChangeNotifier {
   void setIncomingCall(CallInfo callInfo) {
     _incomingCall = callInfo;
     // print('[GlobalCallManager] ✅ setIncomingCall - callerName: ${callInfo.callerName}, avatarUrl: ${callInfo.avatarUrl}, conversationId: ${callInfo.conversationId}');
+
+    // 🔔 Play incoming call ringtone
+    RingtoneService().playIncomingRingtone();
+
     notifyListeners();
     // print('[GlobalCallManager] ✅ notifyListeners called - hasIncomingCall: $hasIncomingCall');
   }
 
   void clearIncomingCall() {
     _incomingCall = null;
+
+    // 🔔 Stop ringtone when incoming call is cleared
+    RingtoneService().stop();
+
     notifyListeners();
   }
 
@@ -253,8 +263,20 @@ class GlobalCallManager with ChangeNotifier {
         }
       });
 
+      // 🔔 Listen to call state changes to stop ringtones when connected
+      _webrtcService!.callStateStream.listen((state) {
+        if (state == CallState.connected) {
+          // Stop all ringtones when call is connected
+          RingtoneService().stop();
+          print('[GlobalCallManager] 🔔 Call connected - stopped all ringtones');
+        }
+      });
+
       // Start call with recipient's avatar
       await _webrtcService!.startCall(callType: callType, avatarUrl: recipientAvatarUrl);
+
+      // 🔔 Play outgoing call ringtone (ringback tone)
+      RingtoneService().playOutgoingRingtone();
 
       notifyListeners();
     } catch (e) {
@@ -315,6 +337,15 @@ class GlobalCallManager with ChangeNotifier {
         }
       });
 
+      // 🔔 Listen to call state changes to stop ringtones when connected
+      _webrtcService!.callStateStream.listen((state) {
+        if (state == CallState.connected) {
+          // Stop all ringtones when call is connected
+          RingtoneService().stop();
+          print('[GlobalCallManager] 🔔 Call connected - stopped all ringtones');
+        }
+      });
+
       // 🔧 FIX: Pass buffered ICE candidates to WebRTC service
       if (_bufferedIceCandidates.isNotEmpty) {
         print('[GlobalCallManager] 📦 Passing ${_bufferedIceCandidates.length} buffered ICE candidates to WebRTC service');
@@ -330,6 +361,9 @@ class GlobalCallManager with ChangeNotifier {
       // Accept call
       await _webrtcService!.acceptCall(callType: _activeCall!.callType);
       await _webrtcService!.handleOffer(_activeCall!.sdp);
+
+      // 🔔 Stop incoming ringtone and play connecting tone
+      RingtoneService().playConnectingTone();
 
       // Start call duration timer
       _startCallDurationTimer();
@@ -349,6 +383,9 @@ class GlobalCallManager with ChangeNotifier {
     }
 
     // print('[GlobalCallManager] ❌ Rejecting call from ${_incomingCall!.callerName}');
+
+    // 🔔 Stop incoming ringtone
+    RingtoneService().stop();
 
     // Send rejection signal
     onSendSignal?.call({
@@ -396,6 +433,9 @@ class GlobalCallManager with ChangeNotifier {
       }
 
       await _webrtcService!.handleAnswer(decryptedSdp);
+
+      // 🔔 Stop outgoing ringtone when answer is received
+      RingtoneService().playConnectingTone();
 
       // Start call duration timer (call is now connected)
       _startCallDurationTimer();
@@ -488,6 +528,9 @@ class GlobalCallManager with ChangeNotifier {
     // print('[GlobalCallManager] 🔴 Ending call - Current state: isInCall=$_isInCall, hasActiveCall=${_activeCall != null}');
 
     try {
+      // 🔔 Stop all ringtones
+      RingtoneService().stop();
+
       // Hide system overlay if shown
       if (_isSystemOverlayShown) {
         await _hideSystemOverlay();
