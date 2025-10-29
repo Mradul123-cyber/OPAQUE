@@ -77,10 +77,9 @@ class BackupInfoScreen extends StatelessWidget {
                 content: '',
                 children: [
                   _buildListItem(context, '💬 All conversations and messages'),
-                  _buildListItem(context, '📎 Media attachments (images, videos, documents)'),
+                  _buildListItem(context, '📎 Media attachments (images, videos, documents, audio)'),
                   _buildListItem(context, '🔐 Signal Protocol encryption keys'),
-                  _buildListItem(context, '👤 User profile information'),
-                  _buildListItem(context, '⚙️ App settings and preferences'),
+                  _buildListItem(context, '👤 Conversation metadata and info'),
                 ],
               ),
 
@@ -145,10 +144,10 @@ class BackupInfoScreen extends StatelessWidget {
                     context: context,
                     icon: Icons.schedule,
                     title: 'Auto-Backup',
-                    description: 'Automatic scheduled backups run at 2 AM while you sleep',
+                    description: 'Automatic backups when you open the app',
                     features: [
                       '• Daily, weekly, or monthly frequency',
-                      '• Runs at 2 AM in background',
+                      '• Runs automatically when you open the app',
                       '• Local storage only (no internet needed)',
                       '• Passphrase stored securely in Android Keystore',
                     ],
@@ -169,24 +168,60 @@ class BackupInfoScreen extends StatelessWidget {
                     context: context,
                     icon: Icons.phone_android,
                     title: 'Local Storage',
-                    pros: ['Fast backup', 'No internet needed', 'Free unlimited storage', 'Works offline'],
-                    cons: ['Lost if phone is damaged', 'Requires manual file management'],
+                    pros: ['Fast backup', 'No internet needed', 'Works offline', 'Quick restore'],
+                    cons: ['Inaccessible after reinstall', 'Lost if phone is damaged', 'Not portable to new device'],
                   ),
                   SizedBox(height: spacing2),
                   _buildStorageOption(
                     context: context,
                     icon: Icons.cloud,
-                    title: 'Google Drive (Manual Only)',
-                    pros: ['Cloud backup', 'Access from anywhere', 'Safe from device loss'],
+                    title: 'Google Drive (Recommended)',
+                    pros: ['Persists after uninstall', 'Access from anywhere', 'Safe from device loss', 'Permanent storage'],
                     cons: ['Requires Google account', 'Internet connection needed', 'Manual backup only'],
                   ),
                   SizedBox(height: spacing2),
                   _buildStorageOption(
                     context: context,
                     icon: Icons.backup_table,
-                    title: 'Both (Manual Backup)',
-                    pros: ['Double protection', 'Best of both worlds', 'Maximum safety'],
+                    title: 'Both (Best Protection)',
+                    pros: ['Double protection', 'Quick local restore', 'Permanent cloud backup', 'Maximum safety'],
                     cons: ['Uses more time for backup', 'Requires internet'],
+                  ),
+                ],
+              ),
+
+              SizedBox(height: spacing1),
+
+              // Media Files Storage
+              _buildSection(
+                context: context,
+                icon: Icons.perm_media,
+                title: 'Media Files Storage',
+                content: '',
+                children: [
+                  _buildInfoCard(
+                    context: context,
+                    title: 'App-Specific Storage',
+                    description: 'Media files (images, videos, documents, audio) are stored in app-specific storage '
+                        '(Android/media/com.zarq.messenger). After uninstall, the app loses access to these files. '
+                        'They remain on device but are not accessible by the app. This is required by Google Play policies.',
+                    color: Colors.orange,
+                  ),
+                  SizedBox(height: spacing2),
+                  _buildInfoCard(
+                    context: context,
+                    title: 'Google Drive for Persistence',
+                    description: 'To keep your media files after reinstalling the app, you MUST back up to Google Drive. '
+                        'When you restore from Google Drive, all media files are re-downloaded automatically.',
+                    color: Colors.blue,
+                  ),
+                  SizedBox(height: spacing2),
+                  _buildInfoCard(
+                    context: context,
+                    title: 'Import Backup Files',
+                    description: 'You can import backup files from anywhere on your device using the "Import Backup File" '
+                        'button. This includes old local backups that remain on device after reinstall, or backups downloaded from Google Drive.',
+                    color: Colors.green,
                   ),
                 ],
               ),
@@ -202,14 +237,14 @@ class BackupInfoScreen extends StatelessWidget {
                 children: [
                   _buildTipCard(context, '🔑 Use a Strong Passphrase',
                       'Choose a memorable but complex passphrase. Mix letters, numbers, and symbols.'),
-                  _buildTipCard(context, '💾 Regular Backups',
-                      'Enable auto-backup or manually backup weekly to avoid data loss.'),
+                  _buildTipCard(context, '☁️ Always Use Google Drive',
+                      'Local backups become inaccessible after reinstall. Use Google Drive for permanent backup storage.'),
                   _buildTipCard(context, '📝 Save Your Passphrase',
                       'Write down your passphrase in a safe place. You cannot recover it if lost.'),
+                  _buildTipCard(context, '💾 Regular Google Drive Backups',
+                      'Manually backup to Google Drive weekly to ensure you can restore after reinstall.'),
                   _buildTipCard(context, '✅ Test Restore',
-                      'Periodically test restoring from backup to ensure it works.'),
-                  _buildTipCard(context, '🔄 Multiple Copies',
-                      'Keep backups in multiple locations (local + cloud) for redundancy.'),
+                      'Periodically test restoring from Google Drive backup to ensure it works.'),
                 ],
               ),
 
@@ -223,10 +258,11 @@ class BackupInfoScreen extends StatelessWidget {
                 content: '',
                 children: [
                   _buildNumberedStep(context, 1, 'Navigate to Backup Management'),
-                  _buildNumberedStep(context, 2, 'Find your backup in Local or Google Drive section'),
-                  _buildNumberedStep(context, 3, 'Tap the restore icon'),
+                  _buildNumberedStep(context, 2, 'Option A: View Google Drive Backups → Select backup'),
+                  _buildNumberedStep(context, 3, 'Option B: Import Backup File → Download from Drive → Select file'),
                   _buildNumberedStep(context, 4, 'Enter your backup passphrase'),
                   _buildNumberedStep(context, 5, 'Wait for restore to complete (app will restart)'),
+                  _buildNumberedStep(context, 6, 'All messages and media will be restored automatically'),
                 ],
               ),
 
@@ -268,6 +304,26 @@ class BackupInfoScreen extends StatelessWidget {
                     context,
                     'Why is auto-backup local storage only?',
                     'Auto-backup saves to local storage for 100% reliability - no internet needed, no authentication issues, works offline. For cloud backups, use manual backup which offers both Local and Google Drive options.',
+                  ),
+                  _buildFAQ(
+                    context,
+                    'What happens to my media files after uninstall?',
+                    'Media files (images, videos, documents) in app-specific storage become inaccessible after uninstall. The files remain on device but the app cannot access them anymore. This is required by Google Play policies. Always back up to Google Drive to preserve your media.',
+                  ),
+                  _buildFAQ(
+                    context,
+                    'Will my media be restored from Google Drive backup?',
+                    'Yes! When you restore from a Google Drive backup, all messages AND media files are automatically re-downloaded and restored. This is why Google Drive backups are recommended.',
+                  ),
+                  _buildFAQ(
+                    context,
+                    'Can I access old local backups after reinstalling?',
+                    'Yes! Use the "Import Backup File" feature. Local backup files remain on device but the app cannot detect them automatically after reinstall. Simply select the backup file using Import Backup File and restore. Alternatively, back up to Google Drive before uninstalling for easier access.',
+                  ),
+                  _buildFAQ(
+                    context,
+                    'How do I import a backup file?',
+                    'Download your .encrypted backup file from Google Drive to your device. In Backup Management, tap "Import Backup File", select the downloaded file, and enter your passphrase. The app will restore everything.',
                   ),
                 ],
               ),

@@ -12,6 +12,7 @@ class UserSettings {
   final String encryptionAnimationStyle; // 'dynamic', 'minimal', 'static'
   final String findFriendsScreenStyle; // 'default' or 'dark'
   final String friendRequestsScreenStyle; // 'default' or 'dark'
+  final String notesScreenStyle; // 'default' or 'dark'
 
   UserSettings({
     required this.bubbleStyle,
@@ -23,6 +24,7 @@ class UserSettings {
     this.encryptionAnimationStyle = 'static', // Default to static (animations disabled for now)
     this.findFriendsScreenStyle = 'default',
     this.friendRequestsScreenStyle = 'default',
+    this.notesScreenStyle = 'default',
   });
 }
 
@@ -39,6 +41,7 @@ class UserSettingsLocalService {
   static const String _encryptionAnimationStyleKey = 'encryption_animation_style';
   static const String _findFriendsScreenStyleKey = 'find_friends_screen_style';
   static const String _friendRequestsScreenStyleKey = 'friend_requests_screen_style';
+  static const String _notesScreenStyleKey = 'notes_screen_style';
 
   /// Load settings from local storage
   Future<UserSettings> loadSettings() async {
@@ -55,6 +58,7 @@ class UserSettingsLocalService {
         encryptionAnimationStyle: prefs.getString(_encryptionAnimationStyleKey) ?? 'static',
         findFriendsScreenStyle: prefs.getString(_findFriendsScreenStyleKey) ?? 'default',
         friendRequestsScreenStyle: prefs.getString(_friendRequestsScreenStyleKey) ?? 'default',
+        notesScreenStyle: prefs.getString(_notesScreenStyleKey) ?? 'default',
       );
     } catch (e) {
       // Return defaults on error
@@ -68,6 +72,7 @@ class UserSettingsLocalService {
         encryptionAnimationStyle: 'static',
         findFriendsScreenStyle: 'default',
         friendRequestsScreenStyle: 'default',
+        notesScreenStyle: 'default',
       );
     }
   }
@@ -86,6 +91,7 @@ class UserSettingsLocalService {
       prefs.setString(_encryptionAnimationStyleKey, settings.encryptionAnimationStyle),
       prefs.setString(_findFriendsScreenStyleKey, settings.findFriendsScreenStyle),
       prefs.setString(_friendRequestsScreenStyleKey, settings.friendRequestsScreenStyle),
+      prefs.setString(_notesScreenStyleKey, settings.notesScreenStyle),
     ]);
   }
 
@@ -103,6 +109,7 @@ class UserSettingsLocalService {
       prefs.remove(_encryptionAnimationStyleKey),
       prefs.remove(_findFriendsScreenStyleKey),
       prefs.remove(_friendRequestsScreenStyleKey),
+      prefs.remove(_notesScreenStyleKey),
     ]);
   }
 }

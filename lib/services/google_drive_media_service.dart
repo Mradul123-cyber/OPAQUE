@@ -170,13 +170,13 @@ class GoogleDriveMediaService {
       String? storagePath;
 
       if (attachmentType == 'image') {
-        storagePath = '/storage/emulated/0/Zarq_Messenger/Media/Images/$userUid/attachment_$attachmentId.jpg';
+        storagePath = '/storage/emulated/0/Android/media/com.zarq.messenger/Media/Images/$userUid/attachment_$attachmentId.jpg';
       } else if (attachmentType == 'video') {
-        storagePath = '/storage/emulated/0/Zarq_Messenger/Media/Videos/$userUid/attachment_$attachmentId.mp4';
+        storagePath = '/storage/emulated/0/Android/media/com.zarq.messenger/Media/Videos/$userUid/attachment_$attachmentId.mp4';
       } else if (attachmentType == 'audio') {
-        storagePath = '/storage/emulated/0/Zarq_Messenger/Media/Audio/$userUid/attachment_$attachmentId.aac';
+        storagePath = '/storage/emulated/0/Android/media/com.zarq.messenger/Media/Audio/$userUid/attachment_$attachmentId.aac';
       } else if (attachmentType == 'document') {
-        final docDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Documents/$userUid');
+        final docDir = Directory('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Documents/$userUid');
         if (await docDir.exists()) {
           final docFiles = await docDir.list().where((f) => f.path.contains('attachment_$attachmentId')).toList();
           if (docFiles.isNotEmpty) {
@@ -319,16 +319,16 @@ class GoogleDriveMediaService {
       Directory storageDir;
 
       if (attachmentType == 'image') {
-        storageDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Images/$userUid');
+        storageDir = Directory('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Images/$userUid');
         storagePath = path.join(storageDir.path, 'attachment_$attachmentId.jpg');
       } else if (attachmentType == 'video') {
-        storageDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Videos/$userUid');
+        storageDir = Directory('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Videos/$userUid');
         storagePath = path.join(storageDir.path, 'attachment_$attachmentId.mp4');
       } else if (attachmentType == 'audio') {
-        storageDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Audio/$userUid');
+        storageDir = Directory('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Audio/$userUid');
         storagePath = path.join(storageDir.path, 'attachment_$attachmentId.aac');
       } else if (attachmentType == 'document') {
-        storageDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Documents/$userUid');
+        storageDir = Directory('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Documents/$userUid');
         // For documents, we need to get the actual file extension from Drive
         final fileInfo = await driveApi.files.get(fileId, $fields: 'name') as drive.File;
         final extension = path.extension(fileInfo.name ?? '');

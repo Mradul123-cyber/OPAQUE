@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:workmanager/workmanager.dart';
 import 'backup_service.dart';
 import 'auto_backup_manager.dart';
+import 'mediastore_backup_service.dart';
 
 /// Helper class for testing auto-backup functionality
 class AutoBackupTestHelper {
@@ -47,19 +48,18 @@ class AutoBackupTestHelper {
       // Save based on destination
       if (settings.destination == BackupDestination.local ||
           settings.destination == BackupDestination.both) {
-        debugPrint('[TEST] Saving to local storage...');
-
-        // Copy to Downloads folder
-        final downloadsDir = Directory('/storage/emulated/0/Download/Zarq_Backups');
-        if (!await downloadsDir.exists()) {
-          await downloadsDir.create(recursive: true);
-        }
+        debugPrint('[TEST] Saving to MediaStore Downloads...');
 
         final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-        final backupPath = '${downloadsDir.path}/backup_$timestamp.encrypted';
-        await encryptedFile.copy(backupPath);
+        final fileName = 'backup_$timestamp.encrypted';
 
-        debugPrint('[TEST] Local backup saved: $backupPath');
+        final uri = await MediaStoreBackupService.saveBackupFile(encryptedFile, fileName);
+        if (uri != null) {
+          debugPrint('[TEST] Local backup saved to MediaStore: $uri');
+        } else {
+          debugPrint('[TEST] ❌ Failed to save backup to MediaStore');
+          throw Exception('Failed to save backup to MediaStore');
+        }
       }
 
       if (settings.destination == BackupDestination.googleDrive ||

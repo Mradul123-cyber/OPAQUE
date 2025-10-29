@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zarq_messenger/app_theme.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter_quill/flutter_quill.dart';
 import 'package:zarq_messenger/services/SignalService.dart';
 import 'package:zarq_messenger/services/key_rotation_service.dart';
 import 'package:zarq_messenger/services/user_settings_provider.dart';
@@ -18,6 +19,7 @@ import 'package:zarq_messenger/services/backup_service.dart';
 import 'package:zarq_messenger/services/backup_settings_provider.dart';
 import 'package:zarq_messenger/services/auto_backup_manager.dart';
 import 'package:zarq_messenger/services/backup_notification_service.dart';
+import 'package:zarq_messenger/services/mediastore_backup_service.dart';
 import 'package:path/path.dart' as path;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:restart_app/restart_app.dart';
@@ -37,9 +39,11 @@ import 'services/device_service.dart';
 import 'services/sent_message_service.dart';
 import 'services/global_call_manager.dart';
 import 'services/system_overlay_service.dart';
+import 'services/share_service.dart';
 import 'widgets/global_call_overlay.dart';
 import 'chat_screen.dart';
 import 'setting_screen.dart';
+import 'screens/share_conversation_picker_screen.dart';
 
 // Import the NavigationHandler
 import 'services/navigation_handler.dart';
@@ -54,6 +58,9 @@ void main() async {
   await AutoBackupManager.initialize();
 
   SentMessageService.initialize();
+
+  // Initialize share service
+  await ShareService.initialize();
 
   final databaseService = DatabaseService.instance;
 
@@ -108,10 +115,55 @@ class _MyAppState extends State<MyApp> {
   // to avoid conflicts with the bidirectional com.zarq/backup channel
   static const MethodChannel _backupTriggerChannel = MethodChannel('com.zarq/backup_trigger');
 
+  StreamSubscription<SharedContent>? _shareSubscription;
+
   @override
   void initState() {
     super.initState();
     _setupBackupHandler();
+    _setupShareListener();
+  }
+
+  @override
+  void dispose() {
+    _shareSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _setupShareListener() {
+    debugPrint('📤 [MyApp] Setting up share content listener...');
+    _shareSubscription = ShareService.sharedContentStream.listen((sharedContent) {
+      debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      debugPrint('📤 [MyApp] 🔥 STREAM FIRED! Received shared content: ${sharedContent.type}');
+      debugPrint('📤 [MyApp] URI: ${sharedContent.uri}');
+      debugPrint('📤 [MyApp] Navigator key: ${MyApp.navigatorKey.currentState}');
+      debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+      // Navigate to conversation picker screen
+      final navigatorState = MyApp.navigatorKey.currentState;
+      if (navigatorState != null) {
+        debugPrint('📤 [MyApp] ✅ Navigating to ShareConversationPickerScreen...');
+        navigatorState.push(
+          MaterialPageRoute(
+            builder: (context) {
+              debugPrint('📤 [MyApp] 🏗️ Building ShareConversationPickerScreen...');
+              return ShareConversationPickerScreen(
+                sharedContent: sharedContent,
+              );
+            },
+          ),
+        );
+      } else {
+        debugPrint('📤 [MyApp] ❌ Navigator state is null! Cannot navigate.');
+      }
+    });
+    debugPrint('📤 [MyApp] ✅ Share listener setup complete');
+
+    // NOW check for pending shared content (after listener is set up)
+    debugPrint('📤 [MyApp] Checking for pending shared content...');
+    ShareService.checkForPendingSharedContent().then((_) {
+      debugPrint('📤 [MyApp] ✅ Pending content check complete');
+    });
   }
 
   void _setupBackupHandler() {
@@ -162,24 +214,25 @@ class _MyAppState extends State<MyApp> {
             );
             debugPrint('[MyApp] Step 6: Backup encrypted');
 
-            // Save to Downloads folder (like manual backup)
-            debugPrint('[MyApp] Step 7: Saving to Downloads folder...');
+            // Save to MediaStore Downloads (persists after uninstall, no permissions needed)
+            debugPrint('[MyApp] Step 7: Saving to MediaStore Downloads...');
             await BackupNotificationService.showProgressNotification('Saving to local storage...', 70);
-            final downloadsDir = Directory('/storage/emulated/0/Download/Zarq_Backups');
-            if (!await downloadsDir.exists()) {
-              await downloadsDir.create(recursive: true);
-              debugPrint('[MyApp] Created Zarq_Backups directory');
-            }
 
             // Use "auto_backup_" prefix to differentiate from manual backups
             final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-            final backupPath = '${downloadsDir.path}/auto_backup_$timestamp.encrypted';
-            await encryptedFile.copy(backupPath);
-            debugPrint('[MyApp] Backup copied to: $backupPath');
+            final fileName = 'auto_backup_$timestamp.encrypted';
+
+            final uri = await MediaStoreBackupService.saveBackupFile(encryptedFile, fileName);
+            if (uri != null) {
+              debugPrint('[MyApp] Backup saved to MediaStore: $uri');
+            } else {
+              debugPrint('[MyApp] ❌ Failed to save backup to MediaStore');
+              throw Exception('Failed to save backup to MediaStore');
+            }
 
             // Clean up old auto-backups (keep only 2 most recent)
             debugPrint('[MyApp] Step 8: Cleaning up old auto-backups...');
-            await _cleanupOldAutoBackups(downloadsDir);
+            await _cleanupOldAutoBackups();
 
             // Update last backup time
             debugPrint('[MyApp] Step 9: Updating last backup time...');
@@ -190,7 +243,6 @@ class _MyAppState extends State<MyApp> {
             debugPrint('╔════════════════════════════════════════════════════════════╗');
             debugPrint('║ ✅ AUTO-BACKUP COMPLETED SUCCESSFULLY!                    ║');
             debugPrint('╠════════════════════════════════════════════════════════════╣');
-            debugPrint('║ File: $backupPath');
             debugPrint('╚════════════════════════════════════════════════════════════╝');
             debugPrint('');
 
@@ -226,17 +278,16 @@ class _MyAppState extends State<MyApp> {
 
   /// Clean up old auto-backups, keeping only the 2 most recent
   /// Manual backups (filename starts with "backup_") are NOT deleted
-  Future<void> _cleanupOldAutoBackups(Directory backupDir) async {
+  Future<void> _cleanupOldAutoBackups() async {
     try {
       debugPrint('[MyApp] Cleaning up old auto-backups...');
 
-      // List all files in backup directory
-      final files = await backupDir.list().toList();
+      // List all backup files from MediaStore
+      final allBackups = await MediaStoreBackupService.listBackupFiles();
 
       // Filter only auto-backups (filename starts with "auto_backup_")
-      final autoBackups = files
-          .where((f) => f is File && f.path.contains('auto_backup_'))
-          .cast<File>()
+      final autoBackups = allBackups
+          .where((backup) => (backup['name'] as String).startsWith('auto_backup_'))
           .toList();
 
       debugPrint('[MyApp] Found ${autoBackups.length} auto-backup files');
@@ -248,7 +299,11 @@ class _MyAppState extends State<MyApp> {
       }
 
       // Sort by modification time (newest first)
-      autoBackups.sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
+      autoBackups.sort((a, b) {
+        final aTime = a['dateModified'] as int;
+        final bTime = b['dateModified'] as int;
+        return bTime.compareTo(aTime);
+      });
 
       // Keep only the 2 most recent, delete the rest
       final backupsToDelete = autoBackups.sublist(2);
@@ -256,10 +311,16 @@ class _MyAppState extends State<MyApp> {
 
       for (final backup in backupsToDelete) {
         try {
-          await backup.delete();
-          debugPrint('[MyApp] ✅ Deleted old auto-backup: ${backup.path}');
+          final uri = backup['uri'] as String;
+          final name = backup['name'] as String;
+          final deleted = await MediaStoreBackupService.deleteBackupFile(uri);
+          if (deleted) {
+            debugPrint('[MyApp] ✅ Deleted old auto-backup: $name');
+          } else {
+            debugPrint('[MyApp] ❌ Failed to delete $name');
+          }
         } catch (e) {
-          debugPrint('[MyApp] ❌ Failed to delete ${backup.path}: $e');
+          debugPrint('[MyApp] ❌ Failed to delete backup: $e');
         }
       }
 
@@ -279,6 +340,9 @@ class _MyAppState extends State<MyApp> {
       title: 'Zarq Messenger',
       theme: zarqDarkTheme,
       navigatorKey: MyApp.navigatorKey,
+      localizationsDelegates: const [
+        FlutterQuillLocalizations.delegate,
+      ],
       home: const AuthGate(),
       builder: (context, child) {
         return Consumer<GlobalCallManager>(
@@ -884,52 +948,35 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     if (!mounted) return;
 
     try {
-      // Request storage permission first
-      if (Platform.isAndroid) {
-        final manageStorageStatus = await Permission.manageExternalStorage.status;
-        if (!manageStorageStatus.isGranted) {
-          // print('[BackupDetection] Storage permission not granted, skipping backup check');
-          return;
-        }
-      }
+      // TEMPORARY: Check for backups in BOTH MediaStore (new) and file system (old)
+      debugPrint('[BackupDetection] 🔍 Checking for backups (MediaStore + old files)...');
 
-      // Check for backups in Download/Zarq_Backups
-      final downloadsDir = Directory('/storage/emulated/0/Download/Zarq_Backups');
-
-      if (!await downloadsDir.exists()) {
-        // print('[BackupDetection] No backup folder found');
-        return;
-      }
-
-      final backups = await downloadsDir.list().toList();
-      final backupFiles = backups.where((file) => file.path.endsWith('.encrypted')).toList();
+      final backupFiles = await MediaStoreBackupService.listAllBackups();
+      debugPrint('[BackupDetection] 📋 Found ${backupFiles.length} total backup files');
 
       if (backupFiles.isEmpty) {
-        // print('[BackupDetection] No backup files found');
+        debugPrint('[BackupDetection] ⚠️ No backup files found');
         return;
       }
 
-      // Sort by modification time (most recent first)
-      backupFiles.sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
+      debugPrint('[BackupDetection] ✅ Found ${backupFiles.length} backup(s) after login');
 
-      // print('[BackupDetection] Found ${backupFiles.length} backup(s) after login');
-
-      // Check if the most recent backup was already restored
+      // Backups are already sorted by modification time (newest first) from MediaStore
       final mostRecentBackup = backupFiles.first;
-      final backupFileName = path.basename(mostRecentBackup.path);
-      final backupModified = mostRecentBackup.statSync().modified.millisecondsSinceEpoch;
+      final backupUri = mostRecentBackup['uri'] as String;
+      final backupModified = mostRecentBackup['dateModified'] as int;
 
       final prefs = await SharedPreferences.getInstance();
-      final lastRestoredBackupName = prefs.getString('last_restored_backup_name');
+      final lastRestoredBackupUri = prefs.getString('last_restored_backup_uri');
       final lastRestoredTimestamp = prefs.getInt('last_restored_backup_timestamp');
 
       // Skip if this exact backup was already restored
-      if (lastRestoredBackupName == backupFileName && lastRestoredTimestamp == backupModified) {
-        // print('[BackupDetection] ✅ Most recent backup was already restored. Skipping.');
+      if (lastRestoredBackupUri == backupUri && lastRestoredTimestamp == backupModified) {
+        debugPrint('[BackupDetection] ✅ Most recent backup was already restored. Skipping.');
         return;
       }
 
-      // print('[BackupDetection] 🆕 Found new/unrestored backup: $backupFileName');
+      debugPrint('[BackupDetection] 🆕 Found new/unrestored backup');
 
       // Show restore dialog
       if (mounted) {
@@ -940,11 +987,11 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     }
   }
 
-  void _showBackupRestoreDialog(List<FileSystemEntity> backups) {
+  void _showBackupRestoreDialog(List<Map<String, dynamic>> backups) {
     final mostRecentBackup = backups.first;
-    final backupStat = mostRecentBackup.statSync();
-    final backupDate = backupStat.modified.toLocal();
-    final backupSize = (backupStat.size / (1024 * 1024)).toStringAsFixed(2);
+    final backupDate = DateTime.fromMillisecondsSinceEpoch(mostRecentBackup['dateModified'] as int).toLocal();
+    final backupSize = ((mostRecentBackup['size'] as int) / (1024 * 1024)).toStringAsFixed(2);
+    final backupName = mostRecentBackup['name'] as String;
 
     showDialog(
       context: context,
@@ -974,7 +1021,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
             const Divider(color: Colors.white30),
             const SizedBox(height: 12),
             Text(
-              'Most Recent: ${path.basename(mostRecentBackup.path)}',
+              'Most Recent: $backupName',
               style: const TextStyle(color: Colors.white, fontSize: 13),
             ),
             const SizedBox(height: 8),
@@ -1221,48 +1268,10 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
   }
 
   Future<bool> _requestStoragePermission() async {
-    try {
-      if (Platform.isAndroid) {
-        // print('[BackupDetection] Checking storage permission for Android 15...');
-
-        // For Android 11+ (API 30+), we need MANAGE_EXTERNAL_STORAGE for Downloads folder
-        final manageStorageStatus = await Permission.manageExternalStorage.status;
-        // print('[BackupDetection] MANAGE_EXTERNAL_STORAGE status: $manageStorageStatus');
-
-        if (manageStorageStatus.isGranted) {
-          // print('[BackupDetection] Full storage access already granted');
-          return true;
-        }
-
-        // Request full storage access
-        // print('[BackupDetection] Requesting MANAGE_EXTERNAL_STORAGE permission...');
-        final status = await Permission.manageExternalStorage.request();
-        // print('[BackupDetection] Permission request result: $status');
-
-        if (status.isGranted) {
-          // print('[BackupDetection] Full storage access granted');
-          return true;
-        } else if (status.isPermanentlyDenied) {
-          // print('[BackupDetection] Storage permission permanently denied');
-          if (mounted) {
-            _showPermissionDeniedDialog();
-          }
-          return false;
-        } else if (status.isDenied) {
-          // print('[BackupDetection] Storage permission denied by user');
-          // Try to access anyway (might work with scoped storage)
-          return true;
-        } else {
-          // print('[BackupDetection] Unknown permission status: $status');
-          return true;
-        }
-      }
-      return true;
-    } catch (e) {
-      // print('[BackupDetection] Error requesting permission: $e');
-      // Fallback: try to access anyway
-      return true;
-    }
+    // Android/media directory doesn't require MANAGE_EXTERNAL_STORAGE permission
+    // Apps can read/write to their own Android/media/package_name/ directory without special permissions
+    // This is Google Play compliant and follows WhatsApp's approach
+    return true;
   }
 
   void _showPermissionDeniedDialog() {
@@ -1325,50 +1334,27 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
         return;
       }
 
-      // Check for backups in Download/Zarq_Backups (not Downloads)
-      final downloadsDir = Directory('/storage/emulated/0/Download/Zarq_Backups');
-
-      if (!await downloadsDir.exists()) {
-        // print('[BackupDetection] No backup folder found at: ${downloadsDir.path}');
-        return;
-      }
-
-      // print('[BackupDetection] Checking backups in: ${downloadsDir.path}');
-
-      final backups = await downloadsDir.list().toList();
-      final backupFiles = backups.where((file) =>
-        file.path.endsWith('.encrypted')
-      ).toList();
+      // TEMPORARY: Check for backups in BOTH MediaStore (new) and file system (old)
+      final backupFiles = await MediaStoreBackupService.listAllBackups();
 
       if (backupFiles.isEmpty) {
-        // print('[BackupDetection] No backup files found');
         return;
       }
 
-      // Sort by modification time (most recent first)
-      backupFiles.sort((a, b) =>
-        b.statSync().modified.compareTo(a.statSync().modified)
-      );
-
-      // print('[BackupDetection] Found ${backupFiles.length} backup(s)');
-
-      // Check if the most recent backup was already restored
+      // Backups are already sorted by modification time (newest first) from MediaStore
       final mostRecentBackup = backupFiles.first;
-      final backupFileName = path.basename(mostRecentBackup.path);
-      final backupModified = mostRecentBackup.statSync().modified.millisecondsSinceEpoch;
+      final backupUri = mostRecentBackup['uri'] as String;
+      final backupModified = mostRecentBackup['dateModified'] as int;
 
       final prefs = await SharedPreferences.getInstance();
-      final lastRestoredBackupName = prefs.getString('last_restored_backup_name');
+      final lastRestoredBackupUri = prefs.getString('last_restored_backup_uri');
       final lastRestoredTimestamp = prefs.getInt('last_restored_backup_timestamp');
 
       // Skip if this exact backup was already restored
-      if (lastRestoredBackupName == backupFileName &&
+      if (lastRestoredBackupUri == backupUri &&
           lastRestoredTimestamp == backupModified) {
-        // print('[BackupDetection] ✅ Most recent backup "$backupFileName" was already restored. Skipping dialog.');
         return;
       }
-
-      // print('[BackupDetection] 🆕 Found new/unrestored backup: $backupFileName');
 
       // Show restore dialog
       if (mounted) {
@@ -1379,7 +1365,7 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
     }
   }
 
-  void _showRestoreDialog(List<FileSystemEntity> backups) {
+  void _showRestoreDialog(List<Map<String, dynamic>> backups) {
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -1444,7 +1430,7 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
-              _restoreBackup(backups.first.path);
+              _restoreBackup(backups.first['uri'] as String);
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.cyanAccent,
@@ -1459,12 +1445,10 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
     );
   }
 
-  Widget _buildBackupInfo(FileSystemEntity backup) {
-    final stat = backup.statSync();
-    final backupService = BackupService();
-    final size = backupService.formatBytes(stat.size);
-    final date = stat.modified.toLocal();
-    final fileName = path.basename(backup.path);
+  Widget _buildBackupInfo(Map<String, dynamic> backup) {
+    final fileName = backup['name'] as String;
+    final size = MediaStoreBackupService.formatBytes(backup['size'] as int);
+    final date = DateTime.fromMillisecondsSinceEpoch(backup['dateModified'] as int).toLocal();
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -1512,7 +1496,7 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
     );
   }
 
-  void _showBackupsList(List<FileSystemEntity> backups) {
+  void _showBackupsList(List<Map<String, dynamic>> backups) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -1532,11 +1516,10 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
             itemCount: backups.length,
             itemBuilder: (context, index) {
               final backup = backups[index];
-              final stat = backup.statSync();
-              final backupService = BackupService();
-              final size = backupService.formatBytes(stat.size);
-              final date = stat.modified.toLocal();
-              final fileName = path.basename(backup.path);
+              final fileName = backup['name'] as String;
+              final size = MediaStoreBackupService.formatBytes(backup['size'] as int);
+              final date = DateTime.fromMillisecondsSinceEpoch(backup['dateModified'] as int).toLocal();
+              final uri = backup['uri'] as String;
 
               return Card(
                 color: Colors.white.withOpacity(0.1),
@@ -1559,12 +1542,12 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
                     icon: const Icon(Icons.restore, color: Colors.cyanAccent),
                     onPressed: () {
                       Navigator.pop(context);
-                      _restoreBackup(backup.path);
+                      _restoreBackup(uri);
                     },
                   ),
                   onTap: () {
                     Navigator.pop(context);
-                    _restoreBackup(backup.path);
+                    _restoreBackup(uri);
                   },
                 ),
               );
@@ -1584,7 +1567,7 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
     );
   }
 
-  Future<void> _restoreBackup(String filePath) async {
+  Future<void> _restoreBackup(String uri) async {
     try {
       // Ask for passphrase
       final passphrase = await _askForPassword();
@@ -1616,9 +1599,29 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
       );
 
       final backupService = BackupService();
-      final encryptedFile = File(filePath);
-      final backupData = await backupService.decryptBackup(encryptedFile, passphrase);
+
+      // TEMPORARY: Read backup from either MediaStore or old file system
+      final bytes = await MediaStoreBackupService.readBackupFileUniversal(uri);
+      if (bytes == null) {
+        throw Exception('Failed to read backup');
+      }
+
+      // Write to temporary file for decryption
+      final tempDir = Directory.systemTemp;
+      final tempFile = File('${tempDir.path}/temp_restore_${DateTime.now().millisecondsSinceEpoch}.encrypted');
+      await tempFile.writeAsBytes(bytes);
+
+      final backupData = await backupService.decryptBackup(tempFile, passphrase);
       await backupService.restoreBackup(backupData);
+
+      // Clean up temp file
+      try {
+        if (await tempFile.exists()) {
+          await tempFile.delete();
+        }
+      } catch (e) {
+        // Ignore cleanup errors
+      }
 
       if (mounted) {
         Navigator.of(context).pop(); // Close progress dialog

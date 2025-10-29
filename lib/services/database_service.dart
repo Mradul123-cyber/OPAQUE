@@ -12,6 +12,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import '../message_model.dart';
+import '../models/note_model.dart';
 import 'SignalService.dart';
 
 class DatabaseService {
@@ -94,7 +95,7 @@ class DatabaseService {
       // print("[DatabaseService] Attempting to open encrypted database with SQLCipher...");
       return await openDatabase(
         path,
-        version: 17, // Rolled back from 18 (removed voice transcription)
+        version: 20, // Added flowchart support to Notes
         password: encryptionKey, // ← ENABLE DATABASE ENCRYPTION
         onCreate: _createDB,
         onUpgrade: _onUpgradeDB,
@@ -107,7 +108,7 @@ class DatabaseService {
 
       return await openDatabase(
         path,
-        version: 17, // Rolled back from 18 (removed voice transcription)
+        version: 20, // Added flowchart support to Notes
         password: encryptionKey, // ← ENABLE DATABASE ENCRYPTION
         onCreate: _createDB,
       );
@@ -183,6 +184,42 @@ class DatabaseService {
     await db.execute('''
       CREATE INDEX IF NOT EXISTS idx_deleted_messages_lookup
       ON deleted_messages(message_id, user_uid)
+    ''');
+
+    // Notes table for Zarq Notes feature
+    await db.execute('''
+      CREATE TABLE notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        category TEXT,
+        is_pinned INTEGER DEFAULT 0,
+        is_locked INTEGER DEFAULT 0,
+        flowchart_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+
+    // Note categories table
+    await db.execute('''
+      CREATE TABLE note_categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        color_code TEXT,
+        created_at TEXT NOT NULL
+      )
+    ''');
+
+    // Create indexes for notes
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_notes_category
+      ON notes(category)
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_notes_pinned
+      ON notes(is_pinned DESC, updated_at DESC)
     ''');
 
     // print("[DatabaseService] All tables and indexes created successfully with encryption support.");
@@ -335,6 +372,64 @@ class DatabaseService {
       ''');
 
       // print("[DatabaseService] ✅ Performance indexes added successfully. Query speed improved 10-50x!");
+    }
+
+    if (oldVersion < 18) {
+      // print("[DatabaseService] Adding Zarq Notes tables...");
+
+      // Notes table
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          category TEXT,
+          is_pinned INTEGER DEFAULT 0,
+          is_locked INTEGER DEFAULT 0,
+          flowchart_json TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      ''');
+
+      // Note categories table
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS note_categories (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          color_code TEXT,
+          created_at TEXT NOT NULL
+        )
+      ''');
+
+      // Create indexes for notes
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_notes_category
+        ON notes(category)
+      ''');
+
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_notes_pinned
+        ON notes(is_pinned DESC, updated_at DESC)
+      ''');
+
+      // print("[DatabaseService] ✅ Zarq Notes tables added successfully!");
+    }
+
+    if (oldVersion < 19) {
+      // print("[DatabaseService] Adding is_locked column to notes table...");
+      await db.execute('''
+        ALTER TABLE notes ADD COLUMN is_locked INTEGER DEFAULT 0
+      ''');
+      // print("[DatabaseService] ✅ Password lock feature added to Notes!");
+    }
+
+    if (oldVersion < 20) {
+      // print("[DatabaseService] Adding flowchart_json column to notes table...");
+      await db.execute('''
+        ALTER TABLE notes ADD COLUMN flowchart_json TEXT
+      ''');
+      // print("[DatabaseService] ✅ Flowchart support added to Notes!");
     }
 
     // print("[DatabaseService] Database schema upgraded to v$newVersion.");
@@ -978,6 +1073,154 @@ class DatabaseService {
 
     if (result.isNotEmpty && result.first['last_timestamp'] != null) {
       return DateTime.parse(result.first['last_timestamp'] as String).toUtc();
+    }
+    return null;
+  }
+
+  // ============================================================
+  // ZARQ NOTES METHODS
+  // ============================================================
+
+  /// Create a new note
+  Future<int> createNote(Note note) async {
+    final db = database;
+    return await db.insert('notes', note.toMap());
+  }
+
+  /// Get all notes (pinned notes first, then by updated_at)
+  Future<List<Note>> getAllNotes() async {
+    final db = database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'notes',
+      orderBy: 'is_pinned DESC, updated_at DESC',
+    );
+    return List.generate(maps.length, (i) => Note.fromMap(maps[i]));
+  }
+
+  /// Get notes by category
+  Future<List<Note>> getNotesByCategory(String? category) async {
+    final db = database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'notes',
+      where: category == null ? 'category IS NULL' : 'category = ?',
+      whereArgs: category == null ? null : [category],
+      orderBy: 'is_pinned DESC, updated_at DESC',
+    );
+    return List.generate(maps.length, (i) => Note.fromMap(maps[i]));
+  }
+
+  /// Search notes by title or content
+  Future<List<Note>> searchNotes(String query) async {
+    final db = database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'notes',
+      where: 'title LIKE ? OR content LIKE ?',
+      whereArgs: ['%$query%', '%$query%'],
+      orderBy: 'is_pinned DESC, updated_at DESC',
+    );
+    return List.generate(maps.length, (i) => Note.fromMap(maps[i]));
+  }
+
+  /// Update a note
+  Future<int> updateNote(Note note) async {
+    final db = database;
+    return await db.update(
+      'notes',
+      note.toMap(),
+      where: 'id = ?',
+      whereArgs: [note.id],
+    );
+  }
+
+  /// Delete a note
+  Future<int> deleteNote(int id) async {
+    final db = database;
+    return await db.delete(
+      'notes',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// Toggle pin status of a note
+  Future<int> toggleNotePin(int id, bool isPinned) async {
+    final db = database;
+    return await db.update(
+      'notes',
+      {'is_pinned': isPinned ? 1 : 0, 'updated_at': DateTime.now().toIso8601String()},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// Toggle note lock status
+  Future<int> toggleNoteLock(int id, bool isLocked) async {
+    final db = database;
+    return await db.update(
+      'notes',
+      {'is_locked': isLocked ? 1 : 0, 'updated_at': DateTime.now().toIso8601String()},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // ============================================================
+  // NOTE CATEGORIES METHODS
+  // ============================================================
+
+  /// Create a new category
+  Future<int> createCategory(NoteCategory category) async {
+    final db = database;
+    return await db.insert('note_categories', category.toMap());
+  }
+
+  /// Get all categories
+  Future<List<NoteCategory>> getAllCategories() async {
+    final db = database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'note_categories',
+      orderBy: 'name ASC',
+    );
+    return List.generate(maps.length, (i) => NoteCategory.fromMap(maps[i]));
+  }
+
+  /// Delete a category
+  Future<int> deleteCategory(int id) async {
+    final db = database;
+    // First, set all notes with this category to null
+    final category = await db.query(
+      'note_categories',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    if (category.isNotEmpty) {
+      final categoryName = category.first['name'] as String;
+      await db.update(
+        'notes',
+        {'category': null},
+        where: 'category = ?',
+        whereArgs: [categoryName],
+      );
+    }
+    // Then delete the category
+    return await db.delete(
+      'note_categories',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// Get category by name
+  Future<NoteCategory?> getCategoryByName(String name) async {
+    final db = database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'note_categories',
+      where: 'name = ?',
+      whereArgs: [name],
+      limit: 1,
+    );
+    if (maps.isNotEmpty) {
+      return NoteCategory.fromMap(maps.first);
     }
     return null;
   }

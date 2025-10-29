@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/user_settings_provider.dart';
+import '../services/notes_password_service.dart';
 import '../widgets/call_aware_screen.dart';
 import '../widgets/global_call_overlay.dart';
 
@@ -94,8 +95,14 @@ class _CustomizationScreenState extends State<CustomizationScreen> {
     {'key': 'dark', 'name': 'Dark Theme', 'description': 'Modern dark background'},
   ];
 
+  // Notes screen theme options
+  final List<Map<String, String>> _notesScreenOptions = [
+    {'key': 'default', 'name': 'Light Theme', 'description': 'Clean white background'},
+    {'key': 'dark', 'name': 'Dark Theme', 'description': 'Modern dark background'},
+  ];
 
-  void _handleSettingChange({String? styleKey, String? colorStart, String? colorEnd, String? homeScreenStyle, String? groupScreenStyle, String? cardBubbleColor, String? findFriendsScreenStyle}) async {
+
+  void _handleSettingChange({String? styleKey, String? colorStart, String? colorEnd, String? homeScreenStyle, String? groupScreenStyle, String? cardBubbleColor, String? findFriendsScreenStyle, String? notesScreenStyle}) async {
     final provider = Provider.of<UserSettingsProvider>(context, listen: false);
 
     // Save to local storage (instant, no network delay)
@@ -107,6 +114,7 @@ class _CustomizationScreenState extends State<CustomizationScreen> {
       groupScreenStyle: groupScreenStyle,
       cardBubbleColor: cardBubbleColor,
       findFriendsScreenStyle: findFriendsScreenStyle,
+      notesScreenStyle: notesScreenStyle,
     );
 
     // Optional: Show brief confirmation
@@ -192,6 +200,20 @@ class _CustomizationScreenState extends State<CustomizationScreen> {
                         _buildSectionHeader(Icons.person_search, 'Friends Screen'),
                         SizedBox(height: itemSpacing),
                         _buildFindFriendsScreenStyleCard(userSettings),
+
+                        SizedBox(height: sectionSpacing),
+
+                        // Section: Notes Screen
+                        _buildSectionHeader(Icons.note, 'Notes Screen'),
+                        SizedBox(height: itemSpacing),
+                        _buildNotesScreenStyleCard(userSettings),
+
+                        SizedBox(height: sectionSpacing),
+
+                        // Section: Notes Security
+                        _buildSectionHeader(Icons.lock, 'Notes Security'),
+                        SizedBox(height: itemSpacing),
+                        _buildNotesSecurityCard(),
 
                         SizedBox(height: sectionSpacing),
 
@@ -852,6 +874,507 @@ class _CustomizationScreenState extends State<CustomizationScreen> {
     );
   }
 
+  Widget _buildNotesScreenStyleCard(UserSettingsProvider userSettings) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    final cardPadding = (screenWidth * 0.04).clamp(12.0, 20.0);
+    final borderRadius = (screenWidth * 0.03).clamp(10.0, 14.0);
+    final titleFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final descFontSize = (screenWidth * 0.0325).clamp(12.0, 15.0);
+    final optionNameFontSize = (screenWidth * 0.0375).clamp(13.0, 16.0);
+    final optionDescFontSize = (screenWidth * 0.03).clamp(11.0, 14.0);
+    final spacing1 = (screenHeight * 0.01).clamp(6.0, 10.0);
+    final spacing2 = (screenHeight * 0.02).clamp(12.0, 18.0);
+    final spacing3 = (screenHeight * 0.015).clamp(10.0, 14.0);
+    final spacing4 = (screenHeight * 0.005).clamp(3.0, 6.0);
+    final optionPadding = (screenWidth * 0.04).clamp(12.0, 18.0);
+
+    final currentStyle = userSettings.notesScreenStyle ?? 'default';
+
+    return Card(
+      color: const Color(0xFF1B263B).withOpacity(0.6),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(borderRadius),
+        side: BorderSide(color: Colors.cyanAccent.withOpacity(0.3)),
+      ),
+      child: Padding(
+        padding: EdgeInsets.all(cardPadding),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "Background Style",
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: titleFontSize,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            SizedBox(height: spacing1),
+            Text(
+              "Choose your notes screen background",
+              style: TextStyle(color: Colors.white60, fontSize: descFontSize),
+            ),
+            SizedBox(height: spacing2),
+            ..._notesScreenOptions.map((option) {
+              final isSelected = currentStyle == option['key'];
+              return Padding(
+                padding: EdgeInsets.only(bottom: spacing3),
+                child: InkWell(
+                  onTap: () => _handleSettingChange(notesScreenStyle: option['key']),
+                  borderRadius: BorderRadius.circular(borderRadius * 0.7),
+                  child: Container(
+                    padding: EdgeInsets.all(optionPadding),
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? Colors.cyanAccent.withOpacity(0.15)
+                          : const Color(0xFF0a1128).withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(borderRadius * 0.7),
+                      border: Border.all(
+                        color: isSelected ? Colors.cyanAccent : Colors.white24,
+                        width: isSelected ? 2 : 1,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          isSelected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                          color: isSelected ? Colors.cyanAccent : Colors.white54,
+                        ),
+                        SizedBox(width: optionPadding),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                option['name']!,
+                                style: TextStyle(
+                                  color: isSelected ? Colors.cyanAccent : Colors.white,
+                                  fontSize: optionNameFontSize,
+                                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                ),
+                              ),
+                              SizedBox(height: spacing4),
+                              Text(
+                                option['description']!,
+                                style: TextStyle(
+                                  color: Colors.white60,
+                                  fontSize: optionDescFontSize,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNotesSecurityCard() {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    final cardPadding = (screenWidth * 0.04).clamp(12.0, 20.0);
+    final borderRadius = (screenWidth * 0.03).clamp(10.0, 14.0);
+    final titleFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final descFontSize = (screenWidth * 0.0325).clamp(12.0, 15.0);
+    final buttonFontSize = (screenWidth * 0.0375).clamp(13.0, 16.0);
+    final spacing1 = (screenHeight * 0.01).clamp(6.0, 10.0);
+    final spacing2 = (screenHeight * 0.02).clamp(12.0, 18.0);
+
+    return Card(
+      color: const Color(0xFF1B263B).withOpacity(0.6),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(borderRadius),
+        side: BorderSide(color: Colors.cyanAccent.withOpacity(0.3)),
+      ),
+      child: Padding(
+        padding: EdgeInsets.all(cardPadding),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "Password Protection",
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: titleFontSize,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            SizedBox(height: spacing1),
+            Text(
+              "Secure your notes with screen lock and individual note locks",
+              style: TextStyle(color: Colors.white60, fontSize: descFontSize),
+            ),
+            SizedBox(height: spacing2),
+
+            // App Lock Button
+            FutureBuilder<bool>(
+              future: NotesPasswordService.instance.isPasswordEnabled(),
+              builder: (context, snapshot) {
+                final isEnabled = snapshot.data ?? false;
+
+                return ElevatedButton.icon(
+                  onPressed: () => _handleNotesPasswordToggle(isEnabled),
+                  icon: Icon(
+                    isEnabled ? Icons.lock : Icons.lock_open,
+                    size: (screenWidth * 0.05).clamp(18.0, 22.0),
+                  ),
+                  label: Text(
+                    isEnabled ? 'Change/Disable Screen Lock' : 'Enable Screen Lock',
+                    style: TextStyle(fontSize: buttonFontSize),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isEnabled ? Colors.orange : Colors.cyanAccent,
+                    foregroundColor: Colors.black,
+                    padding: EdgeInsets.symmetric(
+                      horizontal: cardPadding,
+                      vertical: spacing1 * 1.2,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(borderRadius * 0.7),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _handleNotesPasswordToggle(bool isCurrentlyEnabled) async {
+    if (isCurrentlyEnabled) {
+      // Show options: Change Password or Disable
+      await _showPasswordManagementDialog();
+    } else {
+      // Setup new password
+      await _showPasswordSetupDialog();
+    }
+  }
+
+  Future<void> _showPasswordSetupDialog() async {
+    final passwordController = TextEditingController();
+    final confirmController = TextEditingController();
+    bool obscurePassword = true;
+    bool obscureConfirm = true;
+
+    await showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          title: const Text(
+            'Setup Notes Password',
+            style: TextStyle(color: Colors.white),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: passwordController,
+                obscureText: obscurePassword,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: 'Enter password (min 4 characters)',
+                  hintStyle: TextStyle(color: Colors.grey.shade400),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      obscurePassword ? Icons.visibility_off : Icons.visibility,
+                      color: Colors.grey.shade400,
+                    ),
+                    onPressed: () => setState(() => obscurePassword = !obscurePassword),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: confirmController,
+                obscureText: obscureConfirm,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: 'Confirm password',
+                  hintStyle: TextStyle(color: Colors.grey.shade400),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      obscureConfirm ? Icons.visibility_off : Icons.visibility,
+                      color: Colors.grey.shade400,
+                    ),
+                    onPressed: () => setState(() => obscureConfirm = !obscureConfirm),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final password = passwordController.text;
+                final confirm = confirmController.text;
+
+                if (password.length < 4) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Password must be at least 4 characters'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                  return;
+                }
+
+                if (password != confirm) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Passwords do not match'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                  return;
+                }
+
+                final success = await NotesPasswordService.instance.setPassword(password);
+
+                if (mounted) {
+                  Navigator.pop(context);
+
+                  if (success) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Notes password enabled successfully!'),
+                        backgroundColor: Colors.green,
+                      ),
+                    );
+                    setState(() {}); // Refresh the card
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Failed to set password'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.cyanAccent,
+                foregroundColor: Colors.black,
+              ),
+              child: const Text('Set Password'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showPasswordManagementDialog() async {
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text(
+          'Manage Password',
+          style: TextStyle(color: Colors.white),
+        ),
+        content: const Text(
+          'What would you like to do?',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _showChangePasswordDialog();
+            },
+            child: const Text('Change Password', style: TextStyle(color: Colors.cyanAccent)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _showDisablePasswordDialog();
+            },
+            child: const Text('Disable', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showChangePasswordDialog() async {
+    final oldPasswordController = TextEditingController();
+    final newPasswordController = TextEditingController();
+    final confirmController = TextEditingController();
+
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Change Password', style: TextStyle(color: Colors.white)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: oldPasswordController,
+              obscureText: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: 'Current password',
+                hintStyle: TextStyle(color: Colors.grey.shade400),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: newPasswordController,
+              obscureText: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: 'New password (min 4 characters)',
+                hintStyle: TextStyle(color: Colors.grey.shade400),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: confirmController,
+              obscureText: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: 'Confirm new password',
+                hintStyle: TextStyle(color: Colors.grey.shade400),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final oldPassword = oldPasswordController.text;
+              final newPassword = newPasswordController.text;
+              final confirm = confirmController.text;
+
+              if (newPassword.length < 4) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('New password must be at least 4 characters'), backgroundColor: Colors.red),
+                );
+                return;
+              }
+
+              if (newPassword != confirm) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Passwords do not match'), backgroundColor: Colors.red),
+                );
+                return;
+              }
+
+              final success = await NotesPasswordService.instance.changePassword(oldPassword, newPassword);
+
+              if (mounted) {
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(success ? 'Password changed successfully!' : 'Incorrect current password'),
+                    backgroundColor: success ? Colors.green : Colors.red,
+                  ),
+                );
+                if (success) setState(() {});
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.cyanAccent,
+              foregroundColor: Colors.black,
+            ),
+            child: const Text('Change'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showDisablePasswordDialog() async {
+    final passwordController = TextEditingController();
+
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Disable Password', style: TextStyle(color: Colors.white)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Enter your password to disable protection',
+              style: TextStyle(color: Colors.white70),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: passwordController,
+              obscureText: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: 'Current password',
+                hintStyle: TextStyle(color: Colors.grey.shade400),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final password = passwordController.text;
+              final isValid = await NotesPasswordService.instance.verifyPassword(password);
+
+              if (isValid) {
+                await NotesPasswordService.instance.disablePassword();
+
+                if (mounted) {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Password protection disabled'), backgroundColor: Colors.orange),
+                  );
+                  setState(() {});
+                }
+              } else {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Incorrect password'), backgroundColor: Colors.red),
+                  );
+                }
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Disable'),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildCallOverlayStyleCard() {
     final screenWidth = MediaQuery.of(context).size.width;

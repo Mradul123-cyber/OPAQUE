@@ -30,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.razorpay.PaymentResultListener
 import java.util.Calendar
+import java.io.File
 
 class MainActivity : FlutterActivity(), PaymentResultListener {
 
@@ -41,6 +42,7 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
     private val OVERLAY_CHANNEL = "com.zarq/overlay"
     private val VIDEO_COMPRESSION_CHANNEL = "com.zarq/video_compression"
     private val PAYMENT_CHANNEL = "com.zarq/payment"
+    private val SHARE_CHANNEL = "com.zarq/share"
 
     companion object {
         private const val TAG = "MainActivity"
@@ -50,6 +52,9 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
 
     // Store pending incoming call to process after Flutter is ready
     private var pendingIncomingCall: Map<String, Any>? = null
+
+    // Store pending shared content to process after Flutter is ready
+    private var pendingSharedContent: Map<String, Any>? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -67,6 +72,8 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
         setupOverlayChannel(flutterEngine)
         setupVideoCompressionChannel(flutterEngine)
         setupPaymentChannel(flutterEngine)
+        setupShareChannel(flutterEngine)
+        setupMediaStoreChannel(flutterEngine)
 
         Log.d(TAG, "All method channels configured")
     }
@@ -113,6 +120,7 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
     private val backupNotificationHelper by lazy { BackupNotificationHelper(this) }
     private val videoCompressionHelper by lazy { VideoCompressionHelper(this) }
     private val razorpayPaymentHandler by lazy { RazorpayPaymentHandler(this) }
+    private val mediaStoreBackupHelper by lazy { MediaStoreBackupHelper(this) }
 
     private fun handleSignalMethods(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
@@ -702,6 +710,9 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
 
         // Handle auto-backup trigger intent
         handleAutoBackupIntent(intent)
+
+        // Handle share intent when app is launched
+        handleShareIntent(intent)
     }
 
     // ===== NOTIFICATION HANDLING (UNCHANGED) =====
@@ -753,6 +764,9 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
 
         // Handle auto-backup trigger intent
         handleAutoBackupIntent(intent)
+
+        // Handle share intent when app is already running
+        handleShareIntent(intent)
     }
 
     override fun onResume() {
@@ -1455,5 +1469,348 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
                 } ?: Log.e(TAG, "❌ Flutter engine still not ready after delay")
             }, 2000) // Wait 2 seconds for Flutter to initialize
         }
+    }
+
+    // ===== SHARE INTENT HANDLING =====
+
+    private fun setupShareChannel(flutterEngine: FlutterEngine) {
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SHARE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "getSharedContent" -> {
+                        Log.d(TAG, "getSharedContent called from Flutter")
+                        result.success(pendingSharedContent)
+                        // Clear after sending to Flutter
+                        pendingSharedContent = null
+                    }
+                    "readContentUri" -> {
+                        val uriString = call.argument<String>("uri")
+                        if (uriString != null) {
+                            readContentUri(uriString, result)
+                        } else {
+                            result.error("INVALID_URI", "URI is null", null)
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        Log.d(TAG, "Share channel configured on $SHARE_CHANNEL")
+
+        // If there's pending shared content, try to send it after delay
+        if (pendingSharedContent != null) {
+            Log.d(TAG, "Found pending shared content, will retry after 1 second...")
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                sendSharedContentToFlutter()
+            }, 1000)
+        }
+    }
+
+    private fun handleShareIntent(intent: Intent?) {
+        if (intent == null) return
+
+        val action = intent.action
+        val type = intent.type
+
+        Log.d(TAG, "============================================")
+        Log.d(TAG, "Checking for share intent")
+        Log.d(TAG, "Action: $action")
+        Log.d(TAG, "Type: $type")
+        Log.d(TAG, "============================================")
+
+        when (action) {
+            Intent.ACTION_SEND -> {
+                if (type != null) {
+                    handleSendIntent(intent, type)
+                }
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                if (type != null) {
+                    handleSendMultipleIntent(intent, type)
+                }
+            }
+        }
+    }
+
+    private fun handleSendIntent(intent: Intent, type: String) {
+        try {
+            Log.d(TAG, "Processing ACTION_SEND with type: $type")
+
+            val sharedData = mutableMapOf<String, Any>()
+
+            when {
+                type.startsWith("text/") -> {
+                    val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
+                    val sharedSubject = intent.getStringExtra(Intent.EXTRA_SUBJECT)
+
+                    Log.d(TAG, "Shared text: $sharedText")
+                    Log.d(TAG, "Shared subject: $sharedSubject")
+
+                    sharedData["type"] = "text"
+                    if (sharedText != null) sharedData["text"] = sharedText
+                    if (sharedSubject != null) sharedData["subject"] = sharedSubject
+                }
+                type.startsWith("image/") -> {
+                    val imageUri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                    Log.d(TAG, "Shared image URI: $imageUri")
+
+                    if (imageUri != null) {
+                        sharedData["type"] = "image"
+                        sharedData["uri"] = imageUri.toString()
+                        sharedData["mimeType"] = type
+                    }
+                }
+                type.startsWith("video/") -> {
+                    val videoUri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                    Log.d(TAG, "Shared video URI: $videoUri")
+
+                    if (videoUri != null) {
+                        sharedData["type"] = "video"
+                        sharedData["uri"] = videoUri.toString()
+                        sharedData["mimeType"] = type
+                    }
+                }
+                type.startsWith("application/") -> {
+                    val fileUri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                    Log.d(TAG, "Shared file URI: $fileUri")
+
+                    if (fileUri != null) {
+                        sharedData["type"] = "file"
+                        sharedData["uri"] = fileUri.toString()
+                        sharedData["mimeType"] = type
+                    }
+                }
+            }
+
+            if (sharedData.isNotEmpty()) {
+                pendingSharedContent = sharedData
+                Log.d(TAG, "Stored pending shared content: $sharedData")
+
+                // Try to send immediately
+                sendSharedContentToFlutter()
+
+                // Clear the intent to prevent re-processing
+                intent.action = ""
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling share intent: ${e.message}", e)
+        }
+    }
+
+    private fun handleSendMultipleIntent(intent: Intent, type: String) {
+        try {
+            Log.d(TAG, "Processing ACTION_SEND_MULTIPLE with type: $type")
+
+            val sharedData = mutableMapOf<String, Any>()
+            val uris = mutableListOf<String>()
+
+            when {
+                type.startsWith("image/") -> {
+                    val imageUris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                    Log.d(TAG, "Shared ${imageUris?.size ?: 0} images")
+
+                    imageUris?.forEach { uri ->
+                        uris.add(uri.toString())
+                    }
+
+                    if (uris.isNotEmpty()) {
+                        sharedData["type"] = "images"
+                        sharedData["uris"] = uris
+                        sharedData["mimeType"] = type
+                    }
+                }
+                type.startsWith("video/") -> {
+                    val videoUris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                    Log.d(TAG, "Shared ${videoUris?.size ?: 0} videos")
+
+                    videoUris?.forEach { uri ->
+                        uris.add(uri.toString())
+                    }
+
+                    if (uris.isNotEmpty()) {
+                        sharedData["type"] = "videos"
+                        sharedData["uris"] = uris
+                        sharedData["mimeType"] = type
+                    }
+                }
+            }
+
+            if (sharedData.isNotEmpty()) {
+                pendingSharedContent = sharedData
+                Log.d(TAG, "Stored pending shared content: $sharedData")
+
+                // Try to send immediately
+                sendSharedContentToFlutter()
+
+                // Clear the intent to prevent re-processing
+                intent.action = ""
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling multiple share intent: ${e.message}", e)
+        }
+    }
+
+    private fun sendSharedContentToFlutter() {
+        val shareData = pendingSharedContent ?: return
+
+        Log.d(TAG, "Attempting to send shared content to Flutter...")
+
+        flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
+            val channel = MethodChannel(messenger, SHARE_CHANNEL)
+
+            Log.d(TAG, "Invoking handleSharedContent on Flutter: $shareData")
+
+            channel.invokeMethod("handleSharedContent", shareData, object : MethodChannel.Result {
+                override fun success(result: Any?) {
+                    Log.d(TAG, "✅ Shared content sent successfully to Flutter: $result")
+                    pendingSharedContent = null // Clear after success
+                }
+
+                override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+                    Log.e(TAG, "❌ Share content error: $errorCode - $errorMessage")
+                    // Keep pending for retry
+                }
+
+                override fun notImplemented() {
+                    Log.w(TAG, "⚠️ handleSharedContent not implemented in Flutter yet")
+                    // Keep pending for retry
+                }
+            })
+        } ?: run {
+            Log.e(TAG, "❌ Flutter engine not available yet for shared content")
+            // Keep pending for retry
+        }
+    }
+
+    // Read content URI and return file data
+    private fun readContentUri(uriString: String, result: MethodChannel.Result) {
+        try {
+            Log.d(TAG, "Reading content URI: $uriString")
+
+            val uri = Uri.parse(uriString)
+            val inputStream = contentResolver.openInputStream(uri)
+
+            if (inputStream == null) {
+                result.error("READ_ERROR", "Cannot open input stream for URI", null)
+                return
+            }
+
+            // Read file data
+            val bytes = inputStream.readBytes()
+            inputStream.close()
+
+            // Try to get filename
+            var fileName: String? = null
+            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (nameIndex >= 0 && cursor.moveToFirst()) {
+                    fileName = cursor.getString(nameIndex)
+                }
+            }
+
+            Log.d(TAG, "Read ${bytes.size} bytes from URI, fileName: $fileName")
+
+            // Return data to Flutter
+            val resultData = mapOf(
+                "data" to bytes,
+                "fileName" to fileName
+            )
+
+            result.success(resultData)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reading content URI: ${e.message}", e)
+            result.error("READ_ERROR", e.message, null)
+        }
+    }
+
+    /**
+     * Setup MediaStore backup channel for Google Play compliant backup storage
+     */
+    private fun setupMediaStoreChannel(flutterEngine: FlutterEngine) {
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.zarq/mediastore_backup")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "saveBackup" -> {
+                        try {
+                            val sourceFilePath = call.argument<String>("sourceFilePath")
+                            val fileName = call.argument<String>("fileName")
+
+                            if (sourceFilePath == null || fileName == null) {
+                                result.error("INVALID_ARGS", "Missing required arguments", null)
+                                return@setMethodCallHandler
+                            }
+
+                            val sourceFile = File(sourceFilePath)
+                            if (!sourceFile.exists()) {
+                                result.error("FILE_NOT_FOUND", "Source file not found", null)
+                                return@setMethodCallHandler
+                            }
+
+                            val uri = mediaStoreBackupHelper.saveBackupFile(sourceFile, fileName)
+                            if (uri != null) {
+                                result.success(uri)
+                            } else {
+                                result.error("SAVE_FAILED", "Failed to save backup file", null)
+                            }
+
+                        } catch (e: Exception) {
+                            Log.e(TAG, "saveBackup error: ${e.message}", e)
+                            result.error("SAVE_ERROR", e.message, null)
+                        }
+                    }
+
+                    "listBackups" -> {
+                        try {
+                            val backups = mediaStoreBackupHelper.listBackupFiles()
+                            result.success(backups)
+
+                        } catch (e: Exception) {
+                            Log.e(TAG, "listBackups error: ${e.message}", e)
+                            result.error("LIST_ERROR", e.message, null)
+                        }
+                    }
+
+                    "readBackup" -> {
+                        try {
+                            val uri = call.argument<String>("uri")
+                            if (uri == null) {
+                                result.error("INVALID_ARGS", "URI required", null)
+                                return@setMethodCallHandler
+                            }
+
+                            val bytes = mediaStoreBackupHelper.readBackupFile(uri)
+                            if (bytes != null) {
+                                result.success(bytes)
+                            } else {
+                                result.error("READ_FAILED", "Failed to read backup file", null)
+                            }
+
+                        } catch (e: Exception) {
+                            Log.e(TAG, "readBackup error: ${e.message}", e)
+                            result.error("READ_ERROR", e.message, null)
+                        }
+                    }
+
+                    "deleteBackup" -> {
+                        try {
+                            val uri = call.argument<String>("uri")
+                            if (uri == null) {
+                                result.error("INVALID_ARGS", "URI required", null)
+                                return@setMethodCallHandler
+                            }
+
+                            val success = mediaStoreBackupHelper.deleteBackupFile(uri)
+                            result.success(success)
+
+                        } catch (e: Exception) {
+                            Log.e(TAG, "deleteBackup error: ${e.message}", e)
+                            result.error("DELETE_ERROR", e.message, null)
+                        }
+                    }
+
+                    else -> result.notImplemented()
+                }
+            }
+        Log.d(TAG, "MediaStore backup channel configured")
     }
 }

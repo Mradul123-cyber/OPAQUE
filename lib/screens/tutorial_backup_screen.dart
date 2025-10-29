@@ -89,8 +89,8 @@ class _TutorialBackupScreenState extends State<TutorialBackupScreen>
       'en': 'Cross-Device Restore',
     },
     'crossDeviceDesc': {
-      'hi': 'Google Drive से या बैकअप फ़ाइल ट्रांसफर करके नए डिवाइस पर पुनर्स्थापित करें।',
-      'en': 'Restore on new device via Google Drive or by transferring backup file.',
+      'hi': 'Google Drive से नए डिवाइस पर पुनर्स्थापित करें। सभी संदेश और मीडिया वापस आ जाते हैं।',
+      'en': 'Restore on new device from Google Drive. All messages and media come back.',
     },
     'manualBackupTitle': {
       'hi': 'मैन्युअल बैकअप',

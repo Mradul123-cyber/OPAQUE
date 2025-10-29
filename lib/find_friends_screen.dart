@@ -462,6 +462,10 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
   }
 
   Future<void> _findFriendsInContacts() async {
+    // print('[CONTACT_SYNC] ==================== STARTING CONTACT SYNC ====================');
+    // print('[CONTACT_SYNC] Platform: ${Platform.operatingSystem}');
+    // print('[CONTACT_SYNC] Platform version: ${Platform.operatingSystemVersion}');
+
     setState(() {
       _isLoading = true;
       _statusMessage = "Asking for permission...";
@@ -469,6 +473,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     });
 
     if (kIsWeb || (!Platform.isAndroid && !Platform.isIOS)) {
+      // print('[CONTACT_SYNC] ❌ Not a mobile platform');
       setState(() {
         _isLoading = false;
         _statusMessage =
@@ -477,23 +482,105 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
       return;
     }
 
+    // print('[CONTACT_SYNC] 📱 Requesting contacts permission...');
     final PermissionStatus permissionStatus = await Permission.contacts.request();
+    // print('[CONTACT_SYNC] Permission status: $permissionStatus');
     if (permissionStatus.isGranted) {
+      // print('[CONTACT_SYNC] ✅ Permission GRANTED');
       setState(() => _statusMessage = "Permission granted. Scanning contacts...");
 
-      final List<Contact> contacts = await FlutterContacts.getContacts(withProperties: true).timeout(
-        const Duration(seconds: 30),
-        onTimeout: () {
-          throw TimeoutException('Contact scanning timed out after 30 seconds');
-        },
-      );
-      // print('[FindFriends] Found ${contacts.length} contacts in phone');
+      // print('[CONTACT_SYNC] 📞 Fetching contacts from phone...');
+      // print('[CONTACT_SYNC] 🔧 Android 13 Fix: Fetching contacts WITHOUT properties first (faster)');
+      final List<Contact> contacts;
+      try {
+        // ANDROID 13 FIX: Fetch contacts without properties first (much faster)
+        // Then only fetch phone numbers for each contact individually
+        final List<Contact> contactsWithoutProps = await FlutterContacts.getContacts(withProperties: false).timeout(
+          const Duration(seconds: 10),
+          onTimeout: () {
+            // print('[CONTACT_SYNC] ⚠️ TIMEOUT: Fetching contact list took more than 10 seconds');
+            throw TimeoutException('Contact list fetch timed out');
+          },
+        );
+        // print('[CONTACT_SYNC] ✅ Successfully fetched ${contactsWithoutProps.length} contact names');
 
+        // Now fetch phone numbers in MAXIMUM parallel batches (optimized for 10,000+ contacts)
+        // print('[CONTACT_SYNC] 📞 Fetching phone numbers for ${contactsWithoutProps.length} contacts...');
+        contacts = [];
+
+        // Optimize batch size based on total contacts
+        // For very large lists, use bigger batches for maximum speed
+        int batchSize;
+        if (contactsWithoutProps.length <= 5000) {
+          // Fetch all at once if <= 5000 contacts (fastest!)
+          batchSize = contactsWithoutProps.length;
+          // print('[CONTACT_SYNC] ⚡ TURBO MODE: Fetching ALL ${contactsWithoutProps.length} contacts in ONE parallel batch!');
+        } else {
+          // For 10,000+, use 2000 per batch
+          batchSize = 2000;
+          // print('[CONTACT_SYNC] ⚡ FAST MODE: Using batches of $batchSize contacts');
+        }
+
+        for (int i = 0; i < contactsWithoutProps.length; i += batchSize) {
+          int end = (i + batchSize < contactsWithoutProps.length) ? i + batchSize : contactsWithoutProps.length;
+          final batchNumber = (i / batchSize).floor() + 1;
+          final totalBatches = (contactsWithoutProps.length / batchSize).ceil();
+
+          // print('[CONTACT_SYNC] 🔄 Processing batch $batchNumber/$totalBatches (${i + 1}-$end) - ${end - i} contacts in PARALLEL...');
+          // final startTime = DateTime.now();
+
+          // Fetch all contacts in this batch in parallel
+          final batch = contactsWithoutProps.sublist(i, end);
+          final fetchFutures = batch.map((contact) => FlutterContacts.getContact(contact.id)).toList();
+
+          try {
+            // Wait for ALL contacts in batch to fetch in parallel (MAXIMUM SPEED!)
+            final batchResults = await Future.wait(fetchFutures, eagerError: false);
+
+            // Add non-null results
+            for (var fullContact in batchResults) {
+              if (fullContact != null) {
+                contacts.add(fullContact);
+              }
+            }
+
+            // final elapsed = DateTime.now().difference(startTime).inMilliseconds;
+            // print('[CONTACT_SYNC] ✅ Batch $batchNumber: Fetched ${batchResults.where((c) => c != null).length}/${batch.length} contacts in ${elapsed}ms');
+          } catch (e) {
+            // print('[CONTACT_SYNC] ⚠️ Error in batch $batchNumber: $e');
+            // Continue with next batch even if this one fails
+          }
+
+          // Update progress
+          if (mounted) {
+            setState(() => _statusMessage = "Scanning contacts... ${contacts.length}/${contactsWithoutProps.length}");
+          }
+        }
+
+        // print('[CONTACT_SYNC] ✅ Successfully fetched phone numbers for ${contacts.length}/${contactsWithoutProps.length} contacts');
+      } catch (e, stackTrace) {
+        // print('[CONTACT_SYNC] ❌ ERROR fetching contacts: $e');
+        // print('[CONTACT_SYNC] Stack trace: $stackTrace');
+        setState(() {
+          _isLoading = false;
+          _statusMessage = "Failed to fetch contacts: $e";
+        });
+        return;
+      }
+
+      // print('[CONTACT_SYNC] 🔄 Processing ${contacts.length} contacts to extract phone numbers...');
       final List<String> hashedContacts = [];
       final List<String> allCleanedPhones = []; // Store all for verification
       final Map<String, String> hashToPhoneMap = {}; // Map hash to phone number
       int phoneCount = 0;
+      int contactsWithoutPhones = 0;
+
       for (var contact in contacts) {
+        if (contact.phones.isEmpty) {
+          contactsWithoutPhones++;
+          continue;
+        }
+
         for (var phone in contact.phones) {
           var cleanedPhone = phone.number.replaceAll(RegExp(r'[^0-9+]'), '');
           if (cleanedPhone.isNotEmpty) {
@@ -525,26 +612,32 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
             // Log first 5 for debugging
             if (phoneCount <= 5) {
-              // print('[FindFriends] Sample #$phoneCount: $cleanedPhone → $normalizedPhone (length: ${normalizedPhone.length})');
-              // print('[FindFriends] Hash: ${digest.toString().substring(0, 16)}...');
+              // print('[CONTACT_SYNC] 📋 Sample #$phoneCount: $cleanedPhone → $normalizedPhone (length: ${normalizedPhone.length})');
+              // print('[CONTACT_SYNC]     Hash: ${digest.toString().substring(0, 16)}...');
             }
           }
         }
       }
-      // print('[FindFriends] Total phone numbers to check: $phoneCount');
+
+      // print('[CONTACT_SYNC] 📊 Contact processing summary:');
+      // print('[CONTACT_SYNC]    - Total contacts: ${contacts.length}');
+      // print('[CONTACT_SYNC]    - Contacts without phone numbers: $contactsWithoutPhones');
+      // print('[CONTACT_SYNC]    - Total phone numbers found: $phoneCount');
+      // print('[CONTACT_SYNC]    - Hashed contacts to send: ${hashedContacts.length}');
 
       // Check if user's own number is in contacts (now normalized)
       final numbersContaining877 = allCleanedPhones.where((p) => p.contains('877067') || p.contains('980625')).toList();
       if (numbersContaining877.isNotEmpty) {
-        // print('[FindFriends] 🔍 Found registered numbers in contacts: ${numbersContaining877.length} variations');
+        // print('[CONTACT_SYNC] 🔍 Found test/registered numbers in contacts: ${numbersContaining877.length} variations');
         for (var num in numbersContaining877) {
-          // print('[FindFriends]    → $num');
+          // print('[CONTACT_SYNC]    → $num');
         }
       } else {
-        // print('[FindFriends] ⚠️ Registered numbers NOT found in your contacts!');
+        // print('[CONTACT_SYNC] ⚠️ Test numbers (877067, 980625) NOT found in your contacts');
       }
 
       if (hashedContacts.isEmpty) {
+        // print('[CONTACT_SYNC] ❌ No phone numbers found in any contacts!');
         setState(() {
           _isLoading = false;
           _statusMessage = "No phone numbers found in your contacts.";
@@ -565,49 +658,68 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
       final token = await user.getIdToken();
 
       try {
-        // print('[FindFriends] Sending ${hashedContacts.length} hashed contacts to server...');
+        // print('[CONTACT_SYNC] 🌐 Sending ${hashedContacts.length} hashed contacts to server...');
         final url = Uri.parse('https://api.zarqmessenger.com/friends/find');
+
+        // print('[CONTACT_SYNC] 📤 Request URL: $url');
+        // print('[CONTACT_SYNC] 📤 Payload size: ${json.encode(hashedContacts).length} bytes');
+
         final response = await http.post(
           url,
           headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
           body: json.encode(hashedContacts),
+        ).timeout(
+          const Duration(seconds: 30),
+          onTimeout: () {
+            // print('[CONTACT_SYNC] ⚠️ Server request TIMEOUT after 30 seconds');
+            throw TimeoutException('Server request timed out');
+          },
         );
 
-        // print('[FindFriends] Server response: ${response.statusCode}');
+        // print('[CONTACT_SYNC] 📥 Server response code: ${response.statusCode}');
         if (response.statusCode == 200) {
-          // print('[FindFriends] RAW RESPONSE: ${response.body}');
+          // print('[CONTACT_SYNC] ✅ Server responded successfully');
+          // print('[CONTACT_SYNC] 📥 Response body length: ${response.body.length} bytes');
 
           // Decode response, handling null/empty cases
           final decoded = json.decode(response.body);
           final List<dynamic> foundUsers = decoded is List ? decoded : [];
 
-          // print('[FindFriends] Found ${foundUsers.length} matching users');
-          // print('[FindFriends] Response data type: ${foundUsers.isNotEmpty ? foundUsers[0].runtimeType : 'empty'}');
+          // print('[CONTACT_SYNC] 👥 Found ${foundUsers.length} matching Zarq users');
+          // print('[CONTACT_SYNC] 📊 Match rate: ${foundUsers.length}/${hashedContacts.length} (${(foundUsers.length / hashedContacts.length * 100).toStringAsFixed(1)}%)');
+
+          if (foundUsers.isNotEmpty) {
+            // print('[CONTACT_SYNC] 👤 Sample user data type: ${foundUsers[0].runtimeType}');
+          }
 
           // Log each matched user
           for (int i = 0; i < foundUsers.length; i++) {
-            // print('[FindFriends] Match #${i + 1}: ${foundUsers[i]}');
+            // print('[CONTACT_SYNC] 👤 Match #${i + 1}: ${foundUsers[i]}');
           }
+
+          // print('[CONTACT_SYNC] 🔄 Parsing ${foundUsers.length} users into Friend objects...');
 
           setState(() {
             // Backend returns array of strings (usernames) or objects
             _searchResults = foundUsers.map((data) {
               if (data is String) {
                 // Backend returns just username strings
-                // print('[FindFriends] Creating Friend from username: $data');
+                // print('[CONTACT_SYNC] 👤 Creating Friend from username: $data');
                 return Friend(
                   username: data,
                   fromContacts: true, // Mark as from contact scan
                 );
               } else if (data is Map<String, dynamic>) {
                 // Backend returns full user objects
-                // print('[FindFriends] Creating Friend from JSON: $data');
+                // print('[CONTACT_SYNC] 👤 Creating Friend from JSON: ${data['username'] ?? 'unknown'}');
 
                 // Map phoneHash back to actual phone number
                 String? phoneNumber;
                 if (data['phoneHash'] != null) {
                   phoneNumber = hashToPhoneMap[data['phoneHash']];
-                  // print('[FindFriends] Mapped hash ${data['phoneHash']?.substring(0, 16)}... to phone: $phoneNumber');
+                  if (phoneNumber != null) {
+                    // print('[CONTACT_SYNC]    ✓ Mapped hash to phone: ${phoneNumber.substring(0, 6)}...');
+                  }
                 }
 
                 return Friend.fromJson({
@@ -616,7 +728,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
                   'fromContacts': true, // Mark as from contact scan
                 });
               } else {
-                // print('[FindFriends] Unexpected data type: ${data.runtimeType}');
+                // print('[CONTACT_SYNC] ⚠️ Unexpected data type: ${data.runtimeType}');
                 return Friend(username: 'Unknown');
               }
             }).toList();
@@ -626,28 +738,66 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
                 : "Found ${_searchResults.length} Zarq users from your contacts!";
           });
 
+          // print('[CONTACT_SYNC] ✅ Successfully created ${_searchResults.length} Friend objects');
+
           // Save username → phone number mapping to local storage
           await _saveContactPhoneMapping(_searchResults);
+          // print('[CONTACT_SYNC] ==================== CONTACT SYNC COMPLETED ====================');
         } else {
-          // print('[FindFriends] Error response: ${response.body}');
+          // print('[CONTACT_SYNC] ❌ Server error: ${response.statusCode}');
+          // print('[CONTACT_SYNC] Error body: ${response.body}');
           setState(() {
             _statusMessage = "Error from server (${response.statusCode}): ${response.body}";
             _isLoading = false;
           });
         }
       } catch (e, stackTrace) {
-        // print('[FindFriends] Connection error: $e');
-        // print('[FindFriends] Stack trace: $stackTrace');
+        // print('[CONTACT_SYNC] ❌ ERROR during server communication: $e');
+        // print('[CONTACT_SYNC] Stack trace: $stackTrace');
         setState(() {
           _statusMessage = "Failed to connect to server: $e";
           _isLoading = false;
         });
       }
     } else {
+      // print('[CONTACT_SYNC] ❌ Permission DENIED');
+      // print('[CONTACT_SYNC] Permission details: $permissionStatus');
+      // print('[CONTACT_SYNC] isPermanentlyDenied: ${permissionStatus.isPermanentlyDenied}');
+      // print('[CONTACT_SYNC] isDenied: ${permissionStatus.isDenied}');
+      // print('[CONTACT_SYNC] isRestricted: ${permissionStatus.isRestricted}');
+
       setState(() {
         _isLoading = false;
-        _statusMessage = "Contact permission denied.";
+        _statusMessage = permissionStatus.isPermanentlyDenied
+            ? "Contact permission permanently denied. Please enable it in Settings."
+            : "Contact permission denied.";
       });
+
+      // Show dialog for permanently denied permissions
+      if (permissionStatus.isPermanentlyDenied && mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Permission Required'),
+            content: const Text(
+              'Contact permission is required to find friends. Please enable it in your device settings.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  openAppSettings();
+                },
+                child: const Text('Open Settings'),
+              ),
+            ],
+          ),
+        );
+      }
     }
   }
 

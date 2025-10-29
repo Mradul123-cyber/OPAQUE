@@ -538,8 +538,8 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return null;
 
-      // Use external storage like WhatsApp - media persists after uninstall
-      final imagesDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Images/${currentUser.uid}');
+      // Use Android/media directory like WhatsApp - media persists after uninstall, Google Play compliant
+      final imagesDir = Directory('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Images/${currentUser.uid}');
 
       // Create user-specific images directory if it doesn't exist
       if (!await imagesDir.exists()) {
@@ -562,8 +562,8 @@ class FileService {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return null;
 
-      // Load from external storage
-      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Images/${currentUser.uid}/attachment_$attachmentId.jpg');
+      // Load from Android/media directory
+      final file = File('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Images/${currentUser.uid}/attachment_$attachmentId.jpg');
 
       if (await file.exists()) {
         // print('[FileService] Loading image from external storage: ${file.path}');
@@ -585,7 +585,7 @@ class FileService {
       if (currentUser == null) return false;
 
       // Check external storage
-      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Images/${currentUser.uid}/attachment_$attachmentId.jpg');
+      final file = File('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Images/${currentUser.uid}/attachment_$attachmentId.jpg');
       return await file.exists();
     } catch (e) {
       return false;
@@ -604,7 +604,7 @@ class FileService {
       if (currentUser == null) return null;
 
       // Use external storage like WhatsApp - media persists after uninstall
-      final videosDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Videos/${currentUser.uid}');
+      final videosDir = Directory('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Videos/${currentUser.uid}');
 
       // Create user-specific videos directory if it doesn't exist
       if (!await videosDir.exists()) {
@@ -628,7 +628,7 @@ class FileService {
       if (currentUser == null) return null;
 
       // Load from external storage
-      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Videos/${currentUser.uid}/attachment_$attachmentId.mp4');
+      final file = File('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Videos/${currentUser.uid}/attachment_$attachmentId.mp4');
 
       if (await file.exists()) {
         // print('[FileService] Loading video from external storage: ${file.path}');
@@ -650,7 +650,7 @@ class FileService {
       if (currentUser == null) return false;
 
       // Check external storage
-      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Videos/${currentUser.uid}/attachment_$attachmentId.mp4');
+      final file = File('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Videos/${currentUser.uid}/attachment_$attachmentId.mp4');
       return await file.exists();
     } catch (e) {
       return false;
@@ -664,7 +664,7 @@ class FileService {
       if (currentUser == null) return null;
 
       // Get from external storage
-      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Videos/${currentUser.uid}/attachment_$attachmentId.mp4');
+      final file = File('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Videos/${currentUser.uid}/attachment_$attachmentId.mp4');
 
       if (await file.exists()) {
         return file.path;
@@ -686,7 +686,7 @@ class FileService {
       if (currentUser == null) return false;
 
       // Use external storage like WhatsApp - media persists after uninstall
-      final thumbnailsDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Thumbnails/${currentUser.uid}');
+      final thumbnailsDir = Directory('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Thumbnails/${currentUser.uid}');
 
       // Create user-specific thumbnails directory if it doesn't exist
       if (!await thumbnailsDir.exists()) {
@@ -710,7 +710,7 @@ class FileService {
       if (currentUser == null) return null;
 
       // Load from external storage
-      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Thumbnails/${currentUser.uid}/thumb_$attachmentId.jpg');
+      final file = File('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Thumbnails/${currentUser.uid}/thumb_$attachmentId.jpg');
 
       if (await file.exists()) {
         // print('[FileService] Loading thumbnail from external storage: ${file.path}');
@@ -732,7 +732,7 @@ class FileService {
       if (currentUser == null) return false;
 
       // Check external storage
-      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Thumbnails/${currentUser.uid}/thumb_$attachmentId.jpg');
+      final file = File('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Thumbnails/${currentUser.uid}/thumb_$attachmentId.jpg');
       return await file.exists();
     } catch (e) {
       return false;
@@ -751,7 +751,7 @@ class FileService {
       if (currentUser == null) return null;
 
       // Use external storage like WhatsApp - media persists after uninstall
-      final documentsDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Documents/${currentUser.uid}');
+      final documentsDir = Directory('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Documents/${currentUser.uid}');
 
       // Create user-specific documents directory if it doesn't exist
       if (!await documentsDir.exists()) {
@@ -775,7 +775,7 @@ class FileService {
       if (currentUser == null) return null;
 
       // Load from external storage
-      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Documents/${currentUser.uid}/attachment_$attachmentId$extension');
+      final file = File('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Documents/${currentUser.uid}/attachment_$attachmentId$extension');
 
       if (await file.exists()) {
         // print('[FileService] Loading document from external storage: ${file.path}');
@@ -797,7 +797,7 @@ class FileService {
       if (currentUser == null) return false;
 
       // Check external storage
-      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Documents/${currentUser.uid}/attachment_$attachmentId$extension');
+      final file = File('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Documents/${currentUser.uid}/attachment_$attachmentId$extension');
       return await file.exists();
     } catch (e) {
       return false;
@@ -811,7 +811,7 @@ class FileService {
       if (currentUser == null) return null;
 
       // Get from external storage
-      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Documents/${currentUser.uid}/attachment_$attachmentId$extension');
+      final file = File('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Documents/${currentUser.uid}/attachment_$attachmentId$extension');
 
       if (await file.exists()) {
         return file.path;
@@ -867,7 +867,7 @@ class FileService {
       if (currentUser == null) return null;
 
       // Use external storage like WhatsApp - media persists after uninstall
-      final audiosDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Audio/${currentUser.uid}');
+      final audiosDir = Directory('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Audio/${currentUser.uid}');
 
       // Create user-specific audios directory if it doesn't exist
       if (!await audiosDir.exists()) {
@@ -891,7 +891,7 @@ class FileService {
       if (currentUser == null) return null;
 
       // Load from external storage
-      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Audio/${currentUser.uid}/attachment_$attachmentId.aac');
+      final file = File('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Audio/${currentUser.uid}/attachment_$attachmentId.aac');
 
       if (await file.exists()) {
         // print('[FileService] Loading audio from external storage: ${file.path}');
@@ -913,7 +913,7 @@ class FileService {
       if (currentUser == null) return false;
 
       // Check external storage
-      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Audio/${currentUser.uid}/attachment_$attachmentId.aac');
+      final file = File('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Audio/${currentUser.uid}/attachment_$attachmentId.aac');
       return await file.exists();
     } catch (e) {
       return false;
@@ -927,7 +927,7 @@ class FileService {
       if (currentUser == null) return null;
 
       // Get from external storage
-      final file = File('/storage/emulated/0/Zarq_Messenger/Media/Audio/${currentUser.uid}/attachment_$attachmentId.aac');
+      final file = File('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Audio/${currentUser.uid}/attachment_$attachmentId.aac');
 
       if (await file.exists()) {
         return file.path;

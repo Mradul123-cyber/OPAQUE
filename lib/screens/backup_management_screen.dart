@@ -5,10 +5,14 @@ import 'package:path/path.dart' as path;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:restart_app/restart_app.dart';
+import 'package:googleapis/drive/v3.dart' as drive;
+import 'package:file_picker/file_picker.dart';
 import '../services/backup_service.dart';
 import '../services/backup_settings_provider.dart';
 import '../services/backup_notification_service.dart';
 import '../services/auto_backup_manager.dart';
+import '../services/storage_migration_service.dart';
+import '../services/mediastore_backup_service.dart';
 import '../widgets/call_aware_screen.dart';
 import 'backup_info_screen.dart';
 import 'package:provider/provider.dart';
@@ -22,7 +26,7 @@ class BackupManagementScreen extends StatefulWidget {
 
 class _BackupManagementScreenState extends State<BackupManagementScreen> with SingleTickerProviderStateMixin {
   final BackupService _backupService = BackupService();
-  List<FileSystemEntity> _backupsList = [];
+  List<Map<String, dynamic>> _backupsList = [];
   bool _isLoading = false;
   double _backupProgress = 0.0;
   String _backupStatus = '';
@@ -169,58 +173,185 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
     setState(() => _isLoading = true);
 
     try {
-      // Request storage permission first (needed after reinstall)
-      final storageStatus = await Permission.manageExternalStorage.status;
-      debugPrint('[BackupManagement] Storage permission status: ${storageStatus.isGranted}');
+      // TEMPORARY: Load from BOTH MediaStore (new) and file system (old)
+      debugPrint('[BackupManagement] Loading backups from MediaStore + old files...');
 
-      if (!storageStatus.isGranted) {
-        debugPrint('[BackupManagement] Storage permission not granted, requesting...');
-        final result = await Permission.manageExternalStorage.request();
+      // List ALL backup files (MediaStore + old file system)
+      final backups = await MediaStoreBackupService.listAllBackups();
+      debugPrint('[BackupManagement] Found ${backups.length} total backup files');
 
-        if (!result.isGranted) {
-          debugPrint('[BackupManagement] Storage permission denied');
-          _showSnackbar('Storage permission required to access backups', isError: true);
-          setState(() => _isLoading = false);
-          return;
-        }
-        debugPrint('[BackupManagement] Storage permission granted');
-      }
-
-      final downloadsDir = Directory('/storage/emulated/0/Download/Zarq_Backups');
-      debugPrint('[BackupManagement] Checking backups directory: ${downloadsDir.path}');
-
-      if (await downloadsDir.exists()) {
-        debugPrint('[BackupManagement] Found backups directory, listing files...');
-        final backups = await downloadsDir.list().toList();
-        debugPrint('[BackupManagement] Raw file list: ${backups.map((f) => f.path).join(", ")}');
-
-        backups.sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
-
-        debugPrint('[BackupManagement] Found ${backups.length} backup files');
-        setState(() {
-          _backupsList = backups;
-        });
-      } else {
-        debugPrint('[BackupManagement] Backups directory does not exist');
-        setState(() {
-          _backupsList = [];
-        });
-      }
+      setState(() {
+        _backupsList = backups;
+      });
     } catch (e) {
       debugPrint('[BackupManagement] Error loading backups: $e');
+      setState(() {
+        _backupsList = [];
+      });
     } finally {
       setState(() => _isLoading = false);
     }
   }
 
   Future<bool> _requestStoragePermission() async {
-    if (!Platform.isAndroid) return true;
+    // Android/media directory doesn't require MANAGE_EXTERNAL_STORAGE permission
+    // Apps can access their own Android/media/package_name/ directory without special permissions
+    return true;
+  }
 
-    final status = await Permission.manageExternalStorage.status;
-    if (status.isGranted) return true;
+  // TEMPORARY: Storage migration function (REMOVE AFTER MIGRATION)
+  Future<void> _runStorageMigration() async {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final borderRadius = (screenWidth * 0.0375).clamp(12.0, 18.0);
+    final titleSize = (screenWidth * 0.045).clamp(16.0, 20.0);
+    final bodySize = (screenWidth * 0.035).clamp(13.0, 16.0);
 
-    final result = await Permission.manageExternalStorage.request();
-    return result.isGranted;
+    // Show confirmation dialog
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF0a1128),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(borderRadius),
+          side: BorderSide(color: Colors.orangeAccent.withOpacity(0.5)),
+        ),
+        title: Text('Migrate Storage?', style: TextStyle(color: Colors.white, fontSize: titleSize)),
+        content: Text(
+          'This will copy your media files and backups from the old location to the new Google Play compliant location.\n\n'
+          'Old files will NOT be deleted.\n\n'
+          'This may take a few minutes.',
+          style: TextStyle(color: Colors.white70, fontSize: bodySize),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Cancel', style: TextStyle(color: Colors.white70, fontSize: bodySize)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orangeAccent,
+              foregroundColor: Colors.black,
+            ),
+            child: Text('Start Migration', style: TextStyle(fontSize: bodySize)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    // Show progress dialog
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF0a1128),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(borderRadius),
+          side: BorderSide(color: Colors.orangeAccent.withOpacity(0.5)),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(color: Colors.orangeAccent),
+            const SizedBox(height: 20),
+            Text(
+              'Migrating storage...\nPlease wait.',
+              style: TextStyle(color: Colors.white, fontSize: bodySize),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+
+    // Run migration
+    try {
+      // Reset migration flag to allow re-running
+      await StorageMigrationService.resetMigration();
+      debugPrint('[BackupManagement] Starting storage migration...');
+      final success = await StorageMigrationService.migrateStorage();
+
+      if (!mounted) return;
+      Navigator.pop(context); // Close progress dialog
+
+      // Show result dialog
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          backgroundColor: const Color(0xFF0a1128),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(borderRadius),
+            side: BorderSide(
+              color: (success ? Colors.green : Colors.red).withOpacity(0.5),
+            ),
+          ),
+          title: Text(
+            success ? 'Migration Complete!' : 'Migration Failed',
+            style: TextStyle(
+              color: success ? Colors.green : Colors.red,
+              fontSize: titleSize,
+            ),
+          ),
+          content: Text(
+            success
+                ? 'Your files have been successfully migrated to the new location.\n\n'
+                  'Old files remain in the original location as backup.'
+                : 'Migration failed. Please check logs and try again.',
+            style: TextStyle(color: Colors.white70, fontSize: bodySize),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.cyanAccent,
+                foregroundColor: Colors.black,
+              ),
+              child: Text('OK', style: TextStyle(fontSize: bodySize)),
+            ),
+          ],
+        ),
+      );
+
+      // Reload backups list
+      if (success) {
+        _loadBackupsList();
+      }
+
+    } catch (e) {
+      debugPrint('[BackupManagement] Migration error: $e');
+      if (!mounted) return;
+      Navigator.pop(context); // Close progress dialog
+
+      // Show error dialog
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          backgroundColor: const Color(0xFF0a1128),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(borderRadius),
+            side: BorderSide(color: Colors.red.withOpacity(0.5)),
+          ),
+          title: Text('Error', style: TextStyle(color: Colors.red, fontSize: titleSize)),
+          content: Text(
+            'Migration failed: $e',
+            style: TextStyle(color: Colors.white70, fontSize: bodySize),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.cyanAccent,
+                foregroundColor: Colors.black,
+              ),
+              child: Text('OK', style: TextStyle(fontSize: bodySize)),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
   Future<void> _createBackup() async {
@@ -337,7 +468,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
       }
 
       // File operations should complete even if widget is disposed
-      debugPrint('[BackupManagement] Preparing to copy encrypted file from: ${encryptedFile.path}');
+      debugPrint('[BackupManagement] Preparing to save encrypted file: ${encryptedFile.path}');
 
       await BackupNotificationService.showProgressNotification('Saving to local storage...', 70);
 
@@ -346,30 +477,20 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
         throw Exception('Backup cancelled by user');
       }
 
-      final downloadsDir = Directory('/storage/emulated/0/Download/Zarq_Backups');
-      debugPrint('[BackupManagement] Target directory: ${downloadsDir.path}');
-
-      if (!await downloadsDir.exists()) {
-        debugPrint('[BackupManagement] Directory does not exist, creating...');
-        await downloadsDir.create(recursive: true);
-        debugPrint('[BackupManagement] Directory created successfully');
-      } else {
-        debugPrint('[BackupManagement] Directory already exists');
-      }
-
       final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-      final backupPath = '${downloadsDir.path}/backup_$timestamp.encrypted';
-      debugPrint('[BackupManagement] Copying file to: $backupPath');
+      final fileName = 'backup_$timestamp.encrypted';
+      debugPrint('[BackupManagement] Saving to MediaStore: $fileName');
 
       await BackupNotificationService.showProgressNotification('Finalizing...', 90);
 
-      final copiedFile = await encryptedFile.copy(backupPath);
-      debugPrint('[BackupManagement] File copied successfully to: ${copiedFile.path}');
+      // Save to MediaStore Downloads
+      final uri = await MediaStoreBackupService.saveBackupFile(encryptedFile, fileName);
 
-      // Verify file exists
-      final fileExists = await File(backupPath).exists();
-      final fileSize = await File(backupPath).length();
-      debugPrint('[BackupManagement] Verification - File exists: $fileExists, Size: $fileSize bytes');
+      if (uri == null) {
+        throw Exception('Failed to save backup to MediaStore');
+      }
+
+      debugPrint('[BackupManagement] File saved successfully to MediaStore: $uri');
 
       // Check cancellation before showing success
       if (_backupCancellationRequested) {
@@ -385,7 +506,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
         _showSnackbar('Backup created successfully!', isError: false);
         await _loadBackupsList();
       } else {
-        debugPrint('[BackupManagement] Widget disposed, but backup saved successfully to: $backupPath');
+        debugPrint('[BackupManagement] Widget disposed, but backup saved successfully');
       }
     } catch (e) {
       debugPrint('[BackupManagement] Backup error: $e');
@@ -685,7 +806,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
     debugPrint('[BackupManagement] Backup/Restore cancellation requested');
   }
 
-  Future<void> _restoreBackup(String filePath) async {
+  Future<void> _restoreBackup(String uri) async {
     final passphrase = await _askForPassword(
       title: 'Restore Backup',
       hint: 'Enter your backup passphrase',
@@ -705,6 +826,8 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
       _backupStatus = 'Preparing restore...';
     });
 
+    File? encryptedFile;
+
     try {
       // Show initial notification
       await BackupNotificationService.showProgressNotification('Starting restore...', 0);
@@ -717,7 +840,18 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
 
       await _updateProgress(0.1, 'Loading backup file...');
       await BackupNotificationService.showProgressNotification('Loading backup file...', 10);
-      final encryptedFile = File(filePath);
+
+      // TEMPORARY: Read backup from either MediaStore or old file system
+      final bytes = await MediaStoreBackupService.readBackupFileUniversal(uri);
+      if (bytes == null) {
+        throw Exception('Failed to read backup');
+      }
+
+      // Write to temporary file for decryption
+      final tempDir = Directory.systemTemp;
+      final tempFile = File('${tempDir.path}/temp_restore_${DateTime.now().millisecondsSinceEpoch}.encrypted');
+      await tempFile.writeAsBytes(bytes);
+      encryptedFile = tempFile;
 
       // Check cancellation
       if (_backupCancellationRequested) {
@@ -792,12 +926,20 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
       await _updateProgress(0.95, 'Completing restore...');
       await BackupNotificationService.showProgressNotification('Completing restore...', 95);
 
-      // Track this backup as restored
-      final backupFileName = path.basename(filePath);
-      final backupModified = encryptedFile.statSync().modified.millisecondsSinceEpoch;
+      // Clean up temporary file
+      try {
+        if (await encryptedFile.exists()) {
+          await encryptedFile.delete();
+          debugPrint('[BackupManagement] Temporary restore file deleted');
+        }
+      } catch (e) {
+        debugPrint('[BackupManagement] Failed to delete temp file: $e');
+      }
+
+      // Track this backup as restored (store URI instead of file path)
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('last_restored_backup_name', backupFileName);
-      await prefs.setInt('last_restored_backup_timestamp', backupModified);
+      await prefs.setString('last_restored_backup_uri', uri);
+      await prefs.setInt('last_restored_backup_timestamp', DateTime.now().millisecondsSinceEpoch);
 
       await _updateProgress(1.0, 'Restore completed!');
 
@@ -820,6 +962,16 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
       }
     } catch (e) {
       debugPrint('[BackupManagement] Restore error: $e');
+
+      // Clean up temporary file on error
+      try {
+        if (encryptedFile != null && await encryptedFile.exists()) {
+          await encryptedFile.delete();
+          debugPrint('[BackupManagement] Temporary restore file deleted after error');
+        }
+      } catch (cleanupError) {
+        debugPrint('[BackupManagement] Failed to delete temp file on error: $cleanupError');
+      }
 
       // Handle cancellation differently from errors
       if (e.toString().contains('cancelled by user')) {
@@ -1173,6 +1325,14 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
             ),
           ),
           actions: [
+            TextButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+                _importBackupFromGoogleDrive();
+              },
+              icon: Icon(Icons.file_download, color: Colors.green, size: iconSize2),
+              label: Text('Import Backup File', style: TextStyle(color: Colors.green, fontSize: bodySize)),
+            ),
             TextButton(
               onPressed: () => Navigator.pop(context),
               child: Text('Close', style: TextStyle(color: Colors.cyanAccent, fontSize: bodySize)),
@@ -1186,6 +1346,380 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  /// Import a backup file from local device storage
+  /// User can select any .encrypted file from device using file picker
+  Future<void> _importBackupFromGoogleDrive() async {
+    try {
+      // Use file picker to browse any location
+      // Note: Using FileType.any because 'encrypted' is not a standard extension
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.any,
+        dialogTitle: 'Select Backup File (.encrypted)',
+      );
+
+      if (result == null || result.files.isEmpty) {
+        return;
+      }
+
+      final filePath = result.files.first.path;
+
+      // Verify the file has .encrypted extension
+      if (filePath == null || !filePath.endsWith('.encrypted')) {
+        if (mounted) {
+          _showSnackbar('Please select a .encrypted backup file', isError: true);
+        }
+        return;
+      }
+
+      if (!mounted) return;
+
+      // Ask for passphrase
+      final passphrase = await _askForPassword(
+        title: 'Import Backup',
+        hint: 'Enter your backup passphrase',
+      );
+
+      if (passphrase == null || passphrase.isEmpty) {
+        _showSnackbar('Import cancelled');
+        return;
+      }
+
+      if (!mounted) return;
+
+      setState(() {
+        _isBackupInProgress = true;
+        _backupCancellationRequested = false;
+        _backupProgress = 0.0;
+        _backupStatus = 'Importing backup...';
+      });
+
+      try {
+        await BackupNotificationService.showProgressNotification('Importing backup...', 0);
+
+        // Read the file
+        final backupFile = File(filePath);
+        if (!await backupFile.exists()) {
+          throw Exception('Backup file not found');
+        }
+
+        await _updateProgress(0.2, 'Decrypting backup...');
+        await BackupNotificationService.showProgressNotification('Decrypting backup...', 20);
+
+        // Decrypt and restore
+        final backupData = await _backupService.decryptBackup(backupFile, passphrase);
+
+        await _updateProgress(0.4, 'Restoring database...');
+        await _backupService.restoreBackup(backupData);
+
+        await _updateProgress(1.0, 'Backup imported successfully!');
+        await BackupNotificationService.showProgressNotification('Backup imported successfully!', 100);
+
+        if (mounted) {
+          _showSnackbar('Backup imported successfully! The app will restart now.');
+          await Future.delayed(const Duration(seconds: 2));
+          Restart.restartApp();
+        }
+
+      } catch (e) {
+        debugPrint('[BackupManagement] Error importing backup: $e');
+        await BackupNotificationService.cancelAllNotifications();
+        if (mounted) _showSnackbar('Failed to import backup: $e', isError: true);
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isBackupInProgress = false;
+            _backupCancellationRequested = false;
+          });
+        }
+      }
+
+    } catch (e) {
+      debugPrint('[BackupManagement] Error in import flow: $e');
+      if (mounted) _showSnackbar('Failed to import backup: $e', isError: true);
+    }
+  }
+
+  /// Select a backup file from local Zarq_Backups folder
+  Future<String?> _selectLocalBackupFile() async {
+    try {
+      // List all backups from local storage (MediaStore + old file system)
+      final backups = await MediaStoreBackupService.listAllBackups();
+
+      if (backups.isEmpty) {
+        _showSnackbar('No local backups found in Download/Zarq_Backups folder');
+        return null;
+      }
+
+      if (!mounted) return null;
+
+      // Show selection dialog
+      final selectedBackup = await showDialog<Map<String, dynamic>>(
+        context: context,
+        builder: (context) {
+          final borderRadius = MediaQuery.of(context).size.width * 0.03;
+          final spacing1 = MediaQuery.of(context).size.width * 0.03;
+          final titleSize = MediaQuery.of(context).size.width * 0.045;
+          final bodySize = MediaQuery.of(context).size.width * 0.04;
+          final smallSize = MediaQuery.of(context).size.width * 0.035;
+          final iconSize2 = MediaQuery.of(context).size.width * 0.05;
+
+          return AlertDialog(
+            backgroundColor: const Color(0xFF0a1128),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(borderRadius),
+              side: BorderSide(color: Colors.green.withOpacity(0.3)),
+            ),
+            title: Row(
+              children: [
+                Icon(Icons.folder, color: Colors.green, size: iconSize2),
+                SizedBox(width: spacing1),
+                Text('Local Backups', style: TextStyle(color: Colors.white, fontSize: titleSize)),
+              ],
+            ),
+            content: Container(
+              width: double.maxFinite,
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.5,
+              ),
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: backups.length,
+                itemBuilder: (context, index) {
+                  final backup = backups[index];
+                  final fileName = backup['name'] as String;
+                  final size = MediaStoreBackupService.formatBytes(backup['size'] as int);
+                  final date = DateTime.fromMillisecondsSinceEpoch(backup['dateModified'] as int);
+                  final formattedDate = _formatDateTime(date);
+
+                  return Card(
+                    color: const Color(0xFF1B263B),
+                    margin: EdgeInsets.only(bottom: spacing1),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(borderRadius / 2),
+                      side: BorderSide(color: Colors.green.withOpacity(0.3)),
+                    ),
+                    child: ListTile(
+                      leading: Icon(Icons.backup, color: Colors.green, size: iconSize2),
+                      title: Text(
+                        fileName,
+                        style: TextStyle(color: Colors.white, fontSize: bodySize),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(height: spacing1 * 0.3),
+                          Text(
+                            formattedDate,
+                            style: TextStyle(color: Colors.white60, fontSize: smallSize),
+                          ),
+                          Text(
+                            size,
+                            style: TextStyle(color: Colors.white60, fontSize: smallSize),
+                          ),
+                        ],
+                      ),
+                      trailing: Icon(Icons.arrow_forward_ios, color: Colors.green, size: iconSize2 * 0.7),
+                      onTap: () => Navigator.pop(context, backup),
+                    ),
+                  );
+                },
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text('Cancel', style: TextStyle(color: Colors.cyanAccent, fontSize: bodySize)),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (selectedBackup == null) {
+        return null;
+      }
+
+      // Get the file path from URI
+      final uri = selectedBackup['uri'] as String;
+
+      // Check if this is an old file system backup or MediaStore backup
+      if (uri.startsWith('file://')) {
+        // Old file system backup - direct path
+        return uri.replaceFirst('file://', '');
+      } else {
+        // MediaStore backup - need to read bytes and save to temp file
+        final bytes = await MediaStoreBackupService.readBackupFileUniversal(uri);
+        if (bytes == null) {
+          throw Exception('Failed to read backup file');
+        }
+
+        // Save to temp file
+        final tempDir = Directory.systemTemp;
+        final tempFile = File('${tempDir.path}/temp_backup_${DateTime.now().millisecondsSinceEpoch}.encrypted');
+        await tempFile.writeAsBytes(bytes);
+
+        return tempFile.path;
+      }
+
+    } catch (e) {
+      debugPrint('[BackupManagement] Error selecting local backup: $e');
+      if (mounted) _showSnackbar('Failed to access local backups: $e', isError: true);
+      return null;
+    }
+  }
+
+  /// Show folder navigation dialog with breadcrumbs
+  Future<drive.File?> _showFolderNavigationDialog(String folderId, String folderName) async {
+    final items = await _backupService.listDriveFolderContents(folderId);
+
+    if (!mounted) return null;
+
+    if (items.isEmpty) {
+      _showSnackbar('No folders or backup files found in "$folderName"');
+      return null;
+    }
+
+    return await showDialog<drive.File>(
+      context: context,
+      builder: (context) {
+        final borderRadius = MediaQuery.of(context).size.width * 0.03;
+        final spacing1 = MediaQuery.of(context).size.width * 0.03;
+        final titleSize = MediaQuery.of(context).size.width * 0.045;
+        final bodySize = MediaQuery.of(context).size.width * 0.04;
+        final smallSize = MediaQuery.of(context).size.width * 0.035;
+        final iconSize2 = MediaQuery.of(context).size.width * 0.05;
+
+        return AlertDialog(
+          backgroundColor: const Color(0xFF0a1128),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(borderRadius),
+            side: BorderSide(color: Colors.green.withOpacity(0.3)),
+          ),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.folder_open, color: Colors.green, size: iconSize2),
+                  SizedBox(width: spacing1),
+                  Expanded(
+                    child: Text(
+                      folderName,
+                      style: TextStyle(color: Colors.white, fontSize: titleSize),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              SizedBox(height: spacing1 * 0.5),
+              Text(
+                'Select a folder or backup file:',
+                style: TextStyle(color: Colors.white60, fontSize: smallSize, fontWeight: FontWeight.normal),
+              ),
+            ],
+          ),
+          content: Container(
+            width: double.maxFinite,
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.5,
+            ),
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: items.length,
+              itemBuilder: (context, index) {
+                final item = items[index];
+                final isFolder = item.mimeType == 'application/vnd.google-apps.folder';
+                final localDate = item.modifiedTime?.toLocal();
+                final date = localDate != null ? _formatDateTime(localDate) : 'Unknown date';
+
+                // Format file size
+                String sizeStr = '';
+                if (!isFolder && item.size != null) {
+                  final sizeBytes = int.tryParse(item.size!) ?? 0;
+                  if (sizeBytes > 0) {
+                    sizeStr = _formatBytes(sizeBytes);
+                  }
+                }
+
+                return Card(
+                  color: const Color(0xFF1B263B),
+                  margin: EdgeInsets.only(bottom: spacing1),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(borderRadius / 2),
+                    side: BorderSide(color: isFolder ? Colors.amber.withOpacity(0.3) : Colors.green.withOpacity(0.3)),
+                  ),
+                  child: ListTile(
+                    leading: Icon(
+                      isFolder ? Icons.folder : Icons.backup,
+                      color: isFolder ? Colors.amber : Colors.green,
+                      size: iconSize2,
+                    ),
+                    title: Text(
+                      item.name ?? 'Unknown',
+                      style: TextStyle(color: Colors.white, fontSize: bodySize),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(height: spacing1 * 0.3),
+                        Text(
+                          date,
+                          style: TextStyle(color: Colors.white60, fontSize: smallSize),
+                        ),
+                        if (sizeStr.isNotEmpty)
+                          Text(
+                            sizeStr,
+                            style: TextStyle(color: Colors.white60, fontSize: smallSize),
+                          ),
+                      ],
+                    ),
+                    trailing: Icon(
+                      Icons.arrow_forward_ios,
+                      color: isFolder ? Colors.amber : Colors.green,
+                      size: iconSize2 * 0.7,
+                    ),
+                    onTap: () async {
+                      if (isFolder) {
+                        // Navigate into folder
+                        Navigator.pop(context); // Close current dialog
+                        final selected = await _showFolderNavigationDialog(item.id!, item.name ?? 'Folder');
+                        if (selected != null && mounted) {
+                          // Return the selected file from nested navigation
+                          Navigator.pop(context, selected);
+                        }
+                      } else {
+                        // Select this file
+                        Navigator.pop(context, item);
+                      }
+                    },
+                  ),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('Back', style: TextStyle(color: Colors.cyanAccent, fontSize: bodySize)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 
   Future<void> _restoreFromGoogleDrive(String folderId) async {
@@ -1371,7 +1905,28 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
     }
   }
 
-  Future<void> _deleteBackup(String filePath) async {
+  Future<void> _scanAndImportBackups() async {
+    try {
+      setState(() => _isLoading = true);
+      _showSnackbar('Scanning for backup files...');
+
+      final count = await MediaStoreBackupService.scanAndImportBackups();
+
+      if (count > 0) {
+        _showSnackbar('✅ Imported $count backup file${count > 1 ? 's' : ''}!');
+        await _loadBackupsList();
+      } else {
+        _showSnackbar('No new backup files found to import', isError: false);
+      }
+    } catch (e) {
+      debugPrint('[BackupManagement] Error scanning backups: $e');
+      _showSnackbar('Failed to scan for backups: $e', isError: true);
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _deleteBackup(String uri) async {
     final screenWidth = MediaQuery.of(context).size.width;
     final borderRadius = (screenWidth * 0.0375).clamp(12.0, 18.0);
     final titleSize = (screenWidth * 0.045).clamp(16.0, 20.0);
@@ -1405,9 +1960,14 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
 
     if (confirm == true) {
       try {
-        await File(filePath).delete();
-        _showSnackbar('Backup deleted');
-        await _loadBackupsList();
+        // TEMPORARY: Delete from either MediaStore or old file system
+        final success = await MediaStoreBackupService.deleteBackupFileUniversal(uri);
+        if (success) {
+          _showSnackbar('Backup deleted');
+          await _loadBackupsList();
+        } else {
+          _showSnackbar('Failed to delete backup', isError: true);
+        }
       } catch (e) {
         _showSnackbar('Failed to delete backup: $e', isError: true);
       }
@@ -1681,6 +2241,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
               ),
             ),
           ),
+
 
           // Google Drive section
           Padding(
@@ -2074,6 +2635,22 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
                                 'No backups found',
                                 style: TextStyle(color: Colors.white54, fontSize: sectionTitleSize),
                               ),
+                              SizedBox(height: padding2),
+                              Text(
+                                'Manually copied files to Download/Zarq_Backups?',
+                                style: TextStyle(color: Colors.white38, fontSize: smallTextSize),
+                                textAlign: TextAlign.center,
+                              ),
+                              SizedBox(height: padding1),
+                              OutlinedButton.icon(
+                                onPressed: _isBackupInProgress ? null : _importBackupFromGoogleDrive,
+                                icon: Icon(Icons.file_download, size: iconSize2),
+                                label: Text('Import Backup File', style: TextStyle(fontSize: bodyTextSize)),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.green,
+                                  side: BorderSide(color: Colors.green.withOpacity(0.5)),
+                                ),
+                              ),
                             ],
                           ),
                         )
@@ -2084,9 +2661,11 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
                           itemCount: _backupsList.length,
                           itemBuilder: (context, index) {
                             final backup = _backupsList[index];
-                            final stat = backup.statSync();
-                            final size = _formatFileSize(stat.size);
-                            final modified = _formatDateTime(stat.modified);
+                            final name = backup['name'] as String;
+                            final size = MediaStoreBackupService.formatBytes(backup['size'] as int);
+                            final dateModified = DateTime.fromMillisecondsSinceEpoch(backup['dateModified'] as int);
+                            final modified = _formatDateTime(dateModified);
+                            final uri = backup['uri'] as String;
 
                             return Card(
                               color: const Color(0xFF0a1128),
@@ -2102,7 +2681,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
                                   child: Icon(Icons.backup, color: Colors.cyanAccent, size: iconSize1),
                                 ),
                                 title: Text(
-                                  path.basename(backup.path),
+                                  name,
                                   style: TextStyle(
                                     color: Colors.white,
                                     fontWeight: FontWeight.bold,
@@ -2151,12 +2730,12 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
                                   children: [
                                     IconButton(
                                       icon: Icon(Icons.restore, color: Colors.cyanAccent, size: iconSize1),
-                                      onPressed: _isBackupInProgress ? null : () => _restoreBackup(backup.path),
+                                      onPressed: _isBackupInProgress ? null : () => _restoreBackup(uri),
                                       tooltip: 'Restore',
                                     ),
                                     IconButton(
                                       icon: Icon(Icons.delete, color: Colors.redAccent, size: iconSize1),
-                                      onPressed: _isBackupInProgress ? null : () => _deleteBackup(backup.path),
+                                      onPressed: _isBackupInProgress ? null : () => _deleteBackup(uri),
                                       tooltip: 'Delete',
                                     ),
                                   ],

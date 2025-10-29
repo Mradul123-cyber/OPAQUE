@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:zarq_messenger/screens/call_history_screen.dart';
 import 'package:zarq_messenger/screens/customization_screen.dart';
+import 'package:zarq_messenger/screens/notes_screen.dart';
 import 'package:zarq_messenger/services/SignalService.dart';
 import 'package:zarq_messenger/services/database_service.dart';
 import 'package:zarq_messenger/services/navigation_handler.dart';
@@ -1541,6 +1542,18 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 );
               }
+            },
+          ),
+          _buildNavCard(
+            icon: Icons.note,
+            label: 'Notes',
+            isDarkTheme: isDarkTheme,
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => const NotesScreen(),
+                ),
+              );
             },
           ),
           _buildNavCard(

@@ -19,6 +19,7 @@ class UserSettingsProvider with ChangeNotifier {
     encryptionAnimationStyle: 'static',
     findFriendsScreenStyle: 'default',
     friendRequestsScreenStyle: 'default',
+    notesScreenStyle: 'default',
   );
 
   UserSettings get currentSettings => _settings;
@@ -33,6 +34,7 @@ class UserSettingsProvider with ChangeNotifier {
   String get encryptionAnimationStyle => _settings.encryptionAnimationStyle;
   String get findFriendsScreenStyle => _settings.findFriendsScreenStyle;
   String get friendRequestsScreenStyle => _settings.friendRequestsScreenStyle;
+  String get notesScreenStyle => _settings.notesScreenStyle;
 
   UserSettingsProvider() {
     _loadInitialStyle();
@@ -59,6 +61,7 @@ class UserSettingsProvider with ChangeNotifier {
     String? encryptionAnimationStyle,
     String? findFriendsScreenStyle,
     String? friendRequestsScreenStyle,
+    String? notesScreenStyle,
   }) async {
     // Update local state
     _settings = UserSettings(
@@ -71,6 +74,7 @@ class UserSettingsProvider with ChangeNotifier {
       encryptionAnimationStyle: encryptionAnimationStyle ?? _settings.encryptionAnimationStyle,
       findFriendsScreenStyle: findFriendsScreenStyle ?? _settings.findFriendsScreenStyle,
       friendRequestsScreenStyle: friendRequestsScreenStyle ?? _settings.friendRequestsScreenStyle,
+      notesScreenStyle: notesScreenStyle ?? _settings.notesScreenStyle,
     );
 
     // Save to local storage (instant, no network call)
@@ -93,6 +97,7 @@ class UserSettingsProvider with ChangeNotifier {
       encryptionAnimationStyle: 'static',
       findFriendsScreenStyle: 'default',
       friendRequestsScreenStyle: 'default',
+      notesScreenStyle: 'default',
     );
     notifyListeners();
   }

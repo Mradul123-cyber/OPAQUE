@@ -857,16 +857,16 @@ class BackupService {
         Directory storageDir;
 
         if (attachment.type == 'image') {
-          storageDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Images/$userUid');
+          storageDir = Directory('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Images/$userUid');
           storagePath = path.join(storageDir.path, 'attachment_${attachment.attachmentId}.jpg');
         } else if (attachment.type == 'video') {
-          storageDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Videos/$userUid');
+          storageDir = Directory('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Videos/$userUid');
           storagePath = path.join(storageDir.path, 'attachment_${attachment.attachmentId}.mp4');
         } else if (attachment.type == 'audio') {
-          storageDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Audio/$userUid');
+          storageDir = Directory('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Audio/$userUid');
           storagePath = path.join(storageDir.path, 'attachment_${attachment.attachmentId}.aac');
         } else if (attachment.type == 'document') {
-          storageDir = Directory('/storage/emulated/0/Zarq_Messenger/Media/Documents/$userUid');
+          storageDir = Directory('/storage/emulated/0/Android/media/com.zarq.messenger/Media/Documents/$userUid');
           storagePath = path.join(storageDir.path, 'attachment_${attachment.attachmentId}${attachment.extension}');
         } else {
           continue;
@@ -921,6 +921,12 @@ class BackupService {
   // ================== GOOGLE DRIVE INTEGRATION ==================
 
   /// Drive API scopes
+  /// Using drive.file scope (recommended by Google) which provides access to:
+  /// - Files created by this app
+  /// - Files explicitly selected/shared by user via Picker API
+  ///
+  /// Note: Manual file uploads to app folders are NOT visible with this scope.
+  /// Users must use the "Import Backup File" feature (Picker API) to grant access.
   static const List<String> _driveScopes = <String>[
     drive.DriveApi.driveFileScope,
     'https://www.googleapis.com/auth/drive.file',
@@ -1195,6 +1201,127 @@ class BackupService {
     }
   }
 
+  /// Import a backup file from Google Drive using file picker
+  /// This allows users to explicitly select backup files they want to import
+  /// Works with drive.file scope (no verification needed)
+  Future<String?> importBackupFileFromGoogleDrive() async {
+    try {
+      debugPrint('[BackupService] Opening Google Drive file picker...');
+
+      final driveApi = await getDriveApi();
+      if (driveApi == null) {
+        throw Exception('Failed to authenticate with Google Drive');
+      }
+
+      // For Flutter, we'll use a simpler approach:
+      // List all .encrypted files in user's Drive and let them choose
+      debugPrint('[BackupService] Searching for .encrypted files in Drive...');
+
+      // Search for .encrypted files across entire Drive
+      final query = "name contains '.encrypted' and trashed=false";
+      final fileList = await driveApi.files.list(
+        q: query,
+        spaces: 'drive',
+        pageSize: 100,
+        orderBy: 'modifiedTime desc',
+        $fields: 'files(id, name, createdTime, modifiedTime, size)',
+      );
+
+      if (fileList.files == null || fileList.files!.isEmpty) {
+        debugPrint('[BackupService] No .encrypted files found in Drive');
+        return null;
+      }
+
+      // Filter to only .encrypted files (since 'contains' does prefix matching)
+      final encryptedFiles = fileList.files!
+          .where((file) => file.name != null && file.name!.endsWith('.encrypted'))
+          .toList();
+
+      if (encryptedFiles.isEmpty) {
+        debugPrint('[BackupService] No .encrypted files found after filtering');
+        return null;
+      }
+
+      debugPrint('[BackupService] Found ${encryptedFiles.length} .encrypted files');
+
+      // Return the file list for UI to display and let user choose
+      // The UI will call this method and handle selection
+      return 'files_available'; // Signal to UI to show file list
+
+    } catch (e) {
+      debugPrint('[BackupService] Error opening file picker: $e');
+      return null;
+    }
+  }
+
+  /// List contents of a specific folder in Google Drive
+  /// Returns both folders and .encrypted files for navigation
+  Future<List<drive.File>> listDriveFolderContents(String folderId) async {
+    try {
+      debugPrint('[BackupService] Listing contents of folder: $folderId');
+
+      final driveApi = await getDriveApi();
+      if (driveApi == null) {
+        throw Exception('Failed to authenticate with Google Drive');
+      }
+
+      // List all items in the folder
+      final query = "'$folderId' in parents and trashed=false";
+      final fileList = await driveApi.files.list(
+        q: query,
+        spaces: 'drive',
+        pageSize: 100,
+        orderBy: 'name',
+        $fields: 'files(id, name, createdTime, modifiedTime, size, mimeType)',
+      );
+
+      if (fileList.files == null) {
+        return [];
+      }
+
+      // Filter to show only folders and .encrypted files
+      final items = fileList.files!.where((file) {
+        final isFolder = file.mimeType == 'application/vnd.google-apps.folder';
+        final isEncrypted = file.name != null && file.name!.endsWith('.encrypted');
+        return isFolder || isEncrypted;
+      }).toList();
+
+      debugPrint('[BackupService] Found ${items.length} items (folders + .encrypted files)');
+      return items;
+
+    } catch (e) {
+      debugPrint('[BackupService] Error listing folder contents: $e');
+      return [];
+    }
+  }
+
+  /// Get the root "Zarq Messenger Backups" folder or search from Drive root
+  Future<String?> getRootBackupFolderId() async {
+    try {
+      final driveApi = await getDriveApi();
+      if (driveApi == null) {
+        return null;
+      }
+
+      // Try to find "Zarq Messenger Backups" folder
+      final rootFolderQuery = "name='Zarq Messenger Backups' and mimeType='application/vnd.google-apps.folder' and trashed=false";
+      final rootFolderList = await driveApi.files.list(
+        q: rootFolderQuery,
+        spaces: 'drive',
+        $fields: 'files(id)',
+      );
+
+      if (rootFolderList.files != null && rootFolderList.files!.isNotEmpty) {
+        return rootFolderList.files!.first.id;
+      }
+
+      return null; // No root folder found, will use Drive root
+    } catch (e) {
+      debugPrint('[BackupService] Error getting root folder: $e');
+      return null;
+    }
+  }
+
   /// List all backup folders from Google Drive
   Future<List<drive.File>> listBackupsFromGoogleDrive() async {
     try {
@@ -1205,14 +1332,24 @@ class BackupService {
         throw Exception('Failed to authenticate with Google Drive');
       }
 
+      // DIAGNOSTIC: Get current user's email to verify account
+      try {
+        final about = await driveApi.about.get($fields: 'user');
+        debugPrint('[BackupService] 👤 Signed in as: ${about.user?.emailAddress}');
+      } catch (e) {
+        debugPrint('[BackupService] ⚠️ Could not get user info: $e');
+      }
+
       // Find root backup folder
       final rootFolderName = 'Zarq Messenger Backups';
       final rootFolderQuery = "name='$rootFolderName' and mimeType='application/vnd.google-apps.folder' and trashed=false";
       final rootFolderList = await driveApi.files.list(
         q: rootFolderQuery,
         spaces: 'drive',
-        $fields: 'files(id)',
+        $fields: 'files(id, name)',
       );
+
+      debugPrint('[BackupService] 📂 Found ${rootFolderList.files?.length ?? 0} folders named "$rootFolderName"');
 
       if (rootFolderList.files == null || rootFolderList.files!.isEmpty) {
         debugPrint('[BackupService] No root backup folder found');
@@ -1220,8 +1357,11 @@ class BackupService {
       }
 
       final rootFolderId = rootFolderList.files!.first.id;
+      debugPrint('[BackupService] 📂 Using root folder ID: $rootFolderId');
 
-      // List all backup folders (Backup_timestamp) inside root folder
+      // List all backup folders (Backup_timestamp) created by the app
+      // These are folders created through the app's backup feature
+      // Exclude any manual/system folders by filtering for Backup_ prefix
       final backupFolderQuery = "'$rootFolderId' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false";
       final backupFolderList = await driveApi.files.list(
         q: backupFolderQuery,
@@ -1230,8 +1370,18 @@ class BackupService {
         $fields: 'files(id, name, createdTime, modifiedTime)',
       );
 
-      debugPrint('[BackupService] Found ${backupFolderList.files?.length ?? 0} backup folders');
-      return backupFolderList.files ?? [];
+      // Filter out any folders that don't match the app's backup naming pattern
+      // App backups are named "Backup_timestamp"
+      final appBackups = (backupFolderList.files ?? [])
+          .where((folder) => folder.name != null && folder.name!.startsWith('Backup_'))
+          .toList();
+
+      debugPrint('[BackupService] Found ${backupFolderList.files?.length ?? 0} total folders, ${appBackups.length} are app-created backups');
+
+      // Note: Manual backup imports are now handled through the "Import Backup File" feature
+      // which uses searchBackupFilesInDrive() to let users select files from anywhere in Drive
+
+      return appBackups;
     } catch (e) {
       debugPrint('[BackupService] Error listing backups: $e');
       return [];
@@ -1594,20 +1744,35 @@ class BackupService {
         throw Exception('Restore cancelled by user');
       }
 
-      // 1. Find backup.encrypted file inside backup folder
-      final backupFileQuery = "'$backupFolderId' in parents and name='backup.encrypted' and trashed=false";
-      final backupFileList = await driveApi.files.list(
-        q: backupFileQuery,
-        spaces: 'drive',
-        $fields: 'files(id, name)',
-      );
+      // 1. Check if this is a direct .encrypted file or a folder
+      final fileInfo = await driveApi.files.get(
+        backupFolderId,
+        $fields: 'id, name, mimeType',
+      ) as drive.File;
 
-      if (backupFileList.files == null || backupFileList.files!.isEmpty) {
-        throw Exception('Backup file not found in folder');
+      String backupFileId;
+
+      if (fileInfo.mimeType == 'application/vnd.google-apps.folder') {
+        // This is a folder (app-created backup) - find backup.encrypted inside
+        debugPrint('[BackupService] Detected folder backup, looking for backup.encrypted inside...');
+        final backupFileQuery = "'$backupFolderId' in parents and name='backup.encrypted' and trashed=false";
+        final backupFileList = await driveApi.files.list(
+          q: backupFileQuery,
+          spaces: 'drive',
+          $fields: 'files(id, name)',
+        );
+
+        if (backupFileList.files == null || backupFileList.files!.isEmpty) {
+          throw Exception('Backup file not found in folder');
+        }
+
+        backupFileId = backupFileList.files!.first.id!;
+        debugPrint('[BackupService] Found backup file in folder: $backupFileId');
+      } else {
+        // This is a direct .encrypted file (manually copied by user)
+        debugPrint('[BackupService] Detected direct .encrypted file (manually copied)');
+        backupFileId = backupFolderId; // The ID itself is the file ID
       }
-
-      final backupFileId = backupFileList.files!.first.id!;
-      debugPrint('[BackupService] Found backup file: $backupFileId');
 
       // Check cancellation before download
       if (shouldCancel?.call() == true) {

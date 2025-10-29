@@ -7,6 +7,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'backup_service.dart';
 import 'backup_notification_service.dart';
 import 'secure_storage_service.dart';
+import 'mediastore_backup_service.dart';
 
 /// Auto-Backup Manager - Handles scheduling and execution of automatic backups
 class AutoBackupManager {
@@ -394,23 +395,24 @@ Future<void> _executeAutoBackup(BackupService backupService, AutoBackupSettings 
     // Auto-backup always saves to local storage only
     await BackupNotificationService.showProgressNotification('Saving to local storage...', 70);
 
-    final downloadsDir = Directory('/storage/emulated/0/Download/Zarq_Backups');
-    if (!await downloadsDir.exists()) {
-      await downloadsDir.create(recursive: true);
-    }
-
     // CRITICAL: Clean up old auto-backups BEFORE creating new one
     // Keep only 2 most recent auto-backups (safety net for corruption)
     // Manual backups (starting with "backup_") are NOT touched
-    await _cleanupOldAutoBackups(downloadsDir);
+    await _cleanupOldAutoBackups();
 
     // Use "auto_backup_" prefix to differentiate from manual backups
     final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-    final backupPath = '${downloadsDir.path}/auto_backup_$timestamp.encrypted';
-    await encryptedFile.copy(backupPath);
+    final fileName = 'auto_backup_$timestamp.encrypted';
 
-    bool success = true;
-    debugPrint('[AutoBackupManager] Auto-backup saved: $backupPath');
+    // Save to MediaStore Downloads
+    final uri = await MediaStoreBackupService.saveBackupFile(encryptedFile, fileName);
+
+    bool success = uri != null;
+    if (success) {
+      debugPrint('[AutoBackupManager] Auto-backup saved to MediaStore: $uri');
+    } else {
+      debugPrint('[AutoBackupManager] ❌ Failed to save auto-backup to MediaStore');
+    }
 
     if (success) {
       // Update last backup time
@@ -442,17 +444,16 @@ Future<void> _executeAutoBackup(BackupService backupService, AutoBackupSettings 
 
 /// Clean up old auto-backups, keeping only the 2 most recent
 /// Manual backups (filename starts with "backup_") are NOT deleted
-Future<void> _cleanupOldAutoBackups(Directory backupDir) async {
+Future<void> _cleanupOldAutoBackups() async {
   try {
     debugPrint('[AutoBackupManager] Cleaning up old auto-backups...');
 
-    // List all files in backup directory
-    final files = await backupDir.list().toList();
+    // List all backup files from MediaStore
+    final allBackups = await MediaStoreBackupService.listBackupFiles();
 
     // Filter only auto-backups (filename starts with "auto_backup_")
-    final autoBackups = files
-        .where((f) => f is File && f.path.contains('auto_backup_'))
-        .cast<File>()
+    final autoBackups = allBackups
+        .where((backup) => (backup['name'] as String).startsWith('auto_backup_'))
         .toList();
 
     debugPrint('[AutoBackupManager] Found ${autoBackups.length} auto-backup files');
@@ -464,7 +465,11 @@ Future<void> _cleanupOldAutoBackups(Directory backupDir) async {
     }
 
     // Sort by modification time (newest first)
-    autoBackups.sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
+    autoBackups.sort((a, b) {
+      final aTime = a['dateModified'] as int;
+      final bTime = b['dateModified'] as int;
+      return bTime.compareTo(aTime);
+    });
 
     // Keep only the 2 most recent, delete the rest
     final backupsToDelete = autoBackups.sublist(2);
@@ -472,10 +477,16 @@ Future<void> _cleanupOldAutoBackups(Directory backupDir) async {
 
     for (final backup in backupsToDelete) {
       try {
-        await backup.delete();
-        debugPrint('[AutoBackupManager] ✅ Deleted old auto-backup: ${backup.path}');
+        final uri = backup['uri'] as String;
+        final name = backup['name'] as String;
+        final deleted = await MediaStoreBackupService.deleteBackupFile(uri);
+        if (deleted) {
+          debugPrint('[AutoBackupManager] ✅ Deleted old auto-backup: $name');
+        } else {
+          debugPrint('[AutoBackupManager] ❌ Failed to delete $name');
+        }
       } catch (e) {
-        debugPrint('[AutoBackupManager] ❌ Failed to delete ${backup.path}: $e');
+        debugPrint('[AutoBackupManager] ❌ Failed to delete backup: $e');
       }
     }
 
