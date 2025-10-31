@@ -28,6 +28,7 @@ import 'find_friends_screen.dart';
 import 'chat_screen.dart';
 import 'create_group_screen.dart';
 import 'widgets/call_aware_screen.dart';
+import 'widgets/animated_profile_avatar.dart';
 import 'services/overlay_permission_helper.dart';
 import 'about_screen.dart';
 import 'screens/ai_chat_screen.dart';
@@ -794,51 +795,13 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ],
                 ),
-                child: currentUserHasImage
-                    ? CachedNetworkImage(
-                        imageUrl: _currentUserAvatarUrl!,
-                        imageBuilder: (context, imageProvider) => CircleAvatar(
-                          radius: userAvatarRadius,
-                          backgroundImage: imageProvider,
-                          backgroundColor: Colors.transparent,
-                        ),
-                        placeholder: (context, url) => CircleAvatar(
-                          radius: userAvatarRadius,
-                          backgroundColor: Colors.transparent,
-                          child: SizedBox(
-                            width: userAvatarRadius * 0.8,
-                            height: userAvatarRadius * 0.8,
-                            child: const CircularProgressIndicator(
-                              strokeWidth: 2,
-                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                            ),
-                          ),
-                        ),
-                        errorWidget: (context, url, error) => CircleAvatar(
-                          radius: userAvatarRadius,
-                          backgroundColor: Colors.transparent,
-                          child: Text(
-                            _displayName.isNotEmpty ? _displayName[0].toUpperCase() : '?',
-                            style: TextStyle(
-                              color: Colors.black87,
-                              fontWeight: FontWeight.bold,
-                              fontSize: userAvatarFontSize,
-                            ),
-                          ),
-                        ),
-                      )
-                    : CircleAvatar(
-                        radius: userAvatarRadius,
-                        backgroundColor: Colors.transparent,
-                        child: Text(
-                          _displayName.isNotEmpty ? _displayName[0].toUpperCase() : '?',
-                          style: TextStyle(
-                            color: Colors.black87,
-                            fontWeight: FontWeight.bold,
-                            fontSize: userAvatarFontSize,
-                          ),
-                        ),
-                      ),
+                child: AnimatedProfileAvatar(
+                  imageUrl: currentUserHasImage ? _currentUserAvatarUrl : null,
+                  size: userAvatarRadius * 2,
+                  enableAnimation: true,
+                  flipDuration: const Duration(milliseconds: 800),
+                  displayDuration: const Duration(seconds: 4),
+                ),
               ),
             ),
           ),

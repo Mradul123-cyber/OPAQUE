@@ -62,19 +62,20 @@ class AboutScreen extends StatelessWidget {
                         children: [
                           // App Logo/Icon
                           Container(
-                            padding: EdgeInsets.all(spacing2),
                             decoration: BoxDecoration(
-                              color: Colors.cyanAccent.withOpacity(0.15),
                               shape: BoxShape.circle,
                               border: Border.all(
                                 color: Colors.cyanAccent.withOpacity(0.5),
                                 width: 2,
                               ),
                             ),
-                            child: Icon(
-                              Icons.messenger,
-                              size: iconSize * 2.5,
-                              color: Colors.cyanAccent,
+                            child: ClipOval(
+                              child: Image.asset(
+                                'assets/zarq_logo_circle.png',
+                                width: iconSize * 4,
+                                height: iconSize * 4,
+                                fit: BoxFit.cover,
+                              ),
                             ),
                           ),
                           SizedBox(height: spacing2),
