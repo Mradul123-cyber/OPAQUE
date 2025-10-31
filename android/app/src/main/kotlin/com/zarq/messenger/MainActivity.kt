@@ -1,7 +1,6 @@
 package com.zarq.messenger
 
 import android.Manifest
-import android.app.AlarmManager
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
@@ -31,6 +30,11 @@ import kotlinx.coroutines.withContext
 import com.razorpay.PaymentResultListener
 import java.util.Calendar
 import java.io.File
+import androidx.work.WorkManager
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import java.util.concurrent.TimeUnit
 
 class MainActivity : FlutterActivity(), PaymentResultListener {
 
@@ -39,6 +43,7 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
     private val NAVIGATION_CHANNEL = "com.zarq/navigation"
     private val BACKUP_CHANNEL = "com.zarq/backup"
     private val BACKUP_TRIGGER_CHANNEL = "com.zarq/backup_trigger"  // One-way Kotlin->Flutter for triggers
+    private val NATIVE_BACKUP_CHANNEL = "com.zarq/native_backup"  // New channel for native auto-backup
     private val OVERLAY_CHANNEL = "com.zarq/overlay"
     private val VIDEO_COMPRESSION_CHANNEL = "com.zarq/video_compression"
     private val PAYMENT_CHANNEL = "com.zarq/payment"
@@ -74,6 +79,7 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
         setupPaymentChannel(flutterEngine)
         setupShareChannel(flutterEngine)
         setupMediaStoreChannel(flutterEngine)
+        setupNativeBackupChannel(flutterEngine)
 
         Log.d(TAG, "All method channels configured")
     }
@@ -929,6 +935,11 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
             .setMethodCallHandler { call, result ->
                 Log.d(TAG, "🔔 Kotlin-side handler received call: ${call.method}")
                 when (call.method) {
+                    "showBackupStartNotification" -> {
+                        val operationType = call.argument<String>("operationType") ?: "Backup"
+                        backupNotificationHelper.showStartNotification(operationType)
+                        result.success(true)
+                    }
                     "showBackupProgressNotification" -> {
                         val status = call.argument<String>("status") ?: "Processing..."
                         val progress = call.argument<Int>("progress") ?: 0
@@ -960,39 +971,6 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
                     }
                     "requestBatteryOptimizationExemption" -> {
                         val success = backupNotificationHelper.requestBatteryOptimizationExemption()
-                        result.success(success)
-                    }
-                    "canScheduleExactAlarms" -> {
-                        // Check if app can schedule exact alarms (Android 12+)
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-                            val canSchedule = alarmManager.canScheduleExactAlarms()
-                            result.success(canSchedule)
-                        } else {
-                            // Below Android 12, no permission needed
-                            result.success(true)
-                        }
-                    }
-                    "requestExactAlarmPermission" -> {
-                        // Open settings for user to grant exact alarm permission
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                            val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                                data = Uri.parse("package:$packageName")
-                            }
-                            startActivity(intent)
-                            result.success(true)
-                        } else {
-                            result.success(true)
-                        }
-                    }
-                    "scheduleExactAlarm" -> {
-                        val hour = call.argument<Int>("hour") ?: 2
-                        val minute = call.argument<Int>("minute") ?: 0
-                        val success = scheduleAutoBackupAlarm(hour, minute)
-                        result.success(success)
-                    }
-                    "cancelExactAlarm" -> {
-                        val success = cancelAutoBackupAlarm()
                         result.success(success)
                     }
                     "onBackupCancelled" -> {
@@ -1308,108 +1286,6 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
                 }
             }
         Log.d(TAG, "Payment channel configured on $PAYMENT_CHANNEL")
-    }
-
-    // ===== AUTO-BACKUP ALARMMANAGER IMPLEMENTATION =====
-    // For exact-time backups (like WhatsApp)
-
-    private fun scheduleAutoBackupAlarm(hour: Int, minute: Int): Boolean {
-        return try {
-            Log.d(TAG, "╔════════════════════════════════════════════════════════════╗")
-            Log.d(TAG, "║ ⏰ SCHEDULING EXACT ALARM FOR AUTO-BACKUP                 ║")
-            Log.d(TAG, "╠════════════════════════════════════════════════════════════╣")
-            Log.d(TAG, "║ Time: $hour:${minute.toString().padStart(2, '0')}")
-            Log.d(TAG, "║ METHOD: Direct MainActivity launch (bypass restrictions)   ║")
-            Log.d(TAG, "╚════════════════════════════════════════════════════════════╝")
-
-            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-
-            // CRITICAL: Use FULL-SCREEN intent to bypass Android 15 background restrictions
-            // This is what incoming call apps use to launch even when locked
-            val intent = Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                        Intent.FLAG_ACTIVITY_NO_USER_ACTION
-                putExtra("trigger_auto_backup", true)
-                action = "com.zarq.messenger.TRIGGER_BACKUP"
-            }
-
-            // For Android 15, we NEED mutable PendingIntent for full-screen intents
-            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-            } else {
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            }
-
-            val pendingIntent = PendingIntent.getActivity(this, 0, intent, flags)
-
-            // Calculate next occurrence of the specified time
-            val calendar = Calendar.getInstance().apply {
-                set(Calendar.HOUR_OF_DAY, hour)
-                set(Calendar.MINUTE, minute)
-                set(Calendar.SECOND, 0)
-                set(Calendar.MILLISECOND, 0)
-
-                // If the time has already passed today, schedule for tomorrow
-                if (before(Calendar.getInstance())) {
-                    add(Calendar.DAY_OF_MONTH, 1)
-                }
-            }
-
-            val triggerTime = calendar.timeInMillis
-
-            Log.d(TAG, "✅ Scheduling alarm for: ${calendar.time}")
-            Log.d(TAG, "📅 Trigger time: $triggerTime ms")
-
-            // CRITICAL: Use setAlarmClock() for MAXIMUM reliability on Android 15
-            // This is the ONLY method that bypasses ALL background restrictions
-            // Treated as a real alarm clock - will ALWAYS launch the activity
-            val alarmClockInfo = AlarmManager.AlarmClockInfo(
-                triggerTime,
-                pendingIntent // Show intent when user taps the alarm in status bar
-            )
-
-            alarmManager.setAlarmClock(alarmClockInfo, pendingIntent)
-            Log.d(TAG, "✅ Used setAlarmClock() - HIGHEST priority, bypasses ALL Android 15 restrictions")
-            Log.d(TAG, "⚠️ Note: Alarm will appear in status bar (like system alarm)")
-
-            Log.d(TAG, "✅ Alarm scheduled successfully!")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error scheduling alarm: ${e.message}", e)
-            false
-        }
-    }
-
-    private fun cancelAutoBackupAlarm(): Boolean {
-        return try {
-            Log.d(TAG, "❌ Canceling auto-backup alarm")
-
-            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-
-            // Must match the intent used in scheduleAutoBackupAlarm
-            val intent = Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                putExtra("trigger_auto_backup", true)
-                action = "com.zarq.messenger.TRIGGER_BACKUP"
-            }
-
-            val pendingIntent = PendingIntent.getActivity(
-                this,
-                0,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-
-            alarmManager.cancel(pendingIntent)
-            pendingIntent.cancel()
-
-            Log.d(TAG, "✅ Alarm canceled successfully")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error canceling alarm: ${e.message}", e)
-            false
-        }
     }
 
     // ===== PAYMENT RESULT LISTENER IMPLEMENTATION =====
@@ -1808,9 +1684,315 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
                         }
                     }
 
+                    "renameBackup" -> {
+                        try {
+                            val uri = call.argument<String>("uri")
+                            val newFileName = call.argument<String>("newFileName")
+
+                            if (uri == null || newFileName == null) {
+                                result.error("INVALID_ARGS", "URI and newFileName required", null)
+                                return@setMethodCallHandler
+                            }
+
+                            val success = mediaStoreBackupHelper.renameBackupFile(uri, newFileName)
+                            result.success(success)
+
+                        } catch (e: Exception) {
+                            Log.e(TAG, "renameBackup error: ${e.message}", e)
+                            result.error("RENAME_ERROR", e.message, null)
+                        }
+                    }
+
                     else -> result.notImplemented()
                 }
             }
         Log.d(TAG, "MediaStore backup channel configured")
+    }
+
+    /**
+     * Setup native auto-backup channel for WorkManager-based silent backup
+     * Replaces AlarmManager + AutoBackupService approach for Play Store compliance
+     */
+    private fun setupNativeBackupChannel(flutterEngine: FlutterEngine) {
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, NATIVE_BACKUP_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "storeAutoBackupPassphrase" -> {
+                        try {
+                            val passphrase = call.argument<String>("passphrase")
+                            if (passphrase == null) {
+                                result.error("INVALID_ARGS", "Passphrase required", null)
+                                return@setMethodCallHandler
+                            }
+
+                            // Store passphrase in EncryptedSharedPreferences
+                            val encryptedPrefs = androidx.security.crypto.EncryptedSharedPreferences.create(
+                                this,
+                                "zarq_secure_prefs",
+                                androidx.security.crypto.MasterKey.Builder(this)
+                                    .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
+                                    .build(),
+                                androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                                androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                            )
+
+                            encryptedPrefs.edit().putString("auto_backup_passphrase", passphrase).apply()
+                            Log.d(TAG, "✅ Auto-backup passphrase stored securely")
+                            result.success(true)
+
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error storing passphrase: ${e.message}", e)
+                            result.error("STORE_ERROR", e.message, null)
+                        }
+                    }
+
+                    "storeDatabasePassword" -> {
+                        try {
+                            val dbPassword = call.argument<String>("dbPassword")
+                            if (dbPassword == null) {
+                                result.error("INVALID_ARGS", "Database password required", null)
+                                return@setMethodCallHandler
+                            }
+
+                            // Store database password in EncryptedSharedPreferences
+                            val encryptedPrefs = androidx.security.crypto.EncryptedSharedPreferences.create(
+                                this,
+                                "zarq_secure_prefs",
+                                androidx.security.crypto.MasterKey.Builder(this)
+                                    .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
+                                    .build(),
+                                androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                                androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                            )
+
+                            encryptedPrefs.edit().putString("database_password", dbPassword).apply()
+                            Log.d(TAG, "✅ Database password stored securely")
+                            result.success(true)
+
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error storing database password: ${e.message}", e)
+                            result.error("STORE_ERROR", e.message, null)
+                        }
+                    }
+
+                    "storeUserUid" -> {
+                        try {
+                            val userUid = call.argument<String>("userUid")
+                            if (userUid == null) {
+                                result.error("INVALID_ARGS", "User UID required", null)
+                                return@setMethodCallHandler
+                            }
+
+                            // Store user UID in regular SharedPreferences
+                            val prefs = getSharedPreferences("zarq_prefs", Context.MODE_PRIVATE)
+                            prefs.edit().putString("user_uid", userUid).apply()
+                            Log.d(TAG, "✅ User UID stored: $userUid")
+                            Log.d(TAG, "🔍 DEBUG: Verify - reading back user_uid: ${prefs.getString("user_uid", null)}")
+                            result.success(true)
+
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error storing user UID: ${e.message}", e)
+                            result.error("STORE_ERROR", e.message, null)
+                        }
+                    }
+
+                    "scheduleNativeAutoBackup" -> {
+                        try {
+                            val hour = call.argument<Int>("hour") ?: 0
+                            val minute = call.argument<Int>("minute") ?: 30
+                            val intervalHours = call.argument<Int>("intervalHours") ?: 24
+                            val userUid = call.argument<String>("userUid")
+                            val dbPassword = call.argument<String>("dbPassword")
+                            val passphrase = call.argument<String>("passphrase")
+
+                            if (userUid == null || dbPassword == null || passphrase == null) {
+                                result.error("INVALID_ARGS", "userUid, dbPassword, and passphrase are required", null)
+                                return@setMethodCallHandler
+                            }
+
+                            Log.d(TAG, "")
+                            Log.d(TAG, "╔════════════════════════════════════════════╗")
+                            Log.d(TAG, "║  📅 SCHEDULING NATIVE AUTO-BACKUP         ║")
+                            Log.d(TAG, "╠════════════════════════════════════════════╣")
+                            Log.d(TAG, "║  Time: $hour:${minute.toString().padStart(2, '0')}")
+                            Log.d(TAG, "║  Interval: Every $intervalHours hours")
+                            Log.d(TAG, "║  Method: WorkManager (Play Store approved) ║")
+                            Log.d(TAG, "╚════════════════════════════════════════════╝")
+                            Log.d(TAG, "")
+
+                            // Save credentials to EncryptedSharedPreferences for native access
+                            try {
+                                val encryptedPrefs = androidx.security.crypto.EncryptedSharedPreferences.create(
+                                    applicationContext,
+                                    "zarq_secure_prefs",
+                                    androidx.security.crypto.MasterKey.Builder(applicationContext)
+                                        .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
+                                        .build(),
+                                    androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                                    androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                                )
+                                encryptedPrefs.edit()
+                                    .putString("auto_backup_passphrase", passphrase)
+                                    .putString("database_password", dbPassword)
+                                    .apply()
+                                Log.d(TAG, "✅ Saved backup credentials to EncryptedSharedPreferences")
+                            } catch (e: Exception) {
+                                Log.e(TAG, "❌ Error saving credentials: ${e.message}", e)
+                                result.error("SAVE_ERROR", "Failed to save credentials: ${e.message}", null)
+                                return@setMethodCallHandler
+                            }
+
+                            // Save user UID to regular SharedPreferences
+                            val prefs = getSharedPreferences("zarq_prefs", Context.MODE_PRIVATE)
+                            prefs.edit()
+                                .putBoolean("auto_backup_enabled", true)
+                                .putString("user_uid", userUid)
+                                .apply()
+
+                            // Calculate initial delay to target time
+                            val calendar = java.util.Calendar.getInstance().apply {
+                                set(java.util.Calendar.HOUR_OF_DAY, hour)
+                                set(java.util.Calendar.MINUTE, minute)
+                                set(java.util.Calendar.SECOND, 0)
+                                set(java.util.Calendar.MILLISECOND, 0)
+
+                                // If time has passed today, schedule for next occurrence
+                                if (before(java.util.Calendar.getInstance())) {
+                                    add(java.util.Calendar.DAY_OF_MONTH, 1)
+                                }
+                            }
+
+                            val now = System.currentTimeMillis()
+                            val targetTime = calendar.timeInMillis
+                            val initialDelay = targetTime - now
+
+                            Log.d(TAG, "⏰ First backup at: ${calendar.time}")
+                            Log.d(TAG, "⏰ Initial delay: ${initialDelay / 1000 / 60} minutes")
+
+                            // Create periodic work request with dynamic interval
+                            val workRequest = androidx.work.PeriodicWorkRequestBuilder<AutoBackupWorker>(
+                                intervalHours.toLong(), java.util.concurrent.TimeUnit.HOURS  // Use dynamic interval
+                            )
+                                .setInitialDelay(initialDelay, java.util.concurrent.TimeUnit.MILLISECONDS)
+                                .setConstraints(
+                                    androidx.work.Constraints.Builder()
+                                        .setRequiresBatteryNotLow(false)  // Run even on low battery
+                                        .setRequiresCharging(false)        // Run even when not charging
+                                        .build()
+                                )
+                                .addTag("native_auto_backup")
+                                .build()
+
+                            // Schedule with WorkManager using applicationContext
+                            androidx.work.WorkManager.getInstance(applicationContext)
+                                .enqueueUniquePeriodicWork(
+                                    AutoBackupWorker.WORK_NAME,
+                                    androidx.work.ExistingPeriodicWorkPolicy.REPLACE,
+                                    workRequest
+                                )
+
+                            Log.d(TAG, "✅ Native auto-backup scheduled successfully!")
+                            Log.d(TAG, "")
+                            result.success(true)
+
+                        } catch (e: Exception) {
+                            Log.e(TAG, "❌ Error scheduling native auto-backup: ${e.message}", e)
+                            result.error("SCHEDULE_ERROR", e.message, null)
+                        }
+                    }
+
+                    "cancelNativeAutoBackup" -> {
+                        try {
+                            Log.d(TAG, "")
+                            Log.d(TAG, "╔════════════════════════════════════════════╗")
+                            Log.d(TAG, "║  ❌ CANCELING NATIVE AUTO-BACKUP          ║")
+                            Log.d(TAG, "╚════════════════════════════════════════════╝")
+                            Log.d(TAG, "")
+
+                            // Disable auto-backup flag
+                            val prefs = getSharedPreferences("zarq_prefs", Context.MODE_PRIVATE)
+                            prefs.edit().putBoolean("auto_backup_enabled", false).apply()
+
+                            // Cancel WorkManager task using applicationContext
+                            androidx.work.WorkManager.getInstance(applicationContext)
+                                .cancelUniqueWork(AutoBackupWorker.WORK_NAME)
+
+                            Log.d(TAG, "✅ Native auto-backup canceled successfully!")
+                            Log.d(TAG, "")
+                            result.success(true)
+
+                        } catch (e: Exception) {
+                            Log.e(TAG, "❌ Error canceling native auto-backup: ${e.message}", e)
+                            result.error("CANCEL_ERROR", e.message, null)
+                        }
+                    }
+
+                    "testNativeBackup" -> {
+                        try {
+                            Log.d(TAG, "")
+                            Log.d(TAG, "╔════════════════════════════════════════════╗")
+                            Log.d(TAG, "║  🧪 TESTING NATIVE BACKUP                 ║")
+                            Log.d(TAG, "╚════════════════════════════════════════════╝")
+                            Log.d(TAG, "")
+
+                            // Execute backup immediately
+                            val backupManager = NativeBackupManager(this)
+                            val success = backupManager.performBackup()
+
+                            if (success) {
+                                Log.d(TAG, "✅ Test backup completed successfully!")
+                                result.success(true)
+                            } else {
+                                Log.e(TAG, "❌ Test backup failed")
+                                result.error("BACKUP_FAILED", "Native backup test failed", null)
+                            }
+
+                        } catch (e: Exception) {
+                            Log.e(TAG, "❌ Error testing native backup: ${e.message}", e)
+                            result.error("TEST_ERROR", e.message, null)
+                        }
+                    }
+
+                    "scheduleTestBackup" -> {
+                        try {
+                            val delaySeconds = call.argument<Int>("delaySeconds") ?: 5
+
+                            Log.d(TAG, "")
+                            Log.d(TAG, "╔════════════════════════════════════════════╗")
+                            Log.d(TAG, "║  ⏰ SCHEDULING TEST BACKUP                ║")
+                            Log.d(TAG, "╠════════════════════════════════════════════╣")
+                            Log.d(TAG, "║  Delay: $delaySeconds seconds")
+                            Log.d(TAG, "╚════════════════════════════════════════════╝")
+                            Log.d(TAG, "")
+
+                            // Create one-time work request with delay (same as production)
+                            val workRequest = androidx.work.OneTimeWorkRequestBuilder<AutoBackupWorker>()
+                                .setInitialDelay(delaySeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
+                                .addTag("test_backup")
+                                .build()
+
+                            // IMPORTANT: Use applicationContext instead of Activity context
+                            // This ensures work persists even if Activity is destroyed
+                            androidx.work.WorkManager.getInstance(applicationContext)
+                                .enqueueUniqueWork(
+                                    "test_native_backup",
+                                    androidx.work.ExistingWorkPolicy.REPLACE,
+                                    workRequest
+                                )
+
+                            Log.d(TAG, "✅ Test backup scheduled for $delaySeconds seconds from now")
+                            Log.d(TAG, "")
+                            result.success(true)
+
+                        } catch (e: Exception) {
+                            Log.e(TAG, "❌ Error scheduling test backup: ${e.message}", e)
+                            result.error("SCHEDULE_ERROR", e.message, null)
+                        }
+                    }
+
+                    else -> result.notImplemented()
+                }
+            }
+        Log.d(TAG, "Native backup channel configured on $NATIVE_BACKUP_CHANNEL")
     }
 }

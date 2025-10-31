@@ -693,6 +693,9 @@ class BackupService {
 
       debugPrint('[BackupService] Starting restore...');
 
+      // Show START notification with sound
+      await BackupNotificationService.showStartNotification('Restore');
+
       // 1. Close and delete existing database (to avoid encryption key mismatch)
       debugPrint('[BackupService] Closing current database...');
       await _dbService.close();

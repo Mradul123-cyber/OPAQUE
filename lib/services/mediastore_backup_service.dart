@@ -131,6 +131,35 @@ class MediaStoreBackupService {
     }
   }
 
+  /// Rename backup file in MediaStore
+  static Future<bool> renameBackup(String uri, String newFileName) async {
+    try {
+      if (!Platform.isAndroid) {
+        debugPrint('[MediaStoreBackup] ⚠️  Not on Android, skipping MediaStore');
+        return false;
+      }
+
+      debugPrint('[MediaStoreBackup] ✏️  Renaming backup to: $newFileName');
+
+      final bool success = await _channel.invokeMethod('renameBackup', {
+        'uri': uri,
+        'newFileName': newFileName,
+      });
+
+      if (success) {
+        debugPrint('[MediaStoreBackup] ✅ Backup renamed successfully');
+      } else {
+        debugPrint('[MediaStoreBackup] ⚠️  Failed to rename backup');
+      }
+
+      return success;
+
+    } catch (e) {
+      debugPrint('[MediaStoreBackup] ❌ Error renaming backup: $e');
+      return false;
+    }
+  }
+
   /// Get display path for backup (for UI purposes only)
   static String getDisplayPath(String fileName) {
     return 'Download/Zarq_Backups/$fileName';
@@ -149,6 +178,7 @@ class MediaStoreBackupService {
   /// TEMPORARY: List old backups from file system (for migration period only)
   /// This allows detecting backups created before MediaStore implementation
   /// TODO: Remove this after migration period
+  /// NOTE: Zarq_Backups folder is NOW managed by MediaStore - don't check it for old backups!
   static Future<List<Map<String, dynamic>>> listOldBackupsFromFileSystem() async {
     try {
       if (!Platform.isAndroid) {
@@ -156,57 +186,17 @@ class MediaStoreBackupService {
         return [];
       }
 
-      debugPrint('[MediaStoreBackup] 🔍 Checking for old backups in file system...');
+      // IMPORTANT: Zarq_Backups is now fully managed by MediaStore API
+      // All files in this folder are accessible through MediaStore
+      // We should NOT scan this folder directly anymore to avoid duplicates
+      debugPrint('[MediaStoreBackup] ℹ️  Skipping file system scan - Zarq_Backups is managed by MediaStore');
+      return [];
 
-      final downloadsDir = Directory('/storage/emulated/0/Download/Zarq_Backups');
-      debugPrint('[MediaStoreBackup] 📂 Checking directory: ${downloadsDir.path}');
-
-      final exists = await downloadsDir.exists();
-      debugPrint('[MediaStoreBackup] 📂 Directory exists: $exists');
-
-      if (!exists) {
-        debugPrint('[MediaStoreBackup] ⚠️  Old backup folder does not exist');
-        return [];
-      }
-
-      debugPrint('[MediaStoreBackup] 📂 Attempting to list files...');
-      final files = await downloadsDir.list().toList();
-      debugPrint('[MediaStoreBackup] 📂 Total files/folders found: ${files.length}');
-
-      // Log all files found
-      for (final file in files) {
-        debugPrint('[MediaStoreBackup] 📄 Found item: ${file.path} (type: ${file.runtimeType})');
-      }
-
-      final backupFiles = files
-          .where((f) => f is File && f.path.endsWith('.encrypted'))
-          .cast<File>()
-          .toList();
-
-      debugPrint('[MediaStoreBackup] 📁 Found ${backupFiles.length} old backup files (.encrypted)');
-
-      final List<Map<String, dynamic>> oldBackups = [];
-      for (final file in backupFiles) {
-        try {
-          final stat = await file.stat();
-          final fileName = file.path.split('/').last;
-
-          oldBackups.add({
-            'uri': 'file://${file.path}', // Special prefix to identify old backups
-            'name': fileName,
-            'size': stat.size,
-            'dateModified': stat.modified.millisecondsSinceEpoch,
-            'isOldBackup': true, // Flag to identify old backups
-          });
-        } catch (e) {
-          debugPrint('[MediaStoreBackup] ❌ Error reading file ${file.path}: $e');
-        }
-      }
-
-      return oldBackups;
-
+      // Old code kept for reference (DISABLED):
+      // final downloadsDir = Directory('/storage/emulated/0/Download/Zarq_Backups');
+      // ... (scanning logic removed)
     } catch (e) {
-      debugPrint('[MediaStoreBackup] ❌ Error listing old backups: $e');
+      debugPrint('[MediaStoreBackup] ❌ Error in old backup detection: $e');
       return [];
     }
   }
@@ -225,8 +215,17 @@ class MediaStoreBackupService {
       final oldBackups = await listOldBackupsFromFileSystem();
       debugPrint('[MediaStoreBackup] 📁 Found ${oldBackups.length} old file system backups');
 
-      // Combine both lists
-      final allBackups = [...mediaStoreBackups, ...oldBackups];
+      // Deduplicate: Remove old backups that have the same filename as MediaStore backups
+      final mediaStoreNames = mediaStoreBackups.map((b) => b['name'] as String).toSet();
+      final uniqueOldBackups = oldBackups.where((backup) {
+        final name = backup['name'] as String;
+        return !mediaStoreNames.contains(name);
+      }).toList();
+
+      debugPrint('[MediaStoreBackup] 🔄 After deduplication: ${uniqueOldBackups.length} unique old backups');
+
+      // Combine both lists (deduplicated)
+      final allBackups = [...mediaStoreBackups, ...uniqueOldBackups];
 
       // Sort by modification time (newest first)
       allBackups.sort((a, b) {
@@ -235,7 +234,7 @@ class MediaStoreBackupService {
         return bTime.compareTo(aTime);
       });
 
-      debugPrint('[MediaStoreBackup] ✅ Total: ${allBackups.length} backups (${mediaStoreBackups.length} new + ${oldBackups.length} old)');
+      debugPrint('[MediaStoreBackup] ✅ Total: ${allBackups.length} unique backups (${mediaStoreBackups.length} MediaStore + ${uniqueOldBackups.length} old)');
       return allBackups;
 
     } catch (e) {

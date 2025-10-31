@@ -14,6 +14,7 @@ class AutoBackupManager {
   static const String autoBackupTaskName = 'zarq_auto_backup_task';
   static const String autoBackupTaskTag = 'zarq_auto_backup';
   static const MethodChannel _backupChannel = MethodChannel('com.zarq/backup');
+  static const MethodChannel _nativeBackupChannel = MethodChannel('com.zarq/native_backup');
 
   /// Initialize workmanager (call this in main.dart)
   static Future<void> initialize() async {
@@ -24,11 +25,147 @@ class AutoBackupManager {
     debugPrint('[AutoBackupManager] Workmanager initialized');
   }
 
-  /// Schedule auto-backup based on settings (using AlarmManager for exact-time execution)
+  /// Enable native auto-backup (Android only - Play Store compliant)
+  /// This uses fully native Kotlin WorkManager-based backup
+  static Future<bool> enableNativeAutoBackup({
+    required String userUid,
+    required String dbPassword,
+    required String passphrase,
+    required BackupFrequency frequency,
+    int hour = 0,
+    int minute = 30,
+  }) async {
+    if (!Platform.isAndroid) {
+      debugPrint('[AutoBackupManager] Native backup only available on Android');
+      return false;
+    }
+
+    // Convert frequency to hours
+    int intervalHours;
+    String frequencyName;
+    switch (frequency) {
+      case BackupFrequency.daily:
+        intervalHours = 24;
+        frequencyName = 'Daily';
+        break;
+      case BackupFrequency.weekly:
+        intervalHours = 24 * 7; // 168 hours
+        frequencyName = 'Weekly';
+        break;
+      case BackupFrequency.monthly:
+        intervalHours = 24 * 30; // 720 hours
+        frequencyName = 'Monthly';
+        break;
+      case BackupFrequency.disabled:
+        debugPrint('[AutoBackupManager] Frequency is disabled, not scheduling');
+        return false;
+    }
+
+    try {
+      debugPrint('');
+      debugPrint('╔════════════════════════════════════════════╗');
+      debugPrint('║  🚀 ENABLING NATIVE AUTO-BACKUP           ║');
+      debugPrint('╠════════════════════════════════════════════╣');
+      debugPrint('║  Time: $hour:${minute.toString().padLeft(2, '0')}');
+      debugPrint('║  Frequency: $frequencyName ($intervalHours hours)');
+      debugPrint('║  Method: Native Kotlin + WorkManager      ║');
+      debugPrint('╚════════════════════════════════════════════╝');
+      debugPrint('');
+
+      // Step 1: Store user UID
+      await _nativeBackupChannel.invokeMethod('storeUserUid', {
+        'userUid': userUid,
+      });
+      debugPrint('[AutoBackupManager] ✅ Stored user UID');
+
+      // Step 2: Store database password
+      await _nativeBackupChannel.invokeMethod('storeDatabasePassword', {
+        'dbPassword': dbPassword,
+      });
+      debugPrint('[AutoBackupManager] ✅ Stored database password');
+
+      // Step 3: Store backup passphrase
+      await _nativeBackupChannel.invokeMethod('storeAutoBackupPassphrase', {
+        'passphrase': passphrase,
+      });
+      debugPrint('[AutoBackupManager] ✅ Stored backup passphrase');
+
+      // Step 4: Schedule native auto-backup with WorkManager
+      await _nativeBackupChannel.invokeMethod('scheduleNativeAutoBackup', {
+        'userUid': userUid,
+        'dbPassword': dbPassword,
+        'passphrase': passphrase,
+        'hour': hour,
+        'minute': minute,
+        'intervalHours': intervalHours,
+      });
+      debugPrint('[AutoBackupManager] ✅ Native auto-backup scheduled successfully!');
+      debugPrint('');
+
+      return true;
+    } catch (e) {
+      debugPrint('[AutoBackupManager] ❌ Error enabling native auto-backup: $e');
+      return false;
+    }
+  }
+
+  /// Disable native auto-backup (Android only)
+  static Future<bool> disableNativeAutoBackup() async {
+    if (!Platform.isAndroid) {
+      return false;
+    }
+
+    try {
+      await _nativeBackupChannel.invokeMethod('cancelNativeAutoBackup');
+      debugPrint('[AutoBackupManager] ✅ Native auto-backup disabled');
+      return true;
+    } catch (e) {
+      debugPrint('[AutoBackupManager] ❌ Error disabling native auto-backup: $e');
+      return false;
+    }
+  }
+
+  /// Test native auto-backup immediately (Android only - for debugging)
+  static Future<bool> testNativeAutoBackup() async {
+    if (!Platform.isAndroid) {
+      return false;
+    }
+
+    try {
+      debugPrint('[AutoBackupManager] 🧪 Testing native auto-backup...');
+      await _nativeBackupChannel.invokeMethod('testNativeBackup');
+      debugPrint('[AutoBackupManager] ✅ Test backup completed!');
+      return true;
+    } catch (e) {
+      debugPrint('[AutoBackupManager] ❌ Test backup failed: $e');
+      return false;
+    }
+  }
+
+  /// Schedule a test backup after a delay (Android only - for debugging)
+  static Future<bool> scheduleTestBackup({int delaySeconds = 5}) async {
+    if (!Platform.isAndroid) {
+      return false;
+    }
+
+    try {
+      debugPrint('[AutoBackupManager] ⏰ Scheduling test backup in $delaySeconds seconds...');
+      await _nativeBackupChannel.invokeMethod('scheduleTestBackup', {
+        'delaySeconds': delaySeconds,
+      });
+      debugPrint('[AutoBackupManager] ✅ Test backup scheduled!');
+      return true;
+    } catch (e) {
+      debugPrint('[AutoBackupManager] ❌ Failed to schedule test backup: $e');
+      return false;
+    }
+  }
+
+  /// Schedule auto-backup based on settings (using WorkManager for Google Play compliance)
   static Future<void> scheduleAutoBackup(AutoBackupSettings settings) async {
     // debugPrint('');
     //debugPrint('╔════════════════════════════════════════════════════════════╗');
-    //debugPrint('║ 📅 SCHEDULING AUTO-BACKUP WITH ALARMMANAGER               ║');
+    //debugPrint('║ 📅 SCHEDULING AUTO-BACKUP WITH WORKMANAGER                ║');
     //debugPrint('╚════════════════════════════════════════════════════════════╝');
     //debugPrint('[AutoBackupManager] Current time: ${DateTime.now()}');
     // debugPrint('[AutoBackupManager] Settings enabled: ${settings.enabled}');
@@ -42,47 +179,7 @@ class AutoBackupManager {
       return;
     }
 
-    // For Android: Use AlarmManager for exact-time execution
-    if (Platform.isAndroid) {
-      try {
-        // First check if we can schedule exact alarms (Android 12+)
-        if (Platform.isAndroid) {
-          final bool canSchedule = await _backupChannel.invokeMethod('canScheduleExactAlarms') ?? false;
-          if (!canSchedule) {
-            debugPrint('[AutoBackupManager] ⚠️ Cannot schedule exact alarms! User needs to grant permission.');
-            debugPrint('[AutoBackupManager] 📱 Opening settings for user to enable exact alarms...');
-
-            // Request permission from user
-            await _backupChannel.invokeMethod('requestExactAlarmPermission');
-            return; // Exit for now, user needs to re-enable after granting permission
-          }
-        }
-
-        const int hour = 0;
-        const int minute = 30;
-
-        debugPrint('[AutoBackupManager] Scheduling AlarmManager for $hour:${minute.toString().padLeft(2, '0')}');
-
-        final bool success = await _backupChannel.invokeMethod('scheduleExactAlarm', {
-          'hour': hour,
-          'minute': minute,
-        });
-
-        if (success) {
-         // debugPrint('[AutoBackupManager] ✅ AlarmManager scheduled successfully!');
-          //debugPrint('[AutoBackupManager] ⏰ Backup will trigger at $hour:${minute.toString().padLeft(2, '0')} daily');
-          //debugPrint('[AutoBackupManager] 📱 Ensure battery optimization is DISABLED!');
-        } else {
-          //debugPrint('[AutoBackupManager] ❌ Failed to schedule AlarmManager');
-        }
-
-        return;
-      } catch (e) {
-        //debugPrint('[AutoBackupManager] ❌ Error scheduling AlarmManager: $e');
-        //debugPrint('[AutoBackupManager] Falling back to WorkManager...');
-        // Fall through to WorkManager as backup
-      }
-    }
+    // AlarmManager code removed - now using WorkManager only for Google Play compliance
 
     // Calculate frequency duration
     Duration frequency;
@@ -236,17 +333,7 @@ class AutoBackupManager {
 
   /// Cancel auto-backup
   static Future<void> cancelAutoBackup() async {
-    // Cancel AlarmManager alarm
-    if (Platform.isAndroid) {
-      try {
-        await _backupChannel.invokeMethod('cancelExactAlarm');
-        //debugPrint('[AutoBackupManager] ❌ AlarmManager alarm cancelled');
-      } catch (e) {
-        //debugPrint('[AutoBackupManager] Error cancelling alarm: $e');
-      }
-    }
-
-    // Also cancel WorkManager task
+    // Cancel WorkManager task (AlarmManager code removed)
     await Workmanager().cancelByUniqueName(autoBackupTaskName);
     //debugPrint('[AutoBackupManager] ❌ WorkManager task cancelled');
   }

@@ -6,6 +6,20 @@ import 'package:flutter/services.dart';
 class BackupNotificationService {
   static const MethodChannel _channel = MethodChannel('com.zarq/backup');
 
+  /// Show start notification when backup/restore begins (with sound)
+  static Future<void> showStartNotification(String operationType) async {
+    if (!Platform.isAndroid) return;
+
+    try {
+      await _channel.invokeMethod('showBackupStartNotification', {
+        'operationType': operationType, // "Backup" or "Restore"
+      });
+      debugPrint('[BackupNotification] Start notification shown for $operationType');
+    } catch (e) {
+      debugPrint('[BackupNotification] Error showing start notification: $e');
+    }
+  }
+
   /// Show progress notification during auto-backup
   static Future<void> showProgressNotification(String status, int progress) async {
     if (!Platform.isAndroid) return;

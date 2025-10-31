@@ -1623,6 +1623,9 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
         // Ignore cleanup errors
       }
 
+      // Show SUCCESS notification with sound
+      await BackupNotificationService.showSuccessNotification('Restore');
+
       if (mounted) {
         Navigator.of(context).pop(); // Close progress dialog
 
@@ -1643,6 +1646,13 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
       }
     } catch (e) {
       // print('[BackupDetection] Restore error: $e');
+
+      // Show FAILURE notification with sound
+      await BackupNotificationService.showFailureNotification(
+        'Restore',
+        e.toString().contains('Incorrect passphrase') ? 'Incorrect password' : 'Restore error occurred',
+      );
+
       if (mounted) {
         Navigator.of(context).pop(); // Close progress dialog
 

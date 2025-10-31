@@ -29,17 +29,36 @@ class BackupNotificationHelper(private val context: Context) {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // Create LOW importance channel for silent progress notifications
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 CHANNEL_NAME,
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_LOW  // Silent by default
             ).apply {
                 description = "Notifications for backup status"
-                enableVibration(true)
+                setSound(null, null)  // No sound
+                enableVibration(false)  // No vibration
             }
 
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+    fun showStartNotification(operationType: String = "Backup") {
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("$operationType Started")
+            .setContentText(if (operationType == "Restore") "Restoring your data..." else "Creating backup...")
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)  // Sound + vibration
+            .setOngoing(true)
+            .setProgress(100, 0, false)
+            .setAutoCancel(false)
+            .build()
+
+        with(NotificationManagerCompat.from(context)) {
+            notify(PROGRESS_NOTIFICATION_ID, notification)
         }
     }
 
@@ -76,7 +95,7 @@ class BackupNotificationHelper(private val context: Context) {
         }
     }
 
-    fun showSuccessNotification(backupType: String) {
+    fun showSuccessNotification(operationType: String) {
         // Cancel progress notification first
         with(NotificationManagerCompat.from(context)) {
             cancel(PROGRESS_NOTIFICATION_ID)
@@ -93,11 +112,19 @@ class BackupNotificationHelper(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // Determine title and text based on operation type
+        val (title, text) = when (operationType.lowercase()) {
+            "restore" -> Pair("Restore Completed", "Your backup was restored successfully")
+            "import" -> Pair("Import Completed", "Your backup was imported successfully")
+            else -> Pair("Backup Completed", "Your $operationType backup was created successfully")
+        }
+
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Backup Completed")
-            .setContentText("Your $backupType backup was created successfully")
+            .setContentTitle(title)
+            .setContentText(text)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)  // Sound + vibration
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .build()
@@ -107,7 +134,7 @@ class BackupNotificationHelper(private val context: Context) {
         }
     }
 
-    fun showFailureNotification(backupType: String, errorMessage: String) {
+    fun showFailureNotification(operationType: String, errorMessage: String) {
         // Cancel progress notification first
         with(NotificationManagerCompat.from(context)) {
             cancel(PROGRESS_NOTIFICATION_ID)
@@ -125,12 +152,20 @@ class BackupNotificationHelper(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // Determine title based on operation type
+        val title = when (operationType.lowercase()) {
+            "restore" -> "Restore Failed"
+            "import" -> "Import Failed"
+            else -> "Backup Failed"
+        }
+
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Backup Failed")
-            .setContentText("$backupType backup failed: $errorMessage")
-            .setStyle(NotificationCompat.BigTextStyle().bigText("$backupType backup failed: $errorMessage"))
+            .setContentTitle(title)
+            .setContentText("$operationType failed: $errorMessage")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$operationType failed: $errorMessage"))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)  // Sound + vibration
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .build()

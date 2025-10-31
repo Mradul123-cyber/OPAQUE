@@ -146,6 +146,14 @@ dependencies {
     // WorkManager for background tasks
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 
+    // SQLCipher for encrypted database access (native backup)
+    // IMPORTANT: Must match sqflite_sqlcipher's exact version (4.5.4)
+    implementation("net.zetetic:android-database-sqlcipher:4.5.4")
+    implementation("androidx.sqlite:sqlite:2.3.1")  // Required for SQLCipher
+
+    // Gson for JSON serialization (native backup)
+    implementation("com.google.code.gson:gson:2.10.1")
+
     // Note: Transcription feature temporarily disabled - no suitable free on-device library available
 
     //implementation("org.whispersystems:curve25519-java:0.5.0")

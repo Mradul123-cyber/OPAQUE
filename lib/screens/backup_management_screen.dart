@@ -12,6 +12,7 @@ import '../services/backup_settings_provider.dart';
 import '../services/backup_notification_service.dart';
 import '../services/auto_backup_manager.dart';
 import '../services/mediastore_backup_service.dart';
+import '../services/secure_storage_service.dart';
 import '../widgets/call_aware_screen.dart';
 import 'backup_info_screen.dart';
 import 'package:provider/provider.dart';
@@ -787,6 +788,9 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
 
       await _updateProgress(1.0, 'Restore completed!');
 
+      // Show SUCCESS notification with sound
+      await BackupNotificationService.showSuccessNotification('Restore');
+
       // Show message if widget is still mounted
       if (mounted) {
         _showSnackbar('Backup restored! Restarting app...', isError: false);
@@ -1258,7 +1262,9 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
         await _backupService.restoreBackup(backupData);
 
         await _updateProgress(1.0, 'Backup imported successfully!');
-        await BackupNotificationService.showProgressNotification('Backup imported successfully!', 100);
+
+        // Show SUCCESS notification with sound
+        await BackupNotificationService.showSuccessNotification('Import');
 
         if (mounted) {
           _showSnackbar('Backup imported successfully! The app will restart now.');
@@ -1268,7 +1274,13 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
 
       } catch (e) {
         debugPrint('[BackupManagement] Error importing backup: $e');
-        await BackupNotificationService.cancelAllNotifications();
+
+        // Show FAILURE notification with sound
+        await BackupNotificationService.showFailureNotification(
+          'Import',
+          e.toString().length > 100 ? 'Import error occurred' : e.toString(),
+        );
+
         if (mounted) _showSnackbar('Failed to import backup: $e', isError: true);
       } finally {
         if (mounted) {
@@ -1818,6 +1830,82 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
     }
   }
 
+  Future<void> _renameBackup(String uri, String currentName) async {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final borderRadius = (screenWidth * 0.0375).clamp(12.0, 18.0);
+    final titleSize = (screenWidth * 0.045).clamp(16.0, 20.0);
+    final bodySize = (screenWidth * 0.035).clamp(13.0, 16.0);
+
+    final controller = TextEditingController(text: currentName.replaceAll('.encrypted', ''));
+
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF0a1128).withOpacity(0.95),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(borderRadius),
+            side: BorderSide(color: Colors.orangeAccent.withOpacity(0.5)),
+          ),
+          title: Text(
+            'Rename Backup',
+            style: TextStyle(color: Colors.white, fontSize: titleSize),
+          ),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            style: TextStyle(color: Colors.white, fontSize: bodySize),
+            decoration: InputDecoration(
+              hintText: 'Enter new name',
+              hintStyle: TextStyle(color: Colors.white38, fontSize: bodySize),
+              enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: Colors.cyanAccent.withOpacity(0.5)),
+              ),
+              focusedBorder: const UnderlineInputBorder(
+                borderSide: BorderSide(color: Colors.cyanAccent),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text('Cancel', style: TextStyle(color: Colors.white70, fontSize: bodySize)),
+            ),
+            TextButton(
+              onPressed: () {
+                final text = controller.text.trim();
+                if (text.isNotEmpty) {
+                  Navigator.pop(ctx, text);
+                }
+              },
+              child: Text('Rename', style: TextStyle(color: Colors.orangeAccent, fontSize: bodySize)),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (newName != null && newName.isNotEmpty && newName != currentName.replaceAll('.encrypted', '')) {
+      try {
+        // Add .encrypted extension if not present
+        final finalName = newName.endsWith('.encrypted') ? newName : '$newName.encrypted';
+
+        final success = await MediaStoreBackupService.renameBackup(uri, finalName);
+
+        if (success) {
+          // Small delay to allow MediaStore to update its index
+          await Future.delayed(const Duration(milliseconds: 500));
+          await _loadBackupsList();
+          _showSnackbar('Backup renamed successfully', isError: false);
+        } else {
+          _showSnackbar('Failed to rename backup', isError: true);
+        }
+      } catch (e) {
+        _showSnackbar('Failed to rename backup: $e', isError: true);
+      }
+    }
+  }
+
   Future<String?> _askForPassword({required String title, required String hint}) async {
     final screenWidth = MediaQuery.of(context).size.width;
     final borderRadius = (screenWidth * 0.0375).clamp(12.0, 18.0);
@@ -1928,14 +2016,19 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
     final now = DateTime.now();
     final difference = now.difference(dateTime);
 
+    // Format time in 12-hour format with AM/PM
+    final hour12 = dateTime.hour == 0 ? 12 : (dateTime.hour > 12 ? dateTime.hour - 12 : dateTime.hour);
+    final period = dateTime.hour >= 12 ? 'PM' : 'AM';
+    final timeStr = '${hour12}:${dateTime.minute.toString().padLeft(2, '0')} $period';
+
     if (difference.inDays == 0) {
-      return 'Today at ${dateTime.hour}:${dateTime.minute.toString().padLeft(2, '0')}';
+      return 'Today $timeStr';
     } else if (difference.inDays == 1) {
-      return 'Yesterday at ${dateTime.hour}:${dateTime.minute.toString().padLeft(2, '0')}';
+      return 'Yesterday $timeStr';
     } else if (difference.inDays < 7) {
       return '${difference.inDays} days ago';
     } else {
-      return '${dateTime.day}/${dateTime.month}/${dateTime.year}';
+      return '${dateTime.day}/${dateTime.month}/${dateTime.year} $timeStr';
     }
   }
 
@@ -1984,12 +2077,22 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
         appBar: AppBar(
           backgroundColor: const Color(0xFF0a1128),
         elevation: 0,
-        title: Text('Backup Management', style: TextStyle(color: Colors.white, fontSize: appBarTitleSize)),
+        title: Text('Backup/Restore', style: TextStyle(color: Colors.white, fontSize: appBarTitleSize)),
         iconTheme: const IconThemeData(color: Colors.cyanAccent),
         actions: [
+          Padding(
+            padding: EdgeInsets.only(top: 4.0),
+            child: IconButton(
+              icon: Icon(Icons.file_download_outlined, color: Colors.cyanAccent, size: iconSize1),
+              tooltip: 'Import Backup File',
+              visualDensity: VisualDensity.compact,
+              onPressed: _isBackupInProgress ? null : _importBackupFromGoogleDrive,
+            ),
+          ),
           IconButton(
             icon: Icon(Icons.help_outline, color: Colors.cyanAccent, size: iconSize1),
             tooltip: 'How Backup Works',
+            visualDensity: VisualDensity.compact,
             onPressed: () {
               Navigator.push(
                 context,
@@ -2085,6 +2188,8 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
               ),
             ),
           ),
+
+          SizedBox(height: spacing2),
 
 
           // Google Drive section
@@ -2306,23 +2411,23 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
 
                           Divider(color: Colors.white24, height: spacing2 * 2),
 
-                          // Set Passphrase Button (One-time only)
+                          // Set Password Button (One-time only)
                           if (settings.lastBackupPassphrase == null)
                             OutlinedButton.icon(
                               onPressed: () async {
                                 final passphrase = await _askForPassword(
-                                  title: 'Set Auto-Backup Passphrase',
-                                  hint: 'Enter passphrase for auto-backups',
+                                  title: 'Set Auto-Backup Password',
+                                  hint: 'Enter a strong password',
                                 );
                                 if (passphrase != null && passphrase.isNotEmpty) {
                                   await settingsProvider.setBackupPassphrase(passphrase);
                                   HapticFeedback.heavyImpact();
-                                  _showSnackbar('Auto-backup passphrase set successfully');
+                                  _showSnackbar('Auto-backup password set successfully');
                                 }
                               },
                               icon: Icon(Icons.lock, size: iconSize2),
                               label: Text(
-                                'Set Passphrase (Required)',
+                                'Set Password (Required)',
                                 style: TextStyle(fontSize: bodyTextSize),
                               ),
                               style: OutlinedButton.styleFrom(
@@ -2332,7 +2437,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
                               ),
                             )
                           else
-                            // Passphrase already set - show info
+                            // Password already set - show warning
                             Container(
                               padding: EdgeInsets.all(spacing2),
                               decoration: BoxDecoration(
@@ -2340,18 +2445,32 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
                                 borderRadius: BorderRadius.circular(borderRadius1),
                                 border: Border.all(color: Colors.green.withOpacity(0.3)),
                               ),
-                              child: Row(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Icon(Icons.check_circle, color: Colors.green, size: iconSize2),
-                                  SizedBox(width: spacing2),
-                                  Expanded(
-                                    child: Text(
-                                      'Passphrase configured',
-                                      style: TextStyle(
-                                        color: Colors.green,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: bodyTextSize,
+                                  Row(
+                                    children: [
+                                      Icon(Icons.check_circle, color: Colors.green, size: iconSize2),
+                                      SizedBox(width: spacing2),
+                                      Expanded(
+                                        child: Text(
+                                          'Password configured',
+                                          style: TextStyle(
+                                            color: Colors.green,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: bodyTextSize,
+                                          ),
+                                        ),
                                       ),
+                                    ],
+                                  ),
+                                  SizedBox(height: spacing1),
+                                  Text(
+                                    '⚠️ Password cannot be changed. Keep it safe to restore backups.',
+                                    style: TextStyle(
+                                      color: Colors.orange.withOpacity(0.9),
+                                      fontSize: smallTextSize,
+                                      fontStyle: FontStyle.italic,
                                     ),
                                   ),
                                 ],
@@ -2481,7 +2600,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
                               ),
                               SizedBox(height: padding2),
                               Text(
-                                'Manually copied files to Download/Zarq_Backups?',
+                                'Create a backup or import from another device',
                                 style: TextStyle(color: Colors.white38, fontSize: smallTextSize),
                                 textAlign: TextAlign.center,
                               ),
@@ -2573,6 +2692,11 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     IconButton(
+                                      icon: Icon(Icons.edit, color: Colors.orangeAccent, size: iconSize1),
+                                      onPressed: _isBackupInProgress ? null : () => _renameBackup(uri, name),
+                                      tooltip: 'Rename',
+                                    ),
+                                    IconButton(
                                       icon: Icon(Icons.restore, color: Colors.cyanAccent, size: iconSize1),
                                       onPressed: _isBackupInProgress ? null : () => _restoreBackup(uri),
                                       tooltip: 'Restore',
@@ -2588,7 +2712,8 @@ class _BackupManagementScreenState extends State<BackupManagementScreen> with Si
                             );
                           },
                         ),
-              SizedBox(height: padding2), // Bottom padding
+              // Bottom padding to avoid overlap with Android navigation buttons
+              SizedBox(height: MediaQuery.of(context).padding.bottom + padding2)
             ],
           ),
         ),

@@ -94,9 +94,9 @@ class MediaStoreBackupHelper(private val context: Context) {
                 MediaStore.Downloads.RELATIVE_PATH
             )
 
-            // Query only .encrypted files in our backup folder
-            val selection = "${MediaStore.Downloads.DISPLAY_NAME} LIKE ? OR ${MediaStore.Downloads.DISPLAY_NAME} LIKE ?"
-            val selectionArgs = arrayOf("%backup%.encrypted", "%auto_backup%.encrypted")
+            // Query ALL .encrypted files in our backup folder (not just files with "backup" in name)
+            val selection = "${MediaStore.Downloads.DISPLAY_NAME} LIKE ? AND ${MediaStore.Downloads.RELATIVE_PATH} LIKE ?"
+            val selectionArgs = arrayOf("%.encrypted", "%$BACKUP_FOLDER%")
 
             val sortOrder = "${MediaStore.Downloads.DATE_MODIFIED} DESC"
 
@@ -185,6 +185,75 @@ class MediaStoreBackupHelper(private val context: Context) {
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error deleting backup: ${e.message}", e)
+            false
+        }
+    }
+
+    /**
+     * Rename backup file in MediaStore
+     * Uses IS_PENDING flag for Android 10+ compatibility
+     */
+    fun renameBackupFile(uriString: String, newFileName: String): Boolean {
+        return try {
+            val uri = Uri.parse(uriString)
+            Log.d(TAG, "✏️ Renaming backup file: $uri to $newFileName")
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Android 10+ requires using IS_PENDING flag for proper rename
+
+                // Step 1: Set IS_PENDING to 1 (mark file as being modified)
+                val pendingValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                context.contentResolver.update(uri, pendingValues, null, null)
+                Log.d(TAG, "📝 Set IS_PENDING to 1")
+
+                // Step 2: Update the DISPLAY_NAME only (do not modify RELATIVE_PATH)
+                val renameValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, newFileName)
+                    put(MediaStore.MediaColumns.DATE_MODIFIED, System.currentTimeMillis() / 1000)
+                }
+                val updated = context.contentResolver.update(uri, renameValues, null, null)
+                Log.d(TAG, "📝 Updated DISPLAY_NAME")
+
+                // Step 3: Clear IS_PENDING (mark file as ready)
+                val clearPendingValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                }
+                context.contentResolver.update(uri, clearPendingValues, null, null)
+                Log.d(TAG, "📝 Cleared IS_PENDING")
+
+                if (updated > 0) {
+                    Log.d(TAG, "✅ Backup renamed successfully")
+
+                    // Notify MediaStore of the change
+                    context.contentResolver.notifyChange(uri, null)
+
+                    true
+                } else {
+                    Log.w(TAG, "⚠️ No rows updated")
+                    false
+                }
+            } else {
+                // Pre-Android 10 - simple update
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, newFileName)
+                    put(MediaStore.MediaColumns.DATE_MODIFIED, System.currentTimeMillis() / 1000)
+                }
+
+                val updated = context.contentResolver.update(uri, values, null, null)
+                if (updated > 0) {
+                    Log.d(TAG, "✅ Backup renamed successfully")
+                    context.contentResolver.notifyChange(uri, null)
+                    true
+                } else {
+                    Log.w(TAG, "⚠️ No rows updated")
+                    false
+                }
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error renaming backup: ${e.message}", e)
             false
         }
     }
