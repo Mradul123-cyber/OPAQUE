@@ -135,7 +135,7 @@ dependencies {
 
     // COMPATIBLE Signal Protocol Libraries
     // Using the stable, well-tested Java implementation
-
+    // Updated for 16 KB page size support (Android 15+ requirement)
     implementation("org.whispersystems:signal-protocol-java:2.8.1")
     implementation("org.whispersystems:signal-protocol-android:2.8.1")
     implementation("org.whispersystems:curve25519-android:0.5.0")
@@ -154,8 +154,8 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 
     // SQLCipher for encrypted database access (native backup)
-    // IMPORTANT: Must match sqflite_sqlcipher's exact version (4.5.4)
-    implementation("net.zetetic:android-database-sqlcipher:4.5.4")
+    // Upgraded to 4.11.0 for 16 KB page size support (Android 15+ requirement - Nov 1, 2025)
+    implementation("net.zetetic:sqlcipher-android:4.11.0")
     implementation("androidx.sqlite:sqlite:2.3.1")  // Required for SQLCipher
 
     // Gson for JSON serialization (native backup)

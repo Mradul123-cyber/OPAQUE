@@ -165,6 +165,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   final Map<int, Future<String?>> _videoLoadingFutures = {};
   final Map<int, Future<String?>> _audioLoadingFutures = {};
 
+  // Track failed decryption attempts (don't retry until user taps)
+  // Static to persist across chat screen instances (when closing/reopening chat)
+  static final Set<int> _failedImageIds = {};
+  static final Set<int> _failedVideoIds = {};
+  static final Set<int> _failedAudioIds = {};
+
   // Reply-to-message state
   Message? _replyingToMessage;
 
@@ -196,6 +202,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     _loadWallpaper();
     _loadEncryptionBannerPreference();
     _aiService.initialize(); // Initialize AI service
+
+    // Load failed media IDs from persistent storage
+    loadFailedMediaIds();
 
     // Initialize typing animation controller (WhatsApp-style bouncing dots)
     _typingAnimationController = AnimationController(
@@ -4605,6 +4614,42 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       );
     }
 
+    // Check if this image previously failed to decrypt
+    if (_failedImageIds.contains(message.attachmentId!)) {
+      return GestureDetector(
+        onTap: () {
+          setState(() {
+            _failedImageIds.remove(message.attachmentId!);
+          });
+          _saveFailedMediaIds(); // Persist to storage
+        },
+        child: Container(
+          width: 200,
+          height: 150,
+          decoration: BoxDecoration(
+            color: Colors.grey[300],
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.error_outline, size: 32, color: Colors.red[300]),
+              const SizedBox(height: 8),
+              Text(
+                'Failed to decrypt image',
+                style: TextStyle(color: Colors.grey[700], fontSize: 11),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Tap to retry',
+                style: TextStyle(color: Color(0xFF667EEA), fontSize: 10, fontWeight: FontWeight.w500),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     // Not cached - load once and cache
     final encKeyPreview = message.mediaEncryptionKey != null
         ? message.mediaEncryptionKey!.substring(0, message.mediaEncryptionKey!.length < 10 ? message.mediaEncryptionKey!.length : 10)
@@ -4633,6 +4678,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         }
 
         if (snapshot.hasError || !snapshot.hasData) {
+          // Mark as failed and show error placeholder
+          if (!_failedImageIds.contains(message.attachmentId!)) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              setState(() {
+                _failedImageIds.add(message.attachmentId!);
+              });
+              _saveFailedMediaIds(); // Persist to storage
+            });
+          }
           return Container(
             width: 200,
             height: 150,
@@ -4643,11 +4697,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.error_outline, size: 32, color: Colors.grey[600]),
+                Icon(Icons.error_outline, size: 32, color: Colors.red[300]),
                 const SizedBox(height: 8),
                 Text(
-                  'Failed to load image',
-                  style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                  'Failed to decrypt image',
+                  style: TextStyle(color: Colors.grey[700], fontSize: 11),
                 ),
               ],
             ),
@@ -4950,6 +5004,42 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       return _buildVideoThumbnail(videoPath, message);
     }
 
+    // Check if this video previously failed to decrypt
+    if (_failedVideoIds.contains(message.attachmentId!)) {
+      return GestureDetector(
+        onTap: () {
+          setState(() {
+            _failedVideoIds.remove(message.attachmentId!);
+          });
+          _saveFailedMediaIds(); // Persist to storage
+        },
+        child: Container(
+          width: 250,
+          height: 200,
+          decoration: BoxDecoration(
+            color: Colors.grey[300],
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.error_outline, size: 40, color: Colors.red[300]),
+              const SizedBox(height: 12),
+              Text(
+                'Failed to decrypt video',
+                style: TextStyle(color: Colors.grey[700], fontSize: 12),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Tap to retry',
+                style: TextStyle(color: Color(0xFF667EEA), fontSize: 11, fontWeight: FontWeight.w500),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     // Load video
     return FutureBuilder<String?>(
       key: ValueKey('video_${message.attachmentId}'),
@@ -4983,9 +5073,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         }
 
         if (snapshot.hasError || !snapshot.hasData) {
+          // Mark as failed and show error placeholder
+          if (!_failedVideoIds.contains(message.attachmentId!)) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              setState(() {
+                _failedVideoIds.add(message.attachmentId!);
+              });
+              _saveFailedMediaIds(); // Persist to storage
+            });
+          }
           return Container(
             width: 250,
-            height: 150,
+            height: 200,
             decoration: BoxDecoration(
               color: Colors.grey[300],
               borderRadius: BorderRadius.circular(8),
@@ -4993,9 +5092,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.error_outline, size: 32, color: Colors.grey[600]),
-                const SizedBox(height: 8),
-                Text('Failed to load video', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                Icon(Icons.error_outline, size: 40, color: Colors.red[300]),
+                const SizedBox(height: 12),
+                Text(
+                  'Failed to decrypt video',
+                  style: TextStyle(color: Colors.grey[700], fontSize: 12),
+                ),
               ],
             ),
           );
@@ -5336,6 +5438,53 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       );
     }
 
+    // Check if this audio previously failed to decrypt
+    if (_failedAudioIds.contains(message.attachmentId!)) {
+      return GestureDetector(
+        onTap: () {
+          setState(() {
+            _failedAudioIds.remove(message.attachmentId!);
+          });
+          _saveFailedMediaIds(); // Persist to storage
+        },
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.error_outline,
+                color: isMe ? Colors.white70 : Colors.red[300],
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Failed to decrypt audio',
+                    style: TextStyle(
+                      color: isMe ? Colors.white70 : Colors.grey[700],
+                      fontSize: 11,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Tap to retry',
+                    style: TextStyle(
+                      color: isMe ? Colors.white60 : Color(0xFF667EEA),
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return FutureBuilder<String?>(
       future: _loadAudio(message),
       builder: (context, snapshot) {
@@ -5369,7 +5518,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         }
 
         if (snapshot.hasError || !snapshot.hasData || snapshot.data == null) {
-          // Error loading audio
+          // Mark as failed and show error placeholder
+          if (!_failedAudioIds.contains(message.attachmentId!)) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              setState(() {
+                _failedAudioIds.add(message.attachmentId!);
+              });
+              _saveFailedMediaIds(); // Persist to storage
+            });
+          }
           return Container(
             padding: const EdgeInsets.all(12),
             child: Row(
@@ -5377,14 +5534,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
               children: [
                 Icon(
                   Icons.error_outline,
-                  color: isMe ? Colors.white70 : Colors.red,
+                  color: isMe ? Colors.white70 : Colors.red[300],
                   size: 20,
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  'Failed to load audio',
+                  'Failed to decrypt audio',
                   style: TextStyle(
-                    color: isMe ? Colors.white70 : Colors.grey[600],
+                    color: isMe ? Colors.white70 : Colors.grey[700],
+                    fontSize: 11,
                   ),
                 ),
               ],
@@ -7475,6 +7633,50 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       await prefs.setBool('show_encryption_banner_$conversationId', show);
     } catch (e) {
       // print('[ChatScreen] Error saving encryption banner preference: $e');
+    }
+  }
+
+  /// Load failed media IDs from persistent storage (called once on app start)
+  static Future<void> loadFailedMediaIds() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      // Load failed image IDs
+      final failedImages = prefs.getStringList('failed_image_ids') ?? [];
+      _failedImageIds.clear();
+      _failedImageIds.addAll(failedImages.map((id) => int.parse(id)));
+
+      // Load failed video IDs
+      final failedVideos = prefs.getStringList('failed_video_ids') ?? [];
+      _failedVideoIds.clear();
+      _failedVideoIds.addAll(failedVideos.map((id) => int.parse(id)));
+
+      // Load failed audio IDs
+      final failedAudios = prefs.getStringList('failed_audio_ids') ?? [];
+      _failedAudioIds.clear();
+      _failedAudioIds.addAll(failedAudios.map((id) => int.parse(id)));
+
+      debugPrint('[ChatScreen] Loaded failed media: ${_failedImageIds.length} images, ${_failedVideoIds.length} videos, ${_failedAudioIds.length} audios');
+    } catch (e) {
+      debugPrint('[ChatScreen] Error loading failed media IDs: $e');
+    }
+  }
+
+  /// Save failed media IDs to persistent storage
+  static Future<void> _saveFailedMediaIds() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      // Save failed image IDs
+      await prefs.setStringList('failed_image_ids', _failedImageIds.map((id) => id.toString()).toList());
+
+      // Save failed video IDs
+      await prefs.setStringList('failed_video_ids', _failedVideoIds.map((id) => id.toString()).toList());
+
+      // Save failed audio IDs
+      await prefs.setStringList('failed_audio_ids', _failedAudioIds.map((id) => id.toString()).toList());
+    } catch (e) {
+      debugPrint('[ChatScreen] Error saving failed media IDs: $e');
     }
   }
 

@@ -250,14 +250,14 @@ class AutoBackupManager {
     //debugPrint('[AutoBackupManager] ✅ Scheduled one-off backup, delay: ${_calculateInitialDelay(settings)}');
   }
 
-  /// Calculate initial delay before first backup (scheduled for 11:13 PM for testing)
+  /// Calculate initial delay before first backup (scheduled for 7:59 PM for testing)
   static Duration _calculateInitialDelay(AutoBackupSettings settings) {
     final now = DateTime.now();
 
-    // Calculate next 11:13 PM (23:13)
-    DateTime nextBackupTime = DateTime(now.year, now.month, now.day, 23, 13); // Today at 11:13 PM
+    // Calculate next 7:59 PM (19:59)
+    DateTime nextBackupTime = DateTime(now.year, now.month, now.day, 19, 59); // Today at 7:59 PM
 
-    // If it's already past 11:13 PM today, schedule for tomorrow at 11:13 PM
+    // If it's already past 7:59 PM today, schedule for tomorrow at 7:59 PM
     if (now.isAfter(nextBackupTime)) {
       //debugPrint('[AutoBackupManager] ⏭️ Already past 11:13 PM today, scheduling for tomorrow');
       nextBackupTime = nextBackupTime.add(const Duration(days: 1));

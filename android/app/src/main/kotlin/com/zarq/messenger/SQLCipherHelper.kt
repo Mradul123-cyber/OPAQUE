@@ -2,8 +2,9 @@ package com.zarq.messenger
 
 import android.content.Context
 import android.util.Log
-import net.sqlcipher.database.SQLiteDatabase
-import net.sqlcipher.database.SQLiteDatabaseHook
+import net.zetetic.database.sqlcipher.SQLiteDatabase
+import net.zetetic.database.sqlcipher.SQLiteDatabaseHook
+import net.zetetic.database.sqlcipher.SQLiteConnection
 
 /**
  * Helper class to read data from SQLCipher encrypted database
@@ -27,7 +28,7 @@ class SQLCipherHelper(private val context: Context) {
 
         try {
             // Load SQLCipher native library
-            SQLiteDatabase.loadLibs(context)
+            System.loadLibrary("sqlcipher")
 
             // Open encrypted database with user-specific filename
             // Flutter uses: zarq_messages_[userUid].db
@@ -44,10 +45,11 @@ class SQLCipherHelper(private val context: Context) {
             // which then applies PBKDF2-HMAC-SHA512 with 256000 iterations (SQLCipher 4.x default)
             // Match sqflite_sqlcipher's behavior: use cipher_migrate hook for compatibility
             val hook = object : SQLiteDatabaseHook {
-                override fun preKey(database: SQLiteDatabase?) {}
-                override fun postKey(database: SQLiteDatabase?) {
+                override fun preKey(connection: SQLiteConnection?) {}
+                override fun postKey(connection: SQLiteConnection?) {
                     // Run cipher_migrate to handle older SQLCipher versions
-                    database?.rawExecSQL("PRAGMA cipher_migrate;")
+                    // Using executeForString as it works better than execute for PRAGMA statements
+                    connection?.executeForString("PRAGMA cipher_migrate;", null, null)
                 }
             }
 

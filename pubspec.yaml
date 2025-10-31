@@ -57,7 +57,7 @@ dependencies:
   pointycastle: ^4.0.0
   convert: ^3.0.2
   shamir_secret_plg: ^0.6.0
-  sqflite_sqlcipher: ^2.1.2 
+  sqflite_sqlcipher: ^3.4.0 
   path: ^1.9.1
   flutter_secure_storage: ^9.2.4
   firebase_messaging: 15.2.10

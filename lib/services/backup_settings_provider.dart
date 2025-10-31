@@ -231,8 +231,8 @@ class BackupSettingsProvider with ChangeNotifier {
         dbPassword: dbPassword,
         passphrase: passphrase,
         frequency: settings.frequency,
-        hour: 0,   // 12:30 AM
-        minute: 30,
+        hour: 19,   // 7:59 PM
+        minute: 59,
       );
 
       if (success) {
