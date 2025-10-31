@@ -109,6 +109,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   // AI mode state
   bool _isAIMode = false;
   bool _isAIProcessing = false;
+  late AnimationController _aiGlowController;
+  late Animation<double> _aiGlowAnimation;
+  bool _hasShownAITutorial = false;
 
   // Message search state
   bool _isSearching = false;
@@ -202,6 +205,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     _loadWallpaper();
     _loadEncryptionBannerPreference();
     _aiService.initialize(); // Initialize AI service
+    _loadAITutorialStatus();
 
     // Load failed media IDs from persistent storage
     loadFailedMediaIds();
@@ -211,6 +215,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       vsync: this,
       duration: const Duration(milliseconds: 1400),
     )..repeat();
+
+    // Initialize AI glow animation controller (pulsing effect)
+    _aiGlowController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat(reverse: true);
+
+    _aiGlowAnimation = Tween<double>(begin: 0.3, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _aiGlowController,
+        curve: Curves.easeInOut,
+      ),
+    );
 
     // Create 3 bouncing dot animations with staggered delays
     _typingDotAnimations = List.generate(3, (index) {
@@ -2841,6 +2858,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     _searchController.dispose();
     _typingTimer?.cancel();
     _typingAnimationController.dispose(); // Dispose typing animation controller
+    _aiGlowController.dispose(); // Dispose AI glow animation controller
     super.dispose();
   }
 
@@ -3983,34 +4001,114 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                               },
                             ),
                           ),
-                          // AI Mode Toggle Button with particle animation
-                          Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              IconButton(
-                                icon: Icon(
-                                  Icons.auto_awesome,
-                                  color: _isAIMode ? const Color(0xFF667EEA) : Colors.grey[600],
-                                  size: iconSize3,
-                                ),
-                                onPressed: () {
-                                  setState(() {
-                                    _isAIMode = !_isAIMode;
-                                  });
-                                },
-                              ),
-                              // Magic particles when processing
-                              if (_isAIProcessing)
-                                Positioned.fill(
-                                  child: IgnorePointer(
-                                    child: AIProcessingParticles(
-                                      isProcessing: _isAIProcessing,
-                                      color: const Color(0xFF667EEA),
+                          // AI Mode Toggle Button with conditional glowing animation
+                          AnimatedBuilder(
+                            animation: _aiGlowAnimation,
+                            builder: (context, child) {
+                              return Stack(
+                                alignment: Alignment.center,
+                                children: [
+                                  // Glow layers (only when AI mode is ON)
+                                  if (_isAIMode) ...[
+                                    // Outermost yellow glow (largest)
+                                    Icon(
+                                      Icons.star,
+                                      color: Color(0xFFFFD700).withOpacity(_aiGlowAnimation.value * 0.6),
+                                      size: iconSize3 * 2.3,
                                     ),
+                                    // Outer amber glow
+                                    Icon(
+                                      Icons.star,
+                                      color: Color(0xFFFFC107).withOpacity(_aiGlowAnimation.value * 0.7),
+                                      size: iconSize3 * 2.0,
+                                    ),
+                                    // Middle orange glow
+                                    Icon(
+                                      Icons.star,
+                                      color: Color(0xFFFF9800).withOpacity(_aiGlowAnimation.value * 0.8),
+                                      size: iconSize3 * 1.7,
+                                    ),
+                                    // Inner golden glow
+                                    Icon(
+                                      Icons.star,
+                                      color: Color(0xFFFFEB3B).withOpacity(_aiGlowAnimation.value * 0.9),
+                                      size: iconSize3 * 1.5,
+                                    ),
+                                  ],
+                                  // Star with 3D effect
+                                  IconButton(
+                                    icon: _isAIMode
+                                        ? Stack(
+                                            alignment: Alignment.center,
+                                            children: [
+                                              // Bottom shadow for 3D depth
+                                              Transform.translate(
+                                                offset: const Offset(2, 2),
+                                                child: Icon(
+                                                  Icons.star,
+                                                  color: Colors.black.withOpacity(0.5),
+                                                  size: iconSize3 * 1.3,
+                                                ),
+                                              ),
+                                              // Mid shadow
+                                              Transform.translate(
+                                                offset: const Offset(1, 1),
+                                                child: Icon(
+                                                  Icons.star,
+                                                  color: Colors.black.withOpacity(0.3),
+                                                  size: iconSize3 * 1.3,
+                                                ),
+                                              ),
+                                              // Main star with gradient
+                                              ShaderMask(
+                                                shaderCallback: (bounds) => const LinearGradient(
+                                                  begin: Alignment.topLeft,
+                                                  end: Alignment.bottomRight,
+                                                  colors: [
+                                                    Color(0xFFFFEB3B), // Bright yellow
+                                                    Color(0xFFFFC107), // Amber
+                                                    Color(0xFFFF9800), // Deep orange
+                                                  ],
+                                                ).createShader(bounds),
+                                                child: Icon(
+                                                  Icons.star,
+                                                  color: Colors.white,
+                                                  size: iconSize3 * 1.3,
+                                                ),
+                                              ),
+                                            ],
+                                          )
+                                        : Icon(
+                                            Icons.star,
+                                            color: Colors.grey[600], // Simple grey
+                                            size: iconSize3,
+                                          ),
+                                    onPressed: () {
+                                      setState(() {
+                                        _isAIMode = !_isAIMode;
+                                      });
+                                      // Show tutorial when AI mode is turned ON for the first time
+                                      if (_isAIMode && !_hasShownAITutorial) {
+                                        Future.delayed(const Duration(milliseconds: 300), () {
+                                          _showAITutorial();
+                                        });
+                                      }
+                                    },
                                   ),
-                                ),
-                            ],
-                          ),
+                                  // Magic particles when processing
+                                  if (_isAIProcessing)
+                                    Positioned.fill(
+                                      child: IgnorePointer(
+                                        child: AIProcessingParticles(
+                                          isProcessing: _isAIProcessing,
+                                          color: const Color(0xFFFFD700),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                );
+                              },
+                            ),
                         ],
                       ),
                     ),
@@ -7634,6 +7732,174 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     } catch (e) {
       // print('[ChatScreen] Error saving encryption banner preference: $e');
     }
+  }
+
+  /// Load AI tutorial status from SharedPreferences
+  Future<void> _loadAITutorialStatus() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final hasShown = prefs.getBool('has_shown_ai_tutorial') ?? false;
+      setState(() {
+        _hasShownAITutorial = hasShown;
+      });
+    } catch (e) {
+      // print('[ChatScreen] Error loading AI tutorial status: $e');
+    }
+  }
+
+  /// Show AI mode tutorial for first-time users
+  void _showAITutorial() async {
+    if (_hasShownAITutorial) return;
+
+    // Mark as shown
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('has_shown_ai_tutorial', true);
+      setState(() {
+        _hasShownAITutorial = true;
+      });
+    } catch (e) {
+      // print('[ChatScreen] Error saving AI tutorial status: $e');
+    }
+
+    // Show tutorial dialog
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        backgroundColor: const Color(0xFF0D1117),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0D1117),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: const Color(0xFFFFD700).withOpacity(0.5), width: 2),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Star icon with glow
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: RadialGradient(
+                    colors: [
+                      const Color(0xFFFFD700).withOpacity(0.3),
+                      Colors.transparent,
+                    ],
+                  ),
+                ),
+                child: const Icon(
+                  Icons.star,
+                  color: Color(0xFFFFD700),
+                  size: 48,
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Title
+              const Text(
+                'AI Mode Activated!',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              // Instructions
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1F26).withOpacity(0.5),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildTutorialStep(
+                      Icons.touch_app,
+                      'Tap any message',
+                      'Get AI options: Translate, Summarize, or Explain',
+                    ),
+                    const SizedBox(height: 12),
+                    _buildTutorialStep(
+                      Icons.edit,
+                      'Write anything',
+                      'Type your text and tap the yellow enhance button',
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              // Close button
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFFFD700),
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Text(
+                    'Got it!',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTutorialStep(IconData icon, String title, String description) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFD700).withOpacity(0.2),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon, color: const Color(0xFFFFD700), size: 20),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                description,
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.7),
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 
   /// Load failed media IDs from persistent storage (called once on app start)
