@@ -549,6 +549,9 @@ class WebSocketService with ChangeNotifier {
           // Also forward to stream for backward compatibility (chat_screen)
           _streamController.add(messageData);
           break;
+        case 'session_reset_required':
+          _handleSessionResetRequired(messageData);
+          break;
         default:
           // print("[WebSocketService] Unknown message type: $messageType");
       }
@@ -832,6 +835,22 @@ class WebSocketService with ChangeNotifier {
             // print("[WebSocketService] 🔄 Stale session reset - will re-establish on next message");
           } catch (resetError) {
             // print("[WebSocketService] ⚠️ Session reset failed: $resetError");
+          }
+
+          // Notify sender that their session is invalid and needs to be reset
+          try {
+            final sessionResetNotification = {
+              'type': 'session_reset_required',
+              'recipient_uid': senderUid,
+              'recipient_device_id': senderDeviceId,
+              'reason': 'decryption_failed',
+              'timestamp': DateTime.now().toUtc().toIso8601String(),
+            };
+
+            await sendMessageReliably(sessionResetNotification);
+            // print("[WebSocketService] 📤 Sent session reset notification to sender");
+          } catch (notifyError) {
+            // print("[WebSocketService] ⚠️ Failed to notify sender about session reset: $notifyError");
           }
 
           // SECURITY: Do NOT fallback to plaintext!
@@ -1362,6 +1381,31 @@ class WebSocketService with ChangeNotifier {
     // print("[WebSocketService] 👤 Presence status received: $presenceData");
     // Forward to stream so chat_screen can handle it
     _streamController.add(presenceData);
+  }
+
+  Future<void> _handleSessionResetRequired(Map<String, dynamic> resetData) async {
+    try {
+      final recipientUid = resetData['recipient_uid'] as String?;
+      final recipientDeviceId = resetData['recipient_device_id'] as int?;
+      final reason = resetData['reason'] as String? ?? 'unknown';
+
+      if (recipientUid == null || recipientDeviceId == null) {
+        // print("[WebSocketService] ⚠️ Invalid session reset data: missing recipient info");
+        return;
+      }
+
+      // print("[WebSocketService] 🔄 Session reset required for $recipientUid:$recipientDeviceId (reason: $reason)");
+
+      // Reset the stale session on sender's side
+      await SignalService.resetSessionDueToDecryptionFailure(
+        senderUid: recipientUid,
+        senderDeviceId: recipientDeviceId,
+      );
+
+      // print("[WebSocketService] ✅ Session reset complete - will fetch fresh PreKeys on next send");
+    } catch (e) {
+      // print("[WebSocketService] ❌ Error handling session reset: $e");
+    }
   }
 
   void _handleConversationUpdate(Map<String, dynamic> updateData) {
