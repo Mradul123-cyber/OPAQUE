@@ -57,6 +57,13 @@ android {
             //noinspection ChromeOsAbiSupport
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
         }
+
+        // ✅ FIX: Enable 16KB page size support for native libraries
+        externalNativeBuild {
+            cmake {
+                arguments += listOf("-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON")
+            }
+        }
     }
 
     // ✅ FIX: Disable legacy packaging to support 16 KB page alignment
