@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Declare support for flexible page sizes on Android 35+ -->
+    <bool name="android:supportsFlexiblePageSizes">true</bool>
+</resources>
