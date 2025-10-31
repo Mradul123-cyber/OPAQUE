@@ -31,7 +31,8 @@ import 'widgets/call_aware_screen.dart';
 import 'widgets/animated_profile_avatar.dart';
 import 'services/overlay_permission_helper.dart';
 import 'about_screen.dart';
-import 'screens/ai_chat_screen.dart';
+import 'package:zarq_messenger/widgets/breathing_unread_badge.dart';
+import 'package:zarq_messenger/screens/ai_chat_screen.dart';
 // import 'screens/tasks_screen.dart';
 // import 'screens/moments_main_screen.dart';
 
@@ -707,18 +708,7 @@ class _HomeScreenState extends State<HomeScreen> {
           Positioned(
             right: 0,
             top: 0,
-            child: Container(
-              width: unreadBadgeSize,
-              height: unreadBadgeSize,
-              decoration: BoxDecoration(
-                color: Colors.green,
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: const Color(0xFFF5F5F5),
-                  width: 2
-                ),
-              ),
-            ),
+            child: BreathingUnreadBadge(size: unreadBadgeSize),
           ),
       ],
     );
