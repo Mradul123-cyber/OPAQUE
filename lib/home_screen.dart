@@ -32,7 +32,6 @@ import 'widgets/animated_profile_avatar.dart';
 import 'services/overlay_permission_helper.dart';
 import 'about_screen.dart';
 import 'package:zarq_messenger/widgets/breathing_unread_badge.dart';
-import 'package:zarq_messenger/widgets/animated_conversation_item.dart';
 import 'package:zarq_messenger/screens/ai_chat_screen.dart';
 // import 'screens/tasks_screen.dart';
 // import 'screens/moments_main_screen.dart';
@@ -82,7 +81,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   String _displayName = "User";
   String? _currentUserAvatarUrl;
   String? _currentUserUid;
@@ -91,8 +90,10 @@ class _HomeScreenState extends State<HomeScreen> {
   ConversationInfo? _selectedConversation;
 
   final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
   List<ConversationInfo> _filteredConversations = [];
   bool _isSearching = false;
+  double _previousKeyboardHeight = 0;
 
   bool _isAvatarHovering = false;
   bool _isDeleteHovering = false;
@@ -111,6 +112,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
 
     _loadBlockedUsers();
 
@@ -151,10 +153,27 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _websocketSubscription?.cancel();
     _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    final currentKeyboardHeight = MediaQuery.of(context).viewInsets.bottom;
+
+    // If keyboard was visible and now it's closed, unfocus the search field
+    if (_previousKeyboardHeight > 0 && currentKeyboardHeight == 0) {
+      if (_searchFocusNode.hasFocus) {
+        _searchFocusNode.unfocus();
+      }
+    }
+
+    _previousKeyboardHeight = currentKeyboardHeight;
   }
 
   void _onSearchChanged() {
@@ -1022,6 +1041,8 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             child: TextField(
               controller: _searchController,
+              focusNode: _searchFocusNode,
+              cursorColor: isDarkTheme ? Colors.white : Colors.black,
               style: TextStyle(
                 color: searchTextColor,
                 fontSize: searchFontSize,
@@ -1078,107 +1099,105 @@ class _HomeScreenState extends State<HomeScreen> {
               final convo = conversations[index];
               final isSelected = _isGroupSelectionMode &&
                   _selectedConversation?.conversationId == convo.conversationId;
-              return AnimatedConversationItem(
-                index: index,
-                child: Container(
-                  margin: listItemMargin,
-                  decoration: BoxDecoration(
+              return Container(
+                margin: listItemMargin,
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? Colors.teal.withOpacity(0.3)
+                      : cardBgColor,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
                     color: isSelected
-                        ? Colors.teal.withOpacity(0.3)
-                        : cardBgColor,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: isSelected
-                          ? Colors.teal
-                          : cardBorderColor,
-                      width: 1.0,
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        blurRadius: 5,
-                        spreadRadius: 1,
-                      ),
-                    ],
+                        ? Colors.teal
+                        : cardBorderColor,
+                    width: 1.0,
                   ),
-                  child: ListTile(
-                    leading: _buildAvatar(convo),
-                    title: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            convo.chatTitle,
-                            style: TextStyle(
-                              color: titleColor,
-                              fontWeight: FontWeight.bold,
-                              fontSize: listItemTitleSize,
-                            ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 5,
+                      spreadRadius: 1,
+                    ),
+                  ],
+                ),
+                child: ListTile(
+                  leading: _buildAvatar(convo),
+                  title: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          convo.chatTitle,
+                          style: TextStyle(
+                            color: titleColor,
+                            fontWeight: FontWeight.bold,
+                            fontSize: listItemTitleSize,
                           ),
                         ),
-                        // Show blocked badge for blocked users
-                        if (!convo.isGroup && convo.partnerUid != null && _blockedUsers.contains(convo.partnerUid))
-                          Container(
-                            padding: EdgeInsets.symmetric(
-                              horizontal: screenWidth * 0.02,
-                              vertical: screenHeight * 0.005,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.red[100],
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: Colors.red[300]!, width: 1),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.block, size: badgeIconSize, color: Colors.red[700]),
-                                SizedBox(width: screenWidth * 0.01),
-                                Text(
-                                  'Blocked',
-                                  style: TextStyle(
-                                    color: Colors.red[900],
-                                    fontSize: badgeFontSize,
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                      ),
+                      // Show blocked badge for blocked users
+                      if (!convo.isGroup && convo.partnerUid != null && _blockedUsers.contains(convo.partnerUid))
+                        Container(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: screenWidth * 0.02,
+                            vertical: screenHeight * 0.005,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.red[100],
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.red[300]!, width: 1),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.block, size: badgeIconSize, color: Colors.red[700]),
+                              SizedBox(width: screenWidth * 0.01),
+                              Text(
+                                'Blocked',
+                                style: TextStyle(
+                                  color: Colors.red[900],
+                                  fontSize: badgeFontSize,
+                                  fontWeight: FontWeight.bold,
                                 ),
-                              ],
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                  trailing: convo.unreadCount > 0
+                      ? Container(
+                          width: (screenWidth * 0.08).clamp(28.0, 36.0),
+                          height: (screenWidth * 0.08).clamp(28.0, 36.0),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: Colors.black,
+                              width: 2.0,
                             ),
                           ),
-                      ],
-                    ),
-                    trailing: convo.unreadCount > 0
-                        ? Container(
-                            width: (screenWidth * 0.08).clamp(28.0, 36.0),
-                            height: (screenWidth * 0.08).clamp(28.0, 36.0),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              shape: BoxShape.circle,
-                              border: Border.all(
+                          child: Center(
+                            child: Text(
+                              convo.unreadCount > 99 ? '99+' : '${convo.unreadCount}',
+                              style: TextStyle(
                                 color: Colors.black,
-                                width: 2.0,
+                                fontSize: (screenWidth * 0.035).clamp(11.0, 14.0),
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 0.5,
                               ),
+                              textAlign: TextAlign.center,
                             ),
-                            child: Center(
-                              child: Text(
-                                convo.unreadCount > 99 ? '99+' : '${convo.unreadCount}',
-                                style: TextStyle(
-                                  color: Colors.black,
-                                  fontSize: (screenWidth * 0.035).clamp(11.0, 14.0),
-                                  fontWeight: FontWeight.w900,
-                                  letterSpacing: 0.5,
-                                ),
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
-                          )
-                        : null,
-                    onTap: () async {
-                      if (_isGroupSelectionMode) {
-                        _exitGroupSelectionMode();
-                      } else {
-                        final websocketService = Provider.of<WebSocketService>(context, listen: false);
+                          ),
+                        )
+                      : null,
+                  onTap: () async {
+                    if (_isGroupSelectionMode) {
+                      _exitGroupSelectionMode();
+                    } else {
+                      final websocketService = Provider.of<WebSocketService>(context, listen: false);
 
-                        // 🚀 OFFLINE MODE: Try to get or create WebSocket channel
-                        WebSocketChannel? channel = websocketService.channel;
+                      // 🚀 OFFLINE MODE: Try to get or create WebSocket channel
+                      WebSocketChannel? channel = websocketService.channel;
 
                         if (channel == null) {
                           // Try to connect with current user's token
@@ -1195,41 +1214,40 @@ class _HomeScreenState extends State<HomeScreen> {
                           }
                         }
 
-                        // Mark conversation as read
-                        Provider.of<HomeProvider>(context, listen: false)
-                            .markConversationAsRead(convo.conversationId);
+                      // Mark conversation as read
+                      Provider.of<HomeProvider>(context, listen: false)
+                          .markConversationAsRead(convo.conversationId);
 
-                        // Navigate to chat screen (works online and offline!)
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (context) => ChatScreen(
-                              channel: channel, // Can be null in offline mode
-                              conversationInfo: convo,
-                            ),
+                      // Navigate to chat screen (works online and offline!)
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (context) => ChatScreen(
+                            channel: channel, // Can be null in offline mode
+                            conversationInfo: convo,
                           ),
-                        ).then((_) {
-                          // Reload blocked users when coming back from chat
-                          _loadBlockedUsers();
-                        });
+                        ),
+                      ).then((_) {
+                        // Reload blocked users when coming back from chat
+                        _loadBlockedUsers();
+                      });
 
-                        // Show offline indicator if no channel
-                        if (channel == null) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('📴 Offline mode - Viewing cached messages'),
-                              duration: Duration(seconds: 2),
-                              backgroundColor: Colors.orange,
-                            ),
-                          );
-                        }
+                      // Show offline indicator if no channel
+                      if (channel == null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('📴 Offline mode - Viewing cached messages'),
+                            duration: Duration(seconds: 2),
+                            backgroundColor: Colors.orange,
+                          ),
+                        );
                       }
-                    },
-                    onLongPress: () {
-                      if (convo.isGroup) {
-                        _enterGroupSelectionMode(convo);
-                      }
-                    },
-                  ),
+                    }
+                  },
+                  onLongPress: () {
+                    if (convo.isGroup) {
+                      _enterGroupSelectionMode(convo);
+                    }
+                  },
                 ),
               );
             },

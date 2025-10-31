@@ -169,6 +169,13 @@ class _CustomizationScreenState extends State<CustomizationScreen> {
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        // Section: Global Dark Theme
+                        _buildSectionHeader(Icons.dark_mode, 'Global Theme'),
+                        SizedBox(height: itemSpacing),
+                        _buildGlobalThemeCard(userSettings),
+
+                        SizedBox(height: sectionSpacing),
+
                         // Section: Message Bubbles
                         _buildSectionHeader(Icons.chat_bubble_outline, 'Message Bubbles'),
                         SizedBox(height: itemSpacing),
@@ -253,6 +260,119 @@ class _CustomizationScreenState extends State<CustomizationScreen> {
         ),
       ],
     );
+  }
+
+  Widget _buildGlobalThemeCard(UserSettingsProvider userSettings) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    final cardPadding = (screenWidth * 0.04).clamp(12.0, 20.0);
+    final borderRadius = (screenWidth * 0.03).clamp(10.0, 14.0);
+    final titleFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final descFontSize = (screenWidth * 0.0325).clamp(12.0, 15.0);
+    final switchLabelFontSize = (screenWidth * 0.0375).clamp(13.0, 16.0);
+    final spacing1 = (screenHeight * 0.01).clamp(6.0, 10.0);
+    final spacing2 = (screenHeight * 0.02).clamp(12.0, 18.0);
+
+    // Check if all screens are in dark mode
+    final isGlobalDark = userSettings.homeScreenStyle == 'dark' &&
+                         userSettings.findFriendsScreenStyle == 'dark' &&
+                         userSettings.notesScreenStyle == 'dark';
+
+    return Card(
+      color: const Color(0xFF1B263B).withOpacity(0.6),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(borderRadius),
+        side: BorderSide(color: Colors.cyanAccent.withOpacity(0.3)),
+      ),
+      child: Padding(
+        padding: EdgeInsets.all(cardPadding),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "App-wide Dark Theme",
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: titleFontSize,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            SizedBox(height: spacing1),
+            Text(
+              "Enable dark theme for all screens at once",
+              style: TextStyle(color: Colors.white60, fontSize: descFontSize),
+            ),
+            SizedBox(height: spacing2),
+            Container(
+              padding: EdgeInsets.all(cardPadding * 0.8),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0a1128).withOpacity(0.5),
+                borderRadius: BorderRadius.circular(borderRadius * 0.7),
+                border: Border.all(color: Colors.cyanAccent.withOpacity(0.3)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        isGlobalDark ? Icons.dark_mode : Icons.light_mode,
+                        color: isGlobalDark ? Colors.cyanAccent : Colors.amber,
+                        size: (screenWidth * 0.06).clamp(20.0, 28.0),
+                      ),
+                      SizedBox(width: cardPadding),
+                      Text(
+                        isGlobalDark ? 'Dark Mode Enabled' : 'Light Mode Enabled',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: switchLabelFontSize,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Switch(
+                    value: isGlobalDark,
+                    onChanged: (bool value) {
+                      _handleGlobalThemeChange(value);
+                    },
+                    activeColor: Colors.cyanAccent,
+                    activeTrackColor: Colors.cyanAccent.withOpacity(0.5),
+                    inactiveThumbColor: Colors.grey,
+                    inactiveTrackColor: Colors.grey.withOpacity(0.3),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _handleGlobalThemeChange(bool isDark) {
+    final themeValue = isDark ? 'dark' : 'default';
+
+    // Apply theme to all screens that support it
+    _handleSettingChange(
+      homeScreenStyle: themeValue,
+      findFriendsScreenStyle: themeValue,
+      notesScreenStyle: themeValue,
+    );
+
+    // Show feedback
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(isDark
+              ? 'Dark theme enabled for all screens!'
+              : 'Light theme enabled for all screens!'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 1),
+        ),
+      );
+    }
   }
 
   Widget _buildBubbleStyleCard(UserSettingsProvider userSettings) {

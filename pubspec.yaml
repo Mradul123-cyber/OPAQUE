@@ -85,6 +85,7 @@ dependencies:
   flutter_quill: ^11.5.0
   signature: ^6.3.0
   flutter_flow_chart: ^3.2.3
+  flutter_staggered_animations: ^1.1.1
   # razorpay_flutter removed - now using native Kotlin Razorpay SDK for better error handling
   # video_compress removed - now using native Kotlin MediaCodec for better reliability
   # google_generative_ai removed - now using secure backend
