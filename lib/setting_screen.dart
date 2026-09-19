@@ -1,3 +1,5 @@
+import 'widgets/notes_design.dart';
+import 'widgets/backup_design.dart';
 // lib/setting_screen.dart
 
 import 'package:flutter/material.dart';
@@ -60,8 +62,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isFriendsLoading = false;
   List<Friend> _friendsList = [];
   final _displayNameController = TextEditingController();
-
-
 
   @override
   void initState() {
@@ -346,9 +346,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             style: TextStyle(color: Colors.white, fontSize: dialogTextSize),
             decoration: InputDecoration(
               hintText: "Enter display name",
-              hintStyle: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: dialogTextSize),
+              hintStyle: TextStyle(
+                color: Colors.white.withOpacity(0.5),
+                fontSize: dialogTextSize,
+              ),
               helperText: 'Maximum 30 characters',
-              helperStyle: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: dialogTextSize * 0.9),
+              helperStyle: TextStyle(
+                color: Colors.white.withOpacity(0.5),
+                fontSize: dialogTextSize * 0.9,
+              ),
               enabledBorder: UnderlineInputBorder(
                 borderSide: BorderSide(
                   color: Colors.cyanAccent.withOpacity(0.5),
@@ -364,14 +370,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onPressed: () => Navigator.of(context).pop(),
               child: Text(
                 'Cancel',
-                style: TextStyle(color: Colors.white70, fontSize: dialogTextSize),
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: dialogTextSize,
+                ),
               ),
             ),
             TextButton(
               onPressed: _updateUserDisplayName,
               child: Text(
                 'Save',
-                style: TextStyle(color: Colors.cyanAccent, fontSize: dialogTextSize),
+                style: TextStyle(
+                  color: Colors.cyanAccent,
+                  fontSize: dialogTextSize,
+                ),
               ),
             ),
           ],
@@ -407,7 +419,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             style: TextStyle(color: Colors.white, fontSize: dialogTextSize),
             decoration: InputDecoration(
               hintText: "Enter your new name",
-              hintStyle: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: dialogTextSize),
+              hintStyle: TextStyle(
+                color: Colors.white.withOpacity(0.5),
+                fontSize: dialogTextSize,
+              ),
               enabledBorder: UnderlineInputBorder(
                 borderSide: BorderSide(
                   color: Colors.cyanAccent.withOpacity(0.5),
@@ -423,14 +438,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onPressed: () => Navigator.of(context).pop(),
               child: Text(
                 'Cancel',
-                style: TextStyle(color: Colors.white70, fontSize: dialogTextSize),
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: dialogTextSize,
+                ),
               ),
             ),
             TextButton(
               onPressed: _updateDisplayName,
               child: Text(
                 'Save',
-                style: TextStyle(color: Colors.cyanAccent, fontSize: dialogTextSize),
+                style: TextStyle(
+                  color: Colors.cyanAccent,
+                  fontSize: dialogTextSize,
+                ),
               ),
             ),
           ],
@@ -439,401 +460,539 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-
-    final outerPadding = (screenWidth * 0.05).clamp(16.0, 24.0);
-    final containerPadding = (screenWidth * 0.06).clamp(20.0, 28.0);
-    final borderRadius1 = (screenWidth * 0.05).clamp(16.0, 24.0);
-    final avatarRadius = (screenWidth * 0.15).clamp(50.0, 70.0);
-    final avatarTextSize = (screenWidth * 0.15).clamp(50.0, 70.0);
-    final displayNameSize = (screenWidth * 0.06).clamp(20.0, 28.0);
-    final usernameSize = (screenWidth * 0.035).clamp(13.0, 16.0);
-    final sectionTitleSize = (screenWidth * 0.045).clamp(16.0, 20.0);
-    final bodyTextSize = (screenWidth * 0.03).clamp(11.0, 14.0);
-    final iconSize1 = (screenWidth * 0.05).clamp(18.0, 24.0);
-    final iconSize2 = (screenWidth * 0.045).clamp(16.0, 20.0);
-    final spacing1 = (screenHeight * 0.025).clamp(16.0, 24.0);
-    final spacing2 = (screenHeight * 0.02).clamp(12.0, 20.0);
-    final spacing3 = (screenHeight * 0.0125).clamp(8.0, 12.0);
-
-    final initial = _currentUser?.displayName?.isNotEmpty == true
-        ? _currentUser!.displayName![0].toUpperCase()
-        : '?';
-    final bool currentUserHasImage =
-        _avatarUrl != null && _avatarUrl!.isNotEmpty;
-
-    return CallAwareScreen(
-      screenName: 'SettingsScreen',
-      child: ProfileBackground(
-        child: Scaffold(
-          backgroundColor: Colors.transparent,
-          appBar: AppBar(
-            backgroundColor: Colors.transparent,
-            elevation: 0,
-            title: Text('Profile', style: TextStyle(fontSize: displayNameSize * 0.8)),
-            centerTitle: true,
-          ),
-        body: Center(
-          child: SingleChildScrollView(
-            child: Padding(
-              padding: EdgeInsets.only(
-                left: outerPadding,
-                right: outerPadding,
-                top: outerPadding,
-                bottom: MediaQuery.of(context).padding.bottom + outerPadding,
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(borderRadius1),
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 12.0, sigmaY: 12.0),
-                  child: Container(
-                    padding: EdgeInsets.all(containerPadding),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.25),
-                      borderRadius: BorderRadius.circular(borderRadius1),
-                      border: Border.all(color: Colors.white.withOpacity(0.2)),
+  Future<void> _showOpaqueProfile() async {
+    _displayNameController.text =
+        _displayName ?? _currentUser?.displayName ?? '';
+    bool saving = false;
+    bool photoBusy = false;
+    String? error;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (ctx, updateSheet) {
+          final c = NotesColors(ctx);
+          Widget identity(IconData icon, String label, String value) =>
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                decoration: BoxDecoration(
+                  border: Border(bottom: BorderSide(color: c.line)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(icon, size: 17, color: c.muted),
+                    const SizedBox(width: 11),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            label,
+                            style: c
+                                .text(9, muted: true)
+                                .copyWith(letterSpacing: 1),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(value, style: c.text(12)),
+                        ],
+                      ),
                     ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        GestureDetector(
-                          onTap: _pickAndUploadImage,
-                          child: Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              currentUserHasImage
-                                  ? CachedNetworkImage(
-                                      imageUrl: _avatarUrl!,
-                                      imageBuilder: (context, imageProvider) => CircleAvatar(
-                                        radius: avatarRadius,
-                                        backgroundImage: imageProvider,
-                                        backgroundColor: Colors.black.withOpacity(0.3),
-                                      ),
-                                      placeholder: (context, url) => CircleAvatar(
-                                        radius: avatarRadius,
-                                        backgroundColor: Colors.black.withOpacity(0.3),
-                                        child: const CircularProgressIndicator(
-                                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                                        ),
-                                      ),
-                                      errorWidget: (context, url, error) => CircleAvatar(
-                                        radius: avatarRadius,
-                                        backgroundColor: Colors.black.withOpacity(0.3),
-                                        child: Text(
-                                          initial,
-                                          style: TextStyle(
-                                            fontSize: avatarTextSize,
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.w300,
-                                          ),
-                                        ),
-                                      ),
-                                    )
-                                  : CircleAvatar(
-                                      radius: avatarRadius,
-                                      backgroundColor: Colors.black.withOpacity(0.3),
-                                      child: Text(
-                                        initial,
-                                        style: TextStyle(
-                                          fontSize: avatarTextSize,
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.w300,
-                                        ),
-                                      ),
-                                    ),
-                              if (_isUploading)
-                                const CircularProgressIndicator(
-                                  color: Colors.cyanAccent,
-                                ),
-                              if (!_isUploading)
-                                Positioned(
-                                  bottom: 0,
-                                  right: 0,
-                                  child: Container(
-                                    padding: EdgeInsets.all(spacing3 * 0.75),
-                                    decoration: BoxDecoration(
-                                      color: Colors.cyanAccent,
-                                      shape: BoxShape.circle,
-                                      border: Border.all(
-                                        color: const Color(0xFF0a1128),
-                                        width: 2,
-                                      ),
-                                    ),
-                                    child: Icon(
-                                      Icons.camera_alt,
-                                      color: Colors.black,
-                                      size: iconSize2,
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: c.soft,
+                        borderRadius: BorderRadius.circular(5),
+                      ),
+                      child: Text('Locked', style: c.text(9, muted: true)),
+                    ),
+                  ],
+                ),
+              );
+          return NotesSheet(
+            title: 'Your profile',
+            description: 'How you appear to your friends.',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Column(
+                    children: [
+                      SizedBox(
+                        width: 82,
+                        height: 82,
+                        child: Stack(
+                          children: [
+                            Center(child: _opaqueAvatar(c, 78)),
+                            Positioned(
+                              right: 0,
+                              bottom: 0,
+                              child: SizedBox(
+                                width: 28,
+                                height: 28,
+                                child: IconButton(
+                                  padding: EdgeInsets.zero,
+                                  tooltip: 'Change profile photo',
+                                  style: IconButton.styleFrom(
+                                    backgroundColor: const Color(0xFF507FC3),
+                                    foregroundColor: Colors.white,
+                                    side: BorderSide(
+                                      color: c.surface,
+                                      width: 3,
                                     ),
                                   ),
+                                  icon: Icon(
+                                    photoBusy
+                                        ? Icons.hourglass_empty
+                                        : Icons.camera_alt_outlined,
+                                    size: 13,
+                                  ),
+                                  onPressed: saving || photoBusy
+                                      ? null
+                                      : () async {
+                                          updateSheet(() => photoBusy = true);
+                                          await _pickAndUploadImage();
+                                          if (ctx.mounted)
+                                            updateSheet(
+                                              () => photoBusy = false,
+                                            );
+                                        },
                                 ),
-                            ],
-                          ),
-                        ),
-                        SizedBox(height: spacing1),
-                        // Display Name (from database)
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Flexible(
-                              child: Text(
-                                _displayName ?? _currentUser?.displayName ?? 'No Display Name',
-                                style: TextStyle(
-                                  fontSize: displayNameSize,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                                maxLines: 1,
-                                textAlign: TextAlign.center,
                               ),
-                            ),
-                            IconButton(
-                              icon: Icon(
-                                Icons.edit_outlined,
-                                color: Colors.white70,
-                                size: iconSize2,
-                              ),
-                              onPressed: _showEditDisplayNameDialog,
                             ),
                           ],
                         ),
-                        SizedBox(height: spacing2),
-                        // Username (unique identifier)
-                        Container(
-                          padding: EdgeInsets.symmetric(horizontal: spacing2, vertical: spacing3),
-                          decoration: BoxDecoration(
-                            color: Colors.green[50],
-                            borderRadius: BorderRadius.circular(borderRadius1 * 0.6),
-                            border: Border.all(
-                              color: Colors.green[200]!,
-                              width: 1,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.green.withOpacity(0.2),
-                                blurRadius: 4,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.alternate_email, color: Colors.green[700], size: iconSize2),
-                              SizedBox(width: spacing3),
-                              Text(
-                                _username ?? 'Loading...',
-                                style: TextStyle(
-                                  fontSize: usernameSize,
-                                  color: Colors.green[900],
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        SizedBox(height: spacing3),
-                        Container(
-                          padding: EdgeInsets.symmetric(horizontal: spacing2, vertical: spacing3),
-                          decoration: BoxDecoration(
-                            color: Colors.red[50],
-                            borderRadius: BorderRadius.circular(borderRadius1 * 0.6),
-                            border: Border.all(
-                              color: Colors.red[200]!,
-                              width: 1,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.red.withOpacity(0.2),
-                                blurRadius: 4,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(Icons.email, color: Colors.red[700], size: iconSize2),
-                              SizedBox(width: spacing3),
-                              Expanded(
-                                child: Text(
-                                  _currentUser?.email ?? 'No Email',
-                                  style: TextStyle(
-                                    fontSize: usernameSize,
-                                    color: Colors.red[900],
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                  maxLines: 1,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        SizedBox(height: spacing1),
-
-                        // --- TODO: Backup/Restore Buttons are commented out ---
-                        // These buttons are disabled until the backup logic is updated
-                        // to support the new Signal Protocol Identity Key.
-                        /* _buildActionButton(
-                          icon: Icons.cloud_upload,
-                          text: 'Backup Encryption Key',
-                          onTap: _triggerBackup,
-                          color: Colors.blueAccent,
-                        ),
-                        const SizedBox(height: 10),
-                        _buildActionButton(
-                          icon: Icons.cloud_download,
-                          text: 'Restore Encryption Key',
-                          onTap: _triggerRestore,
-                          color: Colors.greenAccent,
-                        ),
-                        const SizedBox(height: 10),
-                        _buildActionButton(
-                          icon: Icons.delete_forever,
-                          text: 'Delete Key Backup',
-                          onTap: _triggerDeleteBackup,
-                          color: Colors.redAccent,
-                        ),
-                        const SizedBox(height: 30),
-                        */
-                        const Divider(color: Colors.white30),
-                        SizedBox(height: spacing1),
-                        _buildFriendsListSection(
-                          sectionTitleSize: sectionTitleSize,
-                          iconSize1: iconSize1,
-                          bodyTextSize: bodyTextSize,
-                          spacing1: spacing1,
-                          spacing2: spacing2,
-                          spacing3: spacing3,
-                          borderRadius1: borderRadius1,
-                        ),
-                        SizedBox(height: spacing2 * 0.75),
-
-                        const Divider(color: Colors.white30),
-                        SizedBox(height: spacing1),
-
-                        // 🚨 NEW CUSTOMIZATION SECTION 🚨
-                        _buildStyleSection(
-                          sectionTitleSize: sectionTitleSize,
-                          iconSize1: iconSize1,
-                          bodyTextSize: bodyTextSize,
-                          spacing2: spacing2,
-                          spacing3: spacing3,
-                          borderRadius1: borderRadius1,
-                        ),
-                        SizedBox(height: spacing1),
-
-                        const Divider(color: Colors.white30),
-                        SizedBox(height: spacing1),
-
-                        // 🚨 PREMIUM SECTION 🚨
-                        _buildPremiumSection(
-                          sectionTitleSize: sectionTitleSize,
-                          iconSize1: iconSize1,
-                          bodyTextSize: bodyTextSize,
-                          spacing2: spacing2,
-                          spacing3: spacing3,
-                          borderRadius1: borderRadius1,
-                        ),
-                        SizedBox(height: spacing1),
-
-                        const Divider(color: Colors.white30),
-                        SizedBox(height: spacing1),
-
-                        // 🚨 BACKUP SECTION 🚨
-                        _buildBackupSection(
-                          sectionTitleSize: sectionTitleSize,
-                          iconSize1: iconSize1,
-                          bodyTextSize: bodyTextSize,
-                          spacing2: spacing2,
-                          spacing3: spacing3,
-                          borderRadius1: borderRadius1,
-                        ),
-                        SizedBox(height: spacing1),
-
-                        const Divider(color: Colors.white30),
-                        SizedBox(height: spacing1),
-
-                        // 🚨 CALL SETTINGS SECTION 🚨
-                        _buildCallSettingsSection(
-                          sectionTitleSize: sectionTitleSize,
-                          usernameSize: usernameSize,
-                          spacing2: spacing2,
-                          spacing3: spacing3,
-                        ),
-                        SizedBox(height: spacing1),
-
-                        const Divider(color: Colors.white30),
-                        SizedBox(height: spacing1),
-
-                        // 🚨 ABOUT SECTION 🚨
-                        _buildAboutSection(
-                          sectionTitleSize: sectionTitleSize,
-                          iconSize1: iconSize1,
-                          bodyTextSize: bodyTextSize,
-                          spacing2: spacing2,
-                          spacing3: spacing3,
-                          borderRadius1: borderRadius1,
-                        ),
-                        SizedBox(height: spacing1),
-
-                        const Divider(color: Colors.white30),
-                        SizedBox(height: spacing1),
-
-                        // 🚨 DELETE ACCOUNT SECTION 🚨
-                        // TODO: Delete Account - Disabled temporarily due to cascade issues
-                        // Needs proper strategy for handling user data deletion without affecting other users
-                        // _buildActionButton(
-                        //   icon: Icons.delete_forever_outlined,
-                        //   text: 'Delete Account',
-                        //   onTap: () => _showDeleteAccountDialog(context),
-                        //   color: Colors.red.shade700,
-                        //   buttonHeight: (screenHeight * 0.065).clamp(45.0, 60.0),
-                        //   borderRadius: borderRadius1 * 0.75,
-                        // ),
-                        //
-                        // SizedBox(height: spacing2),
-
-                        const Divider(color: Colors.white30),
-                        SizedBox(height: spacing1),
-
-                        // Logout (keeps data)
-                        _buildActionButton(
-                          icon: Icons.logout,
-                          text: 'Logout',
-                          onTap: () => _showLogoutDialog(context),
-                          color: Colors.orange,
-                          buttonHeight: (screenHeight * 0.065).clamp(45.0, 60.0),
-                          borderRadius: borderRadius1 * 0.75,
-                        ),
-
-                        SizedBox(height: spacing2),
-
-                        // Logout & Clear All Data
-                        _buildActionButton(
-                          icon: Icons.delete_forever,
-                          text: 'Logout & Clear All Data',
-                          onTap: () => _showLogoutWithClearDataDialog(context),
-                          color: Colors.redAccent,
-                          buttonHeight: (screenHeight * 0.065).clamp(45.0, 60.0),
-                          borderRadius: borderRadius1 * 0.75,
-                        ),
-                      ],
-                    ),
+                      ),
+                      const SizedBox(height: 13),
+                      Text(
+                        _displayNameController.text.trim().isEmpty
+                            ? _displayName ?? 'Your name'
+                            : _displayNameController.text.trim(),
+                        style: c.text(17, bold: true),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '@${_username ?? '…'}',
+                        style: c.text(11).copyWith(color: c.blue),
+                      ),
+                    ],
                   ),
                 ),
-              ),
+                const SizedBox(height: 23),
+                Divider(height: 1, color: c.line),
+                const SizedBox(height: 20),
+                Text(
+                  'DISPLAY NAME',
+                  style: c.text(9, muted: true).copyWith(letterSpacing: 1.1),
+                ),
+                const SizedBox(height: 7),
+                TextField(
+                  controller: _displayNameController,
+                  enabled: !saving,
+                  style: c.text(14),
+                  decoration: c.field('Your display name'),
+                  onChanged: (_) => updateSheet(() => error = null),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'The name your friends see in conversations.',
+                  style: c.text(10, muted: true),
+                ),
+                const SizedBox(height: 20),
+                identity(
+                  Icons.alternate_email,
+                  'USERNAME',
+                  '@${_username ?? '…'}',
+                ),
+                identity(
+                  Icons.mail_outline,
+                  'ACCOUNT EMAIL',
+                  _currentUser?.email ?? 'No email',
+                ),
+                const SizedBox(height: 17),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.lock_outline, size: 13, color: c.muted),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text(
+                        'Your email is shown here for your account reference.',
+                        style: c.text(10, muted: true).copyWith(height: 1.7),
+                      ),
+                    ),
+                  ],
+                ),
+                if (error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Text(
+                      error!,
+                      style: c
+                          .text(11)
+                          .copyWith(color: const Color(0xFFBF6974)),
+                    ),
+                  ),
+                const SizedBox(height: 18),
+                SizedBox(
+                  width: double.infinity,
+                  child: NotesButton(
+                    label: saving ? 'Saving…' : 'Save changes',
+                    primary: true,
+                    onPressed: saving || photoBusy
+                        ? null
+                        : () async {
+                            final name = _displayNameController.text.trim();
+                            if (name.isEmpty) {
+                              updateSheet(
+                                () => error = 'Display name cannot be empty.',
+                              );
+                              return;
+                            }
+                            updateSheet(() {
+                              saving = true;
+                              error = null;
+                            });
+                            try {
+                              final user = FirebaseAuth.instance.currentUser;
+                              if (user == null)
+                                throw StateError('Sign in required');
+                              final token = await user.getIdToken();
+                              final response = await http.post(
+                                Uri.parse(
+                                  '${AppConfig.baseUrl}/profile/displayname/update',
+                                ),
+                                headers: {
+                                  'Content-Type': 'application/json',
+                                  'Authorization': 'Bearer $token',
+                                },
+                                body: json.encode({'displayName': name}),
+                              );
+                              if (response.statusCode != 200)
+                                throw StateError('Update failed');
+                              if (mounted) setState(() => _displayName = name);
+                              if (ctx.mounted) Navigator.pop(ctx);
+                            } catch (_) {
+                              if (ctx.mounted)
+                                updateSheet(
+                                  () => error =
+                                      'Could not save your name. Please try again.',
+                                );
+                            } finally {
+                              if (ctx.mounted)
+                                updateSheet(() => saving = false);
+                            }
+                          },
+                  ),
+                ),
+              ],
             ),
-          ),
-        ),
+          );
+        },
       ),
-      )
     );
   }
 
+  Widget _opaqueAvatar(NotesColors c, double size) {
+    final name = _displayName ?? _currentUser?.displayName ?? '';
+    final initials = name
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((s) => s.isNotEmpty)
+        .take(2)
+        .map((s) => s.characters.first.toUpperCase())
+        .join();
+    final fallback = Center(
+      child: Text(
+        initials.isEmpty ? '?' : initials,
+        style: c.text(size > 50 ? 25 : 16),
+      ),
+    );
+    return Container(
+      width: size,
+      height: size,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: c.soft,
+        border: Border.all(color: Colors.black, width: 1.5),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(1.5),
+        child: ClipOval(
+          child: _avatarUrl?.isNotEmpty == true
+              ? CachedNetworkImage(
+                  imageUrl: _avatarUrl!,
+                  fit: BoxFit.cover,
+                  placeholder: (_, __) => fallback,
+                  errorWidget: (_, __, ___) => fallback,
+                )
+              : fallback,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _opaqueLogout(bool clearData) async {
+    bool acknowledged = false;
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (ctx, updateSheet) {
+          final c = NotesColors(ctx);
+          return NotesSheet(
+            title: clearData ? 'Clear local data & log out?' : 'Log out?',
+            description: clearData
+                ? 'This removes the app’s saved data from this device.'
+                : 'Your local data will stay on this device.',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  clearData
+                      ? 'Make sure you have a usable backup before continuing. This does not delete your Opaque account.'
+                      : 'You’ll return to the sign-in screen. Choose “Log out & clear local data” instead if you want to remove this device’s saved data.',
+                  style: c.text(12, muted: true).copyWith(height: 1.8),
+                ),
+                if (clearData) ...[
+                  TextButton(
+                    onPressed: () => Navigator.push(
+                      ctx,
+                      MaterialPageRoute(
+                        builder: (_) => const BackupManagementScreen(),
+                      ),
+                    ),
+                    child: Text(
+                      'Review Backup & Restore',
+                      style: c.text(12).copyWith(color: c.blue),
+                    ),
+                  ),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    activeColor: const Color(0xFF507FC3),
+                    value: acknowledged,
+                    onChanged: (v) =>
+                        updateSheet(() => acknowledged = v ?? false),
+                    title: Text(
+                      'I understand that local messages and saved data will be removed.',
+                      style: c.text(11),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Expanded(
+                      child: NotesButton(
+                        label: 'Cancel',
+                        onPressed: () => Navigator.pop(ctx, false),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: NotesButton(
+                        label: clearData ? 'Clear & log out' : 'Log out',
+                        primary: true,
+                        danger: clearData,
+                        onPressed: clearData && !acknowledged
+                            ? null
+                            : () => Navigator.pop(ctx, true),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+    if (mounted && confirmed == true)
+      await _performLogout(clearData: clearData);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    context.watch<UserSettingsProvider>();
+    final c = NotesColors(context);
+    Widget label(String text) => Padding(
+      padding: const EdgeInsets.only(top: 22, bottom: 3),
+      child: Text(
+        text,
+        style: c.text(9, muted: true).copyWith(letterSpacing: 1.3),
+      ),
+    );
+    Widget row(
+      IconData icon,
+      String title,
+      String subtitle,
+      VoidCallback action, {
+      bool danger = false,
+    }) => InkWell(
+      onTap: action,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: c.line)),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, size: 17, color: c.muted),
+            const SizedBox(width: 11),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: c
+                        .text(12)
+                        .copyWith(
+                          color: danger ? const Color(0xFFBF6974) : c.ink,
+                        ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    subtitle,
+                    style: c.text(10, muted: true).copyWith(height: 1.6),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Icon(Icons.chevron_right, size: 15, color: c.muted),
+          ],
+        ),
+      ),
+    );
+    return CallAwareScreen(
+      screenName: 'SettingsScreen',
+      child: Scaffold(
+        backgroundColor: c.surface,
+        appBar: const BackupHeader(),
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(22, 22, 22, 24),
+            children: [
+              Text(
+                'Settings',
+                style: c.text(22, bold: true).copyWith(letterSpacing: -.6),
+              ),
+              const SizedBox(height: 5),
+              Text(
+                'Your account, privacy and preferences.',
+                style: c.text(12, muted: true),
+              ),
+              InkWell(
+                onTap: _showOpaqueProfile,
+                child: Container(
+                  padding: const EdgeInsets.only(top: 23, bottom: 21),
+                  decoration: BoxDecoration(
+                    border: Border(bottom: BorderSide(color: c.line)),
+                  ),
+                  child: Row(
+                    children: [
+                      _opaqueAvatar(c, 48),
+                      const SizedBox(width: 13),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _displayName ??
+                                  _currentUser?.displayName ??
+                                  'Your profile',
+                              style: c.text(15, bold: true),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '@${_username ?? '…'}',
+                              style: c.text(11, muted: true),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Icon(Icons.chevron_right, size: 15, color: c.muted),
+                    ],
+                  ),
+                ),
+              ),
+              label('PREFERENCES'),
+              row(
+                Icons.palette_outlined,
+                'Style',
+                'Theme, message shapes and call layout',
+                _navigateToStyle,
+              ),
+              row(
+                Icons.picture_in_picture_alt_outlined,
+                'Floating call overlay',
+                'Manage display-over-other-apps permission',
+                () => OverlayPermissionHelper.requestPermission(context),
+              ),
+              label('BACKUP & RESTORE'),
+              row(
+                Icons.folder_outlined,
+                'Backup & restore',
+                'Keep a copy of your conversations',
+                _navigateToBackupManagement,
+              ),
+              label('HELP'),
+              row(
+                Icons.menu_book_outlined,
+                'How Opaque works',
+                'A quick guide to getting started',
+                _navigateToTutorial,
+              ),
+              row(
+                Icons.info_outline,
+                'About Opaque',
+                'Learn more about the app',
+                _navigateToAbout,
+              ),
+              label('ACCOUNT'),
+              row(
+                Icons.logout,
+                'Log out',
+                'Keep your local data on this device',
+                () => _opaqueLogout(false),
+              ),
+              row(
+                Icons.delete_outline,
+                'Log out & clear local data',
+                'Remove local data from this device',
+                () => _opaqueLogout(true),
+                danger: true,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Clearing data affects this device. It does not delete your account.',
+                style: c.text(10, muted: true).copyWith(height: 1.7),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 25, bottom: 6),
+                child: Text(
+                  'PRIVATE CONVERSATIONS. PROTECTED BY DESIGN.',
+                  textAlign: TextAlign.center,
+                  style: c
+                      .text(9, muted: true)
+                      .copyWith(letterSpacing: .6, height: 1.7),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _buildBackupSection({
     required double sectionTitleSize,
@@ -866,12 +1025,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           child: Row(
             children: [
-              Icon(Icons.info_outline, color: Colors.cyanAccent, size: iconSize1),
+              Icon(
+                Icons.info_outline,
+                color: Colors.cyanAccent,
+                size: iconSize1,
+              ),
               SizedBox(width: spacing3),
               Expanded(
                 child: Text(
                   'Create, restore, and manage your encrypted backups',
-                  style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: bodyTextSize,
+                  ),
                 ),
               ),
             ],
@@ -885,7 +1051,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           text: 'Manage Backups',
           onTap: _navigateToBackupManagement,
           color: Colors.blueAccent,
-          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
+          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(
+            45.0,
+            60.0,
+          ),
           borderRadius: borderRadius1 * 0.75,
         ),
       ],
@@ -895,9 +1064,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _navigateToBackupManagement() {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => const BackupManagementScreen(),
-      ),
+      MaterialPageRoute(builder: (context) => const BackupManagementScreen()),
     );
   }
 
@@ -937,7 +1104,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Expanded(
                 child: Text(
                   'Personalize your app appearance and UI',
-                  style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: bodyTextSize,
+                  ),
                 ),
               ),
             ],
@@ -951,7 +1121,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           text: 'Style',
           onTap: _navigateToStyle,
           color: Colors.purpleAccent,
-          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
+          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(
+            45.0,
+            60.0,
+          ),
           borderRadius: borderRadius1 * 0.75,
         ),
       ],
@@ -961,9 +1134,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _navigateToStyle() {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => const StyleScreen(),
-      ),
+      MaterialPageRoute(builder: (context) => const StyleScreen()),
     );
   }
 
@@ -1050,7 +1221,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Expanded(
                 child: Text(
                   'Premium features launching soon with live payments',
-                  style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: bodyTextSize,
+                  ),
                 ),
               ),
             ],
@@ -1063,7 +1237,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           icon: Icons.lock,
           text: 'Coming Soon',
           color: Colors.grey,
-          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
+          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(
+            45.0,
+            60.0,
+          ),
           borderRadius: borderRadius1 * 0.75,
         ),
         // ==================== END COMING SOON VERSION ====================
@@ -1074,9 +1251,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _navigateToPremium() {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => const PremiumPlansScreen(),
-      ),
+      MaterialPageRoute(builder: (context) => const PremiumPlansScreen()),
     );
   }
 
@@ -1111,12 +1286,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           child: Row(
             children: [
-              Icon(Icons.info_outline, color: Colors.cyanAccent, size: iconSize1),
+              Icon(
+                Icons.info_outline,
+                color: Colors.cyanAccent,
+                size: iconSize1,
+              ),
               SizedBox(width: spacing3),
               Expanded(
                 child: Text(
                   'Learn how Zarq works, version info, and legal',
-                  style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: bodyTextSize,
+                  ),
                 ),
               ),
             ],
@@ -1130,7 +1312,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           text: 'How Zarq Works',
           onTap: _navigateToTutorial,
           color: Colors.purpleAccent,
-          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
+          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(
+            45.0,
+            60.0,
+          ),
           borderRadius: borderRadius1 * 0.75,
         ),
         SizedBox(height: spacing2 * 0.75),
@@ -1141,7 +1326,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           text: 'About',
           onTap: _navigateToAbout,
           color: Colors.cyanAccent,
-          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
+          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(
+            45.0,
+            60.0,
+          ),
           borderRadius: borderRadius1 * 0.75,
         ),
       ],
@@ -1151,18 +1339,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _navigateToTutorial() {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => const TutorialScreen(),
-      ),
+      MaterialPageRoute(builder: (context) => const TutorialScreen()),
     );
   }
 
   void _navigateToAbout() {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => const AboutScreen(),
-      ),
+      MaterialPageRoute(builder: (context) => const AboutScreen()),
     );
   }
 
@@ -1173,7 +1357,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (BuildContext dialogContext) {
         return AlertDialog(
           backgroundColor: Colors.grey[900],
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
           title: const Row(
             children: [
               Icon(Icons.logout, color: Colors.orange),
@@ -1214,7 +1400,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (BuildContext dialogContext) {
         return AlertDialog(
           backgroundColor: Colors.grey[900],
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
           title: const Row(
             children: [
               Icon(Icons.warning, color: Colors.redAccent),
@@ -1298,13 +1486,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
 
       // 4. Disconnect WebSocket (always)
-      final websocketService = Provider.of<WebSocketService>(context, listen: false);
+      final websocketService = Provider.of<WebSocketService>(
+        context,
+        listen: false,
+      );
       websocketService.disconnect();
 
       // 5. Firebase logout (always)
       await FirebaseAuth.instance.signOut();
       // print("[SettingsScreen] Firebase logout completed");
-
     } catch (e) {
       // print('[SettingsScreen] Error during logout: $e');
       // Continue with navigation even if some cleanup fails
@@ -1313,9 +1503,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // 6. Navigate back to the login screen
     if (mounted) {
       Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(
-          builder: (context) => const LoginScreen(),
-        ),
+        MaterialPageRoute(builder: (context) => const LoginScreen()),
         (route) => false,
       );
     }
@@ -1323,7 +1511,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // Show delete account dialog with strong confirmation
   void _showDeleteAccountDialog(BuildContext context) {
-    final TextEditingController confirmationController = TextEditingController();
+    final TextEditingController confirmationController =
+        TextEditingController();
     const String confirmationText = "DELETE";
     bool isDeleting = false;
 
@@ -1335,10 +1524,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           builder: (context, setState) {
             return AlertDialog(
               backgroundColor: Colors.grey[900],
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
               title: const Row(
                 children: [
-                  Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 32),
+                  Icon(
+                    Icons.warning_amber_rounded,
+                    color: Colors.redAccent,
+                    size: 32,
+                  ),
                   SizedBox(width: 10),
                   Expanded(
                     child: Text(
@@ -1379,13 +1574,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const SizedBox(height: 20),
                     const Text(
                       'To confirm, type DELETE below:',
-                      style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                     const SizedBox(height: 12),
                     TextField(
                       controller: confirmationController,
                       enabled: !isDeleting,
-                      style: const TextStyle(color: Colors.white, fontSize: 16, letterSpacing: 2),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        letterSpacing: 2,
+                      ),
                       decoration: InputDecoration(
                         hintText: 'Type DELETE',
                         hintStyle: TextStyle(color: Colors.grey[600]),
@@ -1401,7 +1604,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: const BorderSide(color: Colors.redAccent, width: 2),
+                          borderSide: const BorderSide(
+                            color: Colors.redAccent,
+                            width: 2,
+                          ),
                         ),
                       ),
                       onChanged: (value) {
@@ -1413,10 +1619,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               actions: [
                 TextButton(
-                  onPressed: isDeleting ? null : () {
-                    confirmationController.dispose();
-                    Navigator.of(dialogContext).pop();
-                  },
+                  onPressed: isDeleting
+                      ? null
+                      : () {
+                          confirmationController.dispose();
+                          Navigator.of(dialogContext).pop();
+                        },
                   child: Text(
                     'Cancel',
                     style: TextStyle(
@@ -1426,7 +1634,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
                 ElevatedButton(
-                  onPressed: (isDeleting || confirmationController.text != confirmationText)
+                  onPressed:
+                      (isDeleting ||
+                          confirmationController.text != confirmationText)
                       ? null
                       : () async {
                           setState(() {
@@ -1454,7 +1664,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           }
                         },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: (confirmationController.text == confirmationText && !isDeleting)
+                    backgroundColor:
+                        (confirmationController.text == confirmationText &&
+                            !isDeleting)
                         ? Colors.redAccent
                         : Colors.grey[800],
                     foregroundColor: Colors.white,
@@ -1467,10 +1679,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           height: 20,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              Colors.white,
+                            ),
                           ),
                         )
-                      : const Text('Delete Forever', style: TextStyle(fontSize: 16)),
+                      : const Text(
+                          'Delete Forever',
+                          style: TextStyle(fontSize: 16),
+                        ),
                 ),
               ],
             );
@@ -1512,7 +1729,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         await dbService.resetDatabase();
 
         // Disconnect WebSocket
-        final websocketService = Provider.of<WebSocketService>(context, listen: false);
+        final websocketService = Provider.of<WebSocketService>(
+          context,
+          listen: false,
+        );
         websocketService.disconnect();
 
         // Sign out from Firebase
@@ -1521,9 +1741,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // Navigate to login screen
         if (mounted) {
           Navigator.of(context).pushAndRemoveUntil(
-            MaterialPageRoute(
-              builder: (context) => const LoginScreen(),
-            ),
+            MaterialPageRoute(builder: (context) => const LoginScreen()),
             (route) => false,
           );
         }
@@ -1555,10 +1773,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         SizedBox(height: spacing3 * 1.25),
         Text(
           "Configure call overlay and permissions",
-          style: TextStyle(
-            color: Colors.white70,
-            fontSize: usernameSize,
-          ),
+          style: TextStyle(color: Colors.white70, fontSize: usernameSize),
         ),
         SizedBox(height: spacing2 * 0.75),
 
@@ -1570,8 +1785,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             await OverlayPermissionHelper.requestPermission(context);
           },
           color: Colors.tealAccent,
-          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
-          borderRadius: (MediaQuery.of(context).size.width * 0.05).clamp(16.0, 24.0) * 0.75,
+          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(
+            45.0,
+            60.0,
+          ),
+          borderRadius:
+              (MediaQuery.of(context).size.width * 0.05).clamp(16.0, 24.0) *
+              0.75,
         ),
       ],
     );
@@ -1596,7 +1816,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: _toggleFriendsList,
             borderRadius: BorderRadius.circular(borderRadius1 * 0.75),
             child: Container(
-              padding: EdgeInsets.symmetric(horizontal: spacing2, vertical: spacing3),
+              padding: EdgeInsets.symmetric(
+                horizontal: spacing2,
+                vertical: spacing3,
+              ),
               child: Row(
                 children: [
                   Icon(Icons.people, color: Colors.cyanAccent, size: iconSize1),
@@ -1618,7 +1841,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       decoration: BoxDecoration(
                         color: Colors.cyanAccent.withOpacity(0.3),
-                        borderRadius: BorderRadius.circular(borderRadius1 * 0.5),
+                        borderRadius: BorderRadius.circular(
+                          borderRadius1 * 0.5,
+                        ),
                       ),
                       child: Text(
                         _friendsList.length.toString(),
@@ -1661,12 +1886,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     child: Center(
                       child: Text(
                         "You haven't added any friends yet.",
-                        style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: bodyTextSize,
+                        ),
                       ),
                     ),
                   )
                 : ConstrainedBox(
-                    constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.25),
+                    constraints: BoxConstraints(
+                      maxHeight: MediaQuery.of(context).size.height * 0.25,
+                    ),
                     child: ListView.builder(
                       shrinkWrap: true,
                       itemCount: _friendsList.length,
@@ -1685,10 +1915,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           leading: hasImage
                               ? CachedNetworkImage(
                                   imageUrl: friend.avatarUrl!,
-                                  imageBuilder: (context, imageProvider) => CircleAvatar(
-                                    backgroundImage: imageProvider,
-                                    backgroundColor: Colors.transparent,
-                                  ),
+                                  imageBuilder: (context, imageProvider) =>
+                                      CircleAvatar(
+                                        backgroundImage: imageProvider,
+                                        backgroundColor: Colors.transparent,
+                                      ),
                                   placeholder: (context, url) => CircleAvatar(
                                     backgroundColor: color,
                                     child: SizedBox(
@@ -1696,17 +1927,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       height: iconSize1,
                                       child: const CircularProgressIndicator(
                                         strokeWidth: 2,
-                                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                        valueColor:
+                                            AlwaysStoppedAnimation<Color>(
+                                              Colors.white,
+                                            ),
                                       ),
                                     ),
                                   ),
-                                  errorWidget: (context, url, error) => CircleAvatar(
-                                    backgroundColor: color,
-                                    child: Text(
-                                      initial,
-                                      style: const TextStyle(color: Colors.white),
-                                    ),
-                                  ),
+                                  errorWidget: (context, url, error) =>
+                                      CircleAvatar(
+                                        backgroundColor: color,
+                                        child: Text(
+                                          initial,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                      ),
                                 )
                               : CircleAvatar(
                                   backgroundColor: color,
@@ -1717,7 +1954,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 ),
                           title: Text(
                             friend.username,
-                            style: TextStyle(color: Colors.white, fontSize: bodyTextSize),
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: bodyTextSize,
+                            ),
                           ),
                         );
                       },
@@ -1737,8 +1977,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required double buttonHeight,
     required double borderRadius,
   }) {
-    final iconSize = (MediaQuery.of(context).size.width * 0.05).clamp(18.0, 24.0);
-    final textSize = (MediaQuery.of(context).size.width * 0.04).clamp(14.0, 18.0);
+    final iconSize = (MediaQuery.of(context).size.width * 0.05).clamp(
+      18.0,
+      24.0,
+    );
+    final textSize = (MediaQuery.of(context).size.width * 0.04).clamp(
+      14.0,
+      18.0,
+    );
 
     return ElevatedButton.icon(
       onPressed: onTap,
@@ -1754,7 +2000,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       style: ElevatedButton.styleFrom(
         backgroundColor: color,
         minimumSize: Size(double.infinity, buttonHeight),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(borderRadius)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(borderRadius),
+        ),
         shadowColor: color,
         elevation: 8,
       ),
@@ -1768,8 +2016,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required double buttonHeight,
     required double borderRadius,
   }) {
-    final iconSize = (MediaQuery.of(context).size.width * 0.05).clamp(18.0, 24.0);
-    final textSize = (MediaQuery.of(context).size.width * 0.04).clamp(14.0, 18.0);
+    final iconSize = (MediaQuery.of(context).size.width * 0.05).clamp(
+      18.0,
+      24.0,
+    );
+    final textSize = (MediaQuery.of(context).size.width * 0.04).clamp(
+      14.0,
+      18.0,
+    );
 
     return ElevatedButton.icon(
       onPressed: null, // Disabled
@@ -1786,7 +2040,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         backgroundColor: color.withOpacity(0.3),
         disabledBackgroundColor: color.withOpacity(0.3),
         minimumSize: Size(double.infinity, buttonHeight),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(borderRadius)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(borderRadius),
+        ),
         elevation: 0,
       ),
     );
