@@ -12,6 +12,7 @@ import 'services/user_settings_provider.dart';
 
 import 'chat_screen.dart';
 import 'widgets/call_aware_screen.dart';
+import 'package:zarq_messenger/app_config.dart';
 
 // This Friend model should be consistent with the one in your other files.
 class Friend {
@@ -204,7 +205,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
     final token = await user.getIdToken();
 
     try {
-      final url = Uri.parse('https://api.zarqmessenger.com/friends/list');
+      final url = Uri.parse('${AppConfig.baseUrl}/friends/list');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -382,7 +383,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
     final token = await user.getIdToken();
 
     try {
-      final url = Uri.parse('https://api.zarqmessenger.com/conversations/create-group');
+      final url = Uri.parse('${AppConfig.baseUrl}/conversations/create-group');
       final response = await http.post(
         url,
         headers: {

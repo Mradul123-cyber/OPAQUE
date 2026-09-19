@@ -14,9 +14,10 @@ import 'package:path/path.dart' as path;
 import 'package:pointycastle/export.dart';
 import 'package:crypto/crypto.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
+import 'package:zarq_messenger/app_config.dart';
 
 class FileService {
-  static const String baseUrl = 'https://api.zarqmessenger.com';
+  static const String baseUrl = '${AppConfig.baseUrl}';
   static const int maxImageSize = 1920; // Max width/height for images
   static const int imageQuality = 85; // JPEG quality (0-100)
   static const int maxCompressedVideoSize = 300 * 1024 * 1024; // 300MB max COMPRESSED video size

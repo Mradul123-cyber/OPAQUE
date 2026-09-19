@@ -348,7 +348,7 @@ class ZarqNotificationService : FirebaseMessagingService() {
         // Launch coroutine for network call
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val url = URL("https://api.zarqmessenger.com/v1/fcm/token")
+                val url = URL("\${AppConfig.BASE_URL}/v1/fcm/token")
                 val connection = url.openConnection() as HttpURLConnection
 
                 // Your Go server expects: {"fcm_token": "...", "device_id": 1, "platform": "android"}

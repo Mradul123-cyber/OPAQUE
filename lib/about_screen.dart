@@ -109,7 +109,7 @@ class AboutScreen extends StatelessWidget {
                           _buildSection(
                             icon: Icons.info_outline,
                             title: 'About Zarq',
-                            content: 'Zarq Messenger is a secure messaging app that puts your privacy first. Chat with friends, create groups, and share moments with complete peace of mind.',
+                            content: 'Zarq Messenger is a secure messaging app that puts your privacy first. Chat with friends and create groups with complete peace of mind.',
                             iconSize: iconSize,
                             sectionTitleSize: sectionTitleSize,
                             bodyTextSize: bodyTextSize,

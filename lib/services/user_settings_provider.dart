@@ -11,15 +11,12 @@ class UserSettingsProvider with ChangeNotifier {
   // Store the full settings object
   UserSettings _settings = UserSettings(
     bubbleStyle: 'default_rounded',
-    myBubbleColorStart: '667EEA',
-    myBubbleColorEnd: '764BA2',
-    homeScreenStyle: 'default',
+    myBubbleColorStart: '719CDD',
+    myBubbleColorEnd: '507FC3',
+    isDarkMode: false,
     groupScreenStyle: 'static',
     cardBubbleColor: 'blue',
     encryptionAnimationStyle: 'static',
-    findFriendsScreenStyle: 'default',
-    friendRequestsScreenStyle: 'default',
-    notesScreenStyle: 'default',
   );
 
   UserSettings get currentSettings => _settings;
@@ -28,13 +25,10 @@ class UserSettingsProvider with ChangeNotifier {
   String get colorEndHex => _settings.myBubbleColorEnd;
   String get bubbleColorStart => _settings.myBubbleColorStart;
   String get bubbleColorEnd => _settings.myBubbleColorEnd;
-  String get homeScreenStyle => _settings.homeScreenStyle;
+  bool get isDarkMode => _settings.isDarkMode;
   String get groupScreenStyle => _settings.groupScreenStyle;
   String get cardBubbleColor => _settings.cardBubbleColor;
   String get encryptionAnimationStyle => _settings.encryptionAnimationStyle;
-  String get findFriendsScreenStyle => _settings.findFriendsScreenStyle;
-  String get friendRequestsScreenStyle => _settings.friendRequestsScreenStyle;
-  String get notesScreenStyle => _settings.notesScreenStyle;
 
   UserSettingsProvider() {
     _loadInitialStyle();
@@ -50,31 +44,26 @@ class UserSettingsProvider with ChangeNotifier {
     }
   }
 
-  // Unified save method for style, colors, and home screen
+  // Unified save method for style, colors, and global theme
   Future<void> saveSettings({
     String? styleKey,
     String? colorStart,
     String? colorEnd,
-    String? homeScreenStyle,
+    bool? isDarkMode,
     String? groupScreenStyle,
     String? cardBubbleColor,
     String? encryptionAnimationStyle,
-    String? findFriendsScreenStyle,
-    String? friendRequestsScreenStyle,
-    String? notesScreenStyle,
   }) async {
     // Update local state
     _settings = UserSettings(
       bubbleStyle: styleKey ?? _settings.bubbleStyle,
       myBubbleColorStart: colorStart ?? _settings.myBubbleColorStart,
       myBubbleColorEnd: colorEnd ?? _settings.myBubbleColorEnd,
-      homeScreenStyle: homeScreenStyle ?? _settings.homeScreenStyle,
+      isDarkMode: isDarkMode ?? _settings.isDarkMode,
       groupScreenStyle: groupScreenStyle ?? _settings.groupScreenStyle,
       cardBubbleColor: cardBubbleColor ?? _settings.cardBubbleColor,
-      encryptionAnimationStyle: encryptionAnimationStyle ?? _settings.encryptionAnimationStyle,
-      findFriendsScreenStyle: findFriendsScreenStyle ?? _settings.findFriendsScreenStyle,
-      friendRequestsScreenStyle: friendRequestsScreenStyle ?? _settings.friendRequestsScreenStyle,
-      notesScreenStyle: notesScreenStyle ?? _settings.notesScreenStyle,
+      encryptionAnimationStyle:
+          encryptionAnimationStyle ?? _settings.encryptionAnimationStyle,
     );
 
     // Save to local storage (instant, no network call)
@@ -89,15 +78,12 @@ class UserSettingsProvider with ChangeNotifier {
     await _localService.clearSettings();
     _settings = UserSettings(
       bubbleStyle: 'default_rounded',
-      myBubbleColorStart: '667EEA',
-      myBubbleColorEnd: '764BA2',
-      homeScreenStyle: 'default',
+      myBubbleColorStart: '719CDD',
+      myBubbleColorEnd: '507FC3',
+      isDarkMode: false,
       groupScreenStyle: 'static',
       cardBubbleColor: 'blue',
       encryptionAnimationStyle: 'static',
-      findFriendsScreenStyle: 'default',
-      friendRequestsScreenStyle: 'default',
-      notesScreenStyle: 'default',
     );
     notifyListeners();
   }

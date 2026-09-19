@@ -24,10 +24,7 @@ import '../message_model.dart';
 class ShareConversationPickerScreen extends StatefulWidget {
   final SharedContent sharedContent;
 
-  const ShareConversationPickerScreen({
-    super.key,
-    required this.sharedContent,
-  });
+  const ShareConversationPickerScreen({super.key, required this.sharedContent});
 
   @override
   State<ShareConversationPickerScreen> createState() =>
@@ -135,7 +132,10 @@ class _ShareConversationPickerScreenState
 
     try {
       final homeProvider = Provider.of<HomeProvider>(context, listen: false);
-      final websocketService = Provider.of<WebSocketService>(context, listen: false);
+      final websocketService = Provider.of<WebSocketService>(
+        context,
+        listen: false,
+      );
       final dbService = Provider.of<DatabaseService>(context, listen: false);
       final currentUser = FirebaseAuth.instance.currentUser;
 
@@ -150,10 +150,14 @@ class _ShareConversationPickerScreenState
 
       // Get all selected conversations
       final selectedConversations = homeProvider.conversations
-          .where((conv) => _selectedConversationIds.contains(conv.conversationId))
+          .where(
+            (conv) => _selectedConversationIds.contains(conv.conversationId),
+          )
           .toList();
 
-      debugPrint('[SharePicker] Sending to ${selectedConversations.length} conversations');
+      debugPrint(
+        '[SharePicker] Sending to ${selectedConversations.length} conversations',
+      );
 
       int successCount = 0;
       int failCount = 0;
@@ -161,10 +165,16 @@ class _ShareConversationPickerScreenState
       // Send to each conversation
       for (final conversation in selectedConversations) {
         try {
-          await _sendContentToConversation(conversation, currentUser, dbService);
+          await _sendContentToConversation(
+            conversation,
+            currentUser,
+            dbService,
+          );
           successCount++;
         } catch (e) {
-          debugPrint('[SharePicker] Failed to send to ${conversation.chatTitle}: $e');
+          debugPrint(
+            '[SharePicker] Failed to send to ${conversation.chatTitle}: $e',
+          );
           failCount++;
         }
 
@@ -221,13 +231,23 @@ class _ShareConversationPickerScreenState
     switch (sharedContent.type) {
       case 'text':
         if (sharedContent.text != null) {
-          await _sendTextMessage(conversation, sharedContent.text!, currentUser, dbService);
+          await _sendTextMessage(
+            conversation,
+            sharedContent.text!,
+            currentUser,
+            dbService,
+          );
         }
         break;
 
       case 'image':
         if (sharedContent.uri != null) {
-          await _sendImageMessage(conversation, sharedContent.uri!, currentUser, dbService);
+          await _sendImageMessage(
+            conversation,
+            sharedContent.uri!,
+            currentUser,
+            dbService,
+          );
         }
         break;
 
@@ -242,7 +262,12 @@ class _ShareConversationPickerScreenState
 
       case 'video':
         if (sharedContent.uri != null) {
-          await _sendVideoMessage(conversation, sharedContent.uri!, currentUser, dbService);
+          await _sendVideoMessage(
+            conversation,
+            sharedContent.uri!,
+            currentUser,
+            dbService,
+          );
         }
         break;
 
@@ -257,7 +282,12 @@ class _ShareConversationPickerScreenState
 
       case 'file':
         if (sharedContent.uri != null) {
-          await _sendFileMessage(conversation, sharedContent.uri!, currentUser, dbService);
+          await _sendFileMessage(
+            conversation,
+            sharedContent.uri!,
+            currentUser,
+            dbService,
+          );
         }
         break;
 
@@ -448,7 +478,9 @@ class _ShareConversationPickerScreenState
     if (compressedData == null) throw Exception('Compression failed');
 
     // Step 3: Encrypt image
-    final encryptionResult = FileService.encryptImageData(imageData: compressedData);
+    final encryptionResult = FileService.encryptImageData(
+      imageData: compressedData,
+    );
     final encryptedImageData = encryptionResult['encryptedData'] as Uint8List;
     final aesKey = encryptionResult['key'] as Uint8List;
     final aesIv = encryptionResult['iv'] as Uint8List;
@@ -509,7 +541,10 @@ class _ShareConversationPickerScreenState
     final attachmentId = result['attachment_id'] as int;
 
     // Save image locally
-    await FileService.saveImageToPersistentStorage(compressedData, attachmentId);
+    await FileService.saveImageToPersistentStorage(
+      compressedData,
+      attachmentId,
+    );
 
     // Step 5: Save message to database
     final message = Message(
@@ -534,7 +569,9 @@ class _ShareConversationPickerScreenState
       mediaEncryptionType: conversation.isGroup ? 'sender_keys' : 'signal',
       mediaRecipientUid: conversation.isGroup ? null : conversation.partnerUid,
       mediaRecipientDeviceId: conversation.isGroup ? null : recipientDeviceId,
-      mediaGroupId: conversation.isGroup ? conversation.conversationId.toString() : null,
+      mediaGroupId: conversation.isGroup
+          ? conversation.conversationId.toString()
+          : null,
       mediaSenderUid: currentUserUid,
       mediaSenderDeviceId: myDeviceId,
     );
@@ -553,7 +590,9 @@ class _ShareConversationPickerScreenState
     File file;
 
     if (uriString.startsWith('content://')) {
-      debugPrint('[SharePicker] Content URI detected, copying video to temp file...');
+      debugPrint(
+        '[SharePicker] Content URI detected, copying video to temp file...',
+      );
       file = await _copyContentUriToTempFile(uriString);
       debugPrint('[SharePicker] Video copied to: ${file.path}');
     } else {
@@ -637,12 +676,14 @@ class _ShareConversationPickerScreenState
     if (compressedSize > FileService.maxCompressedVideoSize) {
       throw Exception(
         'Video too large after compression: ${(compressedSize / (1024 * 1024)).toStringAsFixed(1)}MB. '
-        'Maximum allowed: ${(FileService.maxCompressedVideoSize / (1024 * 1024)).toStringAsFixed(0)}MB'
+        'Maximum allowed: ${(FileService.maxCompressedVideoSize / (1024 * 1024)).toStringAsFixed(0)}MB',
       );
     }
 
     // Get metadata
-    final metadata = await FileService.getVideoMetadata(compressedVideoFile.path);
+    final metadata = await FileService.getVideoMetadata(
+      compressedVideoFile.path,
+    );
 
     // Read video bytes
     final videoBytes = await compressedVideoFile.readAsBytes();
@@ -734,7 +775,9 @@ class _ShareConversationPickerScreenState
       mediaEncryptionType: conversation.isGroup ? 'sender_keys' : 'signal',
       mediaRecipientUid: conversation.isGroup ? null : conversation.partnerUid,
       mediaRecipientDeviceId: conversation.isGroup ? null : recipientDeviceId,
-      mediaGroupId: conversation.isGroup ? conversation.conversationId.toString() : null,
+      mediaGroupId: conversation.isGroup
+          ? conversation.conversationId.toString()
+          : null,
       mediaSenderUid: currentUserUid,
       mediaSenderDeviceId: myDeviceId,
     );
@@ -758,7 +801,9 @@ class _ShareConversationPickerScreenState
 
       // Use platform channel to read content URI
       const platform = MethodChannel('com.zarq/share');
-      final result = await platform.invokeMethod('readContentUri', {'uri': uriString});
+      final result = await platform.invokeMethod('readContentUri', {
+        'uri': uriString,
+      });
 
       if (result == null || result['data'] == null) {
         throw Exception('Failed to read content URI');
@@ -792,7 +837,7 @@ class _ShareConversationPickerScreenState
     if (fileSize > maxFileSize) {
       throw Exception(
         'File too large: ${(fileSize / (1024 * 1024)).toStringAsFixed(1)}MB. '
-        'Maximum allowed: ${(maxFileSize / (1024 * 1024)).toStringAsFixed(0)}MB'
+        'Maximum allowed: ${(maxFileSize / (1024 * 1024)).toStringAsFixed(0)}MB',
       );
     }
 
@@ -945,19 +990,25 @@ class _ShareConversationPickerScreenState
       mediaEncryptionType: conversation.isGroup ? 'sender_keys' : 'signal',
       mediaRecipientUid: conversation.isGroup ? null : conversation.partnerUid,
       mediaRecipientDeviceId: conversation.isGroup ? null : recipientDeviceId,
-      mediaGroupId: conversation.isGroup ? conversation.conversationId.toString() : null,
+      mediaGroupId: conversation.isGroup
+          ? conversation.conversationId.toString()
+          : null,
       mediaSenderUid: currentUserUid,
       mediaSenderDeviceId: myDeviceId,
     );
 
     await dbService.insertMessage(message);
-    debugPrint('[SharePicker] File "$fileName" sent to ${conversation.chatTitle}');
+    debugPrint(
+      '[SharePicker] File "$fileName" sent to ${conversation.chatTitle}',
+    );
   }
 
   Future<int?> _getRecipientDeviceId(String recipientUid) async {
     try {
       final deviceId = await DeviceService.getActiveDeviceId(recipientUid);
-      debugPrint('[SharePicker] Got active device ID: $deviceId for user $recipientUid');
+      debugPrint(
+        '[SharePicker] Got active device ID: $deviceId for user $recipientUid',
+      );
       return deviceId;
     } catch (e) {
       debugPrint('[SharePicker] Error getting recipient device ID: $e');
@@ -992,7 +1043,9 @@ class _ShareConversationPickerScreenState
       // Write data to temp file
       await tempFile.writeAsBytes(fileData);
 
-      debugPrint('[SharePicker] Copied ${fileData.length} bytes to ${tempFile.path}');
+      debugPrint(
+        '[SharePicker] Copied ${fileData.length} bytes to ${tempFile.path}',
+      );
 
       return tempFile;
     } catch (e) {
@@ -1003,193 +1056,211 @@ class _ShareConversationPickerScreenState
 
   @override
   Widget build(BuildContext context) {
-    debugPrint('📱 [SharePicker] Building screen, selected: ${_selectedConversationIds.length}');
+    debugPrint(
+      '📱 [SharePicker] Building screen, selected: ${_selectedConversationIds.length}',
+    );
 
     return Consumer<UserSettingsProvider>(
       builder: (context, userSettings, child) {
         // Get theme (exact same as HomeScreen)
-        final isDarkTheme = userSettings.homeScreenStyle == 'dark';
+        final isDarkTheme = userSettings.isDarkMode;
 
-    // Responsive sizing (exact same as HomeScreen)
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-    final searchPadding = EdgeInsets.fromLTRB(
-      screenWidth * 0.04,
-      screenHeight * 0.01,
-      screenWidth * 0.04,
-      screenHeight * 0.01,
-    );
-    final searchFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final searchIconSize = (screenWidth * 0.06).clamp(20.0, 26.0);
-    final titleFontSize = (screenWidth * 0.05).clamp(18.0, 24.0);
+        // Responsive sizing (exact same as HomeScreen)
+        final screenWidth = MediaQuery.of(context).size.width;
+        final screenHeight = MediaQuery.of(context).size.height;
+        final searchPadding = EdgeInsets.fromLTRB(
+          screenWidth * 0.04,
+          screenHeight * 0.01,
+          screenWidth * 0.04,
+          screenHeight * 0.01,
+        );
+        final searchFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
+        final searchIconSize = (screenWidth * 0.06).clamp(20.0, 26.0);
+        final titleFontSize = (screenWidth * 0.05).clamp(18.0, 24.0);
 
-    // Theme colors (exact same as HomeScreen)
-    final Color searchBgColor = isDarkTheme ? const Color(0xFF1E1E1E) : const Color(0xFFF0F2F5);
-    final Color searchTextColor = isDarkTheme ? Colors.white : Colors.black87;
-    final Color searchHintColor = isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade500;
-    final Color searchIconColor = isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600;
-    final Color noResultsColor = isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600;
-    final Color textColor = isDarkTheme ? Colors.white : Colors.black87;
-    final Color iconColor = isDarkTheme ? Colors.white : Colors.black87;
-    final Color appBarBgColor = isDarkTheme ? const Color(0xFF0a1128) : Colors.white;
+        // Theme colors (exact same as HomeScreen)
+        final Color searchBgColor = isDarkTheme
+            ? const Color(0xFF1E1E1E)
+            : const Color(0xFFF0F2F5);
+        final Color searchTextColor = isDarkTheme
+            ? Colors.white
+            : Colors.black87;
+        final Color searchHintColor = isDarkTheme
+            ? Colors.grey.shade400
+            : Colors.grey.shade500;
+        final Color searchIconColor = isDarkTheme
+            ? Colors.grey.shade400
+            : Colors.grey.shade600;
+        final Color noResultsColor = isDarkTheme
+            ? Colors.grey.shade400
+            : Colors.grey.shade600;
+        final Color textColor = isDarkTheme ? Colors.white : Colors.black87;
+        final Color iconColor = isDarkTheme ? Colors.white : Colors.black87;
+        final Color appBarBgColor = isDarkTheme
+            ? const Color(0xFF0a1128)
+            : Colors.white;
 
-    return Scaffold(
-      backgroundColor: isDarkTheme ? const Color(0xFF121212) : Colors.white,
-      appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(kToolbarHeight),
-        child: Container(
-          decoration: BoxDecoration(
-            color: appBarBgColor,
-          ),
-          child: AppBar(
-            backgroundColor: Colors.transparent,
-            elevation: 0,
-            centerTitle: true,
-            titleTextStyle: Theme.of(context).textTheme.titleLarge?.copyWith(
-              color: textColor,
-              fontWeight: FontWeight.bold,
-              fontSize: titleFontSize,
-            ),
-            iconTheme: IconThemeData(color: iconColor),
-            title: Column(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  _getShareDescription(),
-                  style: TextStyle(
-                    color: textColor,
-                    fontWeight: FontWeight.bold,
-                    fontSize: titleFontSize,
-                  ),
-                ),
-                if (_selectedConversationIds.isNotEmpty)
-                  Text(
-                    '${_selectedConversationIds.length} selected',
-                    style: TextStyle(
-                      fontSize: titleFontSize * 0.5,
-                      fontWeight: FontWeight.normal,
-                      color: textColor.withOpacity(0.7),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ),
-      ),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Search bar (exact same styling as HomeScreen)
-          Padding(
-            padding: searchPadding,
+        return Scaffold(
+          backgroundColor: isDarkTheme ? const Color(0xFF121212) : Colors.white,
+          appBar: PreferredSize(
+            preferredSize: const Size.fromHeight(kToolbarHeight),
             child: Container(
-              decoration: BoxDecoration(
-                color: searchBgColor,
-                borderRadius: BorderRadius.circular(10.0),
-                border: Border.all(color: Colors.transparent),
-              ),
-              child: TextField(
-                controller: _searchController,
-                style: TextStyle(
-                  color: searchTextColor,
-                  fontSize: searchFontSize,
-                ),
-                decoration: InputDecoration(
-                  hintText: 'Search chats...',
-                  hintStyle: TextStyle(
-                    color: searchHintColor,
-                    fontSize: searchFontSize,
-                  ),
-                  prefixIcon: Icon(
-                    Icons.search,
-                    color: searchIconColor,
-                    size: searchIconSize,
-                  ),
-                  suffixIcon: _isSearching
-                      ? IconButton(
-                          icon: Icon(
-                            Icons.clear,
-                            color: searchIconColor,
-                            size: searchIconSize,
-                          ),
-                          onPressed: () {
-                            _searchController.clear();
-                            FocusScope.of(context).unfocus();
-                          },
-                        )
-                      : null,
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: screenWidth * 0.05,
-                    vertical: screenHeight * 0.017,
-                  ),
+              decoration: BoxDecoration(color: appBarBgColor),
+              child: AppBar(
+                backgroundColor: Colors.transparent,
+                elevation: 0,
+                centerTitle: true,
+                titleTextStyle: Theme.of(context).textTheme.titleLarge
+                    ?.copyWith(
+                      color: textColor,
+                      fontWeight: FontWeight.bold,
+                      fontSize: titleFontSize,
+                    ),
+                iconTheme: IconThemeData(color: iconColor),
+                title: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _getShareDescription(),
+                      style: TextStyle(
+                        color: textColor,
+                        fontWeight: FontWeight.bold,
+                        fontSize: titleFontSize,
+                      ),
+                    ),
+                    if (_selectedConversationIds.isNotEmpty)
+                      Text(
+                        '${_selectedConversationIds.length} selected',
+                        style: TextStyle(
+                          fontSize: titleFontSize * 0.5,
+                          fontWeight: FontWeight.normal,
+                          color: textColor.withOpacity(0.7),
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ),
           ),
-
-          // Conversations list
-          Expanded(
-            child: Consumer<HomeProvider>(
-              builder: (context, homeProvider, child) {
-                final conversations = _isSearching
-                    ? _filteredConversations
-                    : homeProvider.conversations;
-
-                if (homeProvider.state == HomeState.Loading) {
-                  return const Center(
-                    child: CircularProgressIndicator(),
-                  );
-                }
-
-                if (conversations.isEmpty) {
-                  return Center(
-                    child: Text(
-                      _isSearching
-                          ? "No results found for '${_searchController.text}'"
-                          : "You have no conversations yet.",
-                      style: TextStyle(
-                        color: noResultsColor,
+          body: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Search bar (exact same styling as HomeScreen)
+              Padding(
+                padding: searchPadding,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: searchBgColor,
+                    borderRadius: BorderRadius.circular(10.0),
+                    border: Border.all(color: Colors.transparent),
+                  ),
+                  child: TextField(
+                    controller: _searchController,
+                    style: TextStyle(
+                      color: searchTextColor,
+                      fontSize: searchFontSize,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: 'Search chats...',
+                      hintStyle: TextStyle(
+                        color: searchHintColor,
                         fontSize: searchFontSize,
                       ),
-                    ),
-                  );
-                }
-
-                return ListView.builder(
-                  itemCount: conversations.length,
-                  itemBuilder: (context, index) {
-                    final conversation = conversations[index];
-                    return _buildConversationTile(conversation, isDarkTheme, screenWidth, screenHeight);
-                  },
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-      floatingActionButton: _selectedConversationIds.isNotEmpty
-          ? FloatingActionButton.extended(
-              onPressed: _isSending ? null : _sendToSelectedConversations,
-              backgroundColor: _isSending ? Colors.grey : Colors.green,
-              icon: _isSending
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2,
+                      prefixIcon: Icon(
+                        Icons.search,
+                        color: searchIconColor,
+                        size: searchIconSize,
                       ),
-                    )
-                  : const Icon(Icons.send, color: Colors.white),
-              label: Text(
-                _isSending ? 'Sending...' : 'Send to ${_selectedConversationIds.length}',
-                style: const TextStyle(color: Colors.white),
+                      suffixIcon: _isSearching
+                          ? IconButton(
+                              icon: Icon(
+                                Icons.clear,
+                                color: searchIconColor,
+                                size: searchIconSize,
+                              ),
+                              onPressed: () {
+                                _searchController.clear();
+                                FocusScope.of(context).unfocus();
+                              },
+                            )
+                          : null,
+                      border: InputBorder.none,
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: screenWidth * 0.05,
+                        vertical: screenHeight * 0.017,
+                      ),
+                    ),
+                  ),
+                ),
               ),
-            )
-          : null,
-    );
+
+              // Conversations list
+              Expanded(
+                child: Consumer<HomeProvider>(
+                  builder: (context, homeProvider, child) {
+                    final conversations = _isSearching
+                        ? _filteredConversations
+                        : homeProvider.conversations;
+
+                    if (homeProvider.state == HomeState.Loading) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+
+                    if (conversations.isEmpty) {
+                      return Center(
+                        child: Text(
+                          _isSearching
+                              ? "No results found for '${_searchController.text}'"
+                              : "You have no conversations yet.",
+                          style: TextStyle(
+                            color: noResultsColor,
+                            fontSize: searchFontSize,
+                          ),
+                        ),
+                      );
+                    }
+
+                    return ListView.builder(
+                      itemCount: conversations.length,
+                      itemBuilder: (context, index) {
+                        final conversation = conversations[index];
+                        return _buildConversationTile(
+                          conversation,
+                          isDarkTheme,
+                          screenWidth,
+                          screenHeight,
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+          floatingActionButton: _selectedConversationIds.isNotEmpty
+              ? FloatingActionButton.extended(
+                  onPressed: _isSending ? null : _sendToSelectedConversations,
+                  backgroundColor: _isSending ? Colors.grey : Colors.green,
+                  icon: _isSending
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2,
+                          ),
+                        )
+                      : const Icon(Icons.send, color: Colors.white),
+                  label: Text(
+                    _isSending
+                        ? 'Sending...'
+                        : 'Send to ${_selectedConversationIds.length}',
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                )
+              : null,
+        );
       },
     );
   }
@@ -1200,7 +1271,9 @@ class _ShareConversationPickerScreenState
     double screenWidth,
     double screenHeight,
   ) {
-    final isSelected = _selectedConversationIds.contains(conversation.conversationId);
+    final isSelected = _selectedConversationIds.contains(
+      conversation.conversationId,
+    );
 
     // Responsive sizing (exact same as HomeScreen)
     final listItemMargin = EdgeInsets.symmetric(
@@ -1210,8 +1283,12 @@ class _ShareConversationPickerScreenState
     final listItemTitleSize = (screenWidth * 0.04).clamp(14.0, 18.0);
 
     // Theme colors (exact same as HomeScreen)
-    final Color cardBgColor = isDarkTheme ? const Color(0xFF1E1E1E) : Colors.lightBlue[50]!;
-    final Color cardBorderColor = isDarkTheme ? Colors.cyanAccent.withOpacity(0.3) : Colors.lightBlue[200]!;
+    final Color cardBgColor = isDarkTheme
+        ? const Color(0xFF1E1E1E)
+        : Colors.lightBlue[50]!;
+    final Color cardBorderColor = isDarkTheme
+        ? Colors.cyanAccent.withOpacity(0.3)
+        : Colors.lightBlue[200]!;
     final Color titleColor = isDarkTheme ? Colors.white : Colors.black;
 
     return Container(
@@ -1239,11 +1316,14 @@ class _ShareConversationPickerScreenState
             CircleAvatar(
               radius: 28,
               backgroundColor: Colors.grey[300],
-              backgroundImage: conversation.avatarUrl != null &&
+              backgroundImage:
+                  conversation.avatarUrl != null &&
                       conversation.avatarUrl!.isNotEmpty
                   ? CachedNetworkImageProvider(conversation.avatarUrl!)
                   : null,
-              child: conversation.avatarUrl == null || conversation.avatarUrl!.isEmpty
+              child:
+                  conversation.avatarUrl == null ||
+                      conversation.avatarUrl!.isEmpty
                   ? Text(
                       conversation.chatTitle.isNotEmpty
                           ? conversation.chatTitle[0].toUpperCase()
@@ -1265,16 +1345,9 @@ class _ShareConversationPickerScreenState
                   decoration: BoxDecoration(
                     color: Colors.green,
                     shape: BoxShape.circle,
-                    border: Border.all(
-                      color: Colors.white,
-                      width: 2,
-                    ),
+                    border: Border.all(color: Colors.white, width: 2),
                   ),
-                  child: const Icon(
-                    Icons.check,
-                    color: Colors.white,
-                    size: 18,
-                  ),
+                  child: const Icon(Icons.check, color: Colors.white, size: 18),
                 ),
               ),
           ],
@@ -1282,7 +1355,9 @@ class _ShareConversationPickerScreenState
         title: Text(
           conversation.chatTitle,
           style: TextStyle(
-            color: isSelected ? (isDarkTheme ? Colors.green[300] : Colors.green[900]) : titleColor,
+            color: isSelected
+                ? (isDarkTheme ? Colors.green[300] : Colors.green[900])
+                : titleColor,
             fontWeight: FontWeight.bold,
             fontSize: listItemTitleSize,
           ),
@@ -1299,7 +1374,9 @@ class _ShareConversationPickerScreenState
           ),
         ),
         onTap: () {
-          debugPrint('🟡 [SharePicker] ListTile.onTap fired: ${conversation.chatTitle}');
+          debugPrint(
+            '🟡 [SharePicker] ListTile.onTap fired: ${conversation.chatTitle}',
+          );
           _toggleConversationSelection(conversation);
         },
       ),

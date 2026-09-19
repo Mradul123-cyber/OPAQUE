@@ -23,7 +23,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "NotificationActions"
-        private const val BASE_URL = "https://api.zarqmessenger.com"
+        private val BASE_URL = AppConfig.BASE_URL
     }
 
     override fun onReceive(context: Context, intent: Intent) {

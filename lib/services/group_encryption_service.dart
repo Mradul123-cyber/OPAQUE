@@ -3,9 +3,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'SignalService.dart';
 import 'device_service.dart';
+import 'package:zarq_messenger/app_config.dart';
 
 class GroupEncryptionService {
-  static const String baseUrl = 'https://api.zarqmessenger.com';
+  static const String baseUrl = '${AppConfig.baseUrl}';
 
   /// Distribute your sender key to the group
   /// Call this when:

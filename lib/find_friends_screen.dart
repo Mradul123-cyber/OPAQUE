@@ -15,10 +15,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'services/websocket_service.dart';
 import 'services/user_settings_provider.dart';
 import 'widgets/call_aware_screen.dart';
-import 'friend_info_screen.dart';
+import 'widgets/opaque_navigation.dart';
 import 'package:provider/provider.dart';
 import 'providers/home_provider.dart';
 import 'chat_screen.dart';
+import 'package:zarq_messenger/app_config.dart';
 
 class Friend {
   final String username;
@@ -46,19 +47,21 @@ class Friend {
   }
 
   String get displayNameOrUsername => displayName ?? username;
-  String get primaryDisplay => displayName ?? username;
+  String get primaryDisplay => hasDisplayName ? displayName! : username;
   bool get hasDisplayName => displayName != null && displayName!.isNotEmpty;
 }
 
-enum FriendTab { myFriends, sentRequests, receivedRequests, search }
+enum FriendTab { myFriends, receivedRequests, sentRequests, search }
 
 class FindFriendsScreen extends StatefulWidget {
   final FriendTab initialTab;
+  final bool embedded;
   final WebSocketChannel channel;
   final VoidCallback? onFriendRequestAccepted;
 
   const FindFriendsScreen({
     super.key,
+    this.embedded = false,
     this.initialTab = FriendTab.search,
     required this.channel,
     this.onFriendRequestAccepted,
@@ -73,10 +76,14 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
   late TabController _tabController;
   final _searchController = TextEditingController();
   bool _isLoading = false;
+  bool _isRefreshingTabs = false;
+  bool _hasLoadedTabs = false;
+  bool _contactMode = false;
+  late int _loadedTab;
   String _statusMessage =
       "Use the search bar or scan contacts to find friends.";
   Timer? _debounce;
-  final _scrollController = ScrollController();
+
 
   List<Friend> _myFriends = [];
   // --- CHANGE ---
@@ -96,9 +103,12 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
       initialIndex: widget.initialTab.index,
     );
     _searchController.addListener(_onSearchChanged);
+    _loadedTab = widget.initialTab.index;
     _loadTabContent(widget.initialTab.index);
     _tabController.addListener(() {
-      if (!_tabController.indexIsChanging) {
+      if (!_tabController.indexIsChanging && _loadedTab != _tabController.index) {
+        _loadedTab = _tabController.index;
+        _debounce?.cancel();
         _loadTabContent(_tabController.index);
         _searchController.clear();
       }
@@ -111,7 +121,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
     _debounce?.cancel();
-    _scrollController.dispose();
+
     super.dispose();
   }
 
@@ -164,9 +174,9 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
   }
 
   Future<void> _loadTabContent(int tabIndex) async {
+    if (_isRefreshingTabs) return;
     setState(() {
-      _isLoading = true;
-      _statusMessage = "Loading...";
+      _isRefreshingTabs = true;
       if (FriendTab.values[tabIndex] != FriendTab.search) {
         _searchResults = [];
       }
@@ -185,8 +195,10 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
         _fetchReceivedRequests(token),
       ]);
 
-      // Update status message based on the currently viewed tab
-      switch (FriendTab.values[tabIndex]) {
+      if (!mounted) return;
+      _hasLoadedTabs = true;
+      // Use the current tab if the user switched while fetching.
+      switch (FriendTab.values[_tabController.index]) {
         case FriendTab.myFriends:
           _statusMessage = _myFriends.isEmpty
               ? "You don't have any friends yet."
@@ -209,13 +221,13 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     } catch (e) {
       if (mounted) _statusMessage = "Failed to load data: $e";
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) setState(() => _isRefreshingTabs = false);
     }
   }
 
   Future<void> _fetchMyFriends(String token) async {
     try {
-      final url = Uri.parse('https://api.zarqmessenger.com/friends/list');
+      final url = Uri.parse('${AppConfig.baseUrl}/friends/list');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -239,7 +251,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
   Future<void> _fetchSentRequests(String token) async {
     try {
-      final url = Uri.parse('https://api.zarqmessenger.com/friends/sent-requests');
+      final url = Uri.parse('${AppConfig.baseUrl}/friends/sent-requests');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -269,7 +281,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
   Future<void> _fetchReceivedRequests(String token) async {
     try {
-      final url = Uri.parse('https://api.zarqmessenger.com/friends/requests');
+      final url = Uri.parse('${AppConfig.baseUrl}/friends/requests');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -280,8 +292,9 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
           setState(() {
             // --- CHANGE ---
             // Now parsing a list of Friend objects directly from JSON.
-            _receivedRequests =
-                data.map((item) => Friend.fromJson(item)).toList();
+            _receivedRequests = data
+                .map((item) => Friend.fromJson(item))
+                .toList();
           });
         }
       } else {
@@ -299,7 +312,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     if (user == null) return;
 
     final token = await user.getIdToken();
-    final url = Uri.parse('https://api.zarqmessenger.com/friends/accept');
+    final url = Uri.parse('${AppConfig.baseUrl}/friends/accept');
 
     try {
       final response = await http.post(
@@ -315,8 +328,9 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
         if (response.statusCode == 200) {
           // Optimistic UI update: remove the request immediately using the correct method.
           setState(() {
-            _receivedRequests
-                .removeWhere((friend) => friend.username == username);
+            _receivedRequests.removeWhere(
+              (friend) => friend.username == username,
+            );
           });
           // This call is for data integrity, to refresh the full list.
           _loadTabContent(FriendTab.receivedRequests.index);
@@ -339,7 +353,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     if (user == null) return;
 
     final token = await user.getIdToken();
-    final url = Uri.parse('https://api.zarqmessenger.com/friends/decline');
+    final url = Uri.parse('${AppConfig.baseUrl}/friends/decline');
 
     try {
       final response = await http.post(
@@ -355,8 +369,9 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
         if (response.statusCode == 200) {
           // Optimistic UI update: remove the request immediately
           setState(() {
-            _receivedRequests
-                .removeWhere((friend) => friend.username == username);
+            _receivedRequests.removeWhere(
+              (friend) => friend.username == username,
+            );
           });
           // Refresh the list
           _loadTabContent(FriendTab.receivedRequests.index);
@@ -406,7 +421,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     }
 
     final token = await user.getIdToken();
-    final url = Uri.parse('https://api.zarqmessenger.com/friends/request');
+    final url = Uri.parse('${AppConfig.baseUrl}/friends/request');
 
     try {
       final response = await http.post(
@@ -456,8 +471,10 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
   void _onSearchChanged() {
     if (_debounce?.isActive ?? false) _debounce!.cancel();
+    if (_contactMode) { setState(() {}); return; }
     _debounce = Timer(const Duration(milliseconds: 500), () {
-      _searchUsers(_searchController.text);
+      if (_tabController.index != FriendTab.search.index) return;
+      _searchUsers(_searchController.text.trim().replaceFirst(RegExp(r'^@'), ''));
     });
   }
 
@@ -483,11 +500,14 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     }
 
     // print('[CONTACT_SYNC] 📱 Requesting contacts permission...');
-    final PermissionStatus permissionStatus = await Permission.contacts.request();
+    final PermissionStatus permissionStatus = await Permission.contacts
+        .request();
     // print('[CONTACT_SYNC] Permission status: $permissionStatus');
     if (permissionStatus.isGranted) {
       // print('[CONTACT_SYNC] ✅ Permission GRANTED');
-      setState(() => _statusMessage = "Permission granted. Scanning contacts...");
+      setState(
+        () => _statusMessage = "Permission granted. Scanning contacts...",
+      );
 
       // print('[CONTACT_SYNC] 📞 Fetching contacts from phone...');
       // print('[CONTACT_SYNC] 🔧 Android 13 Fix: Fetching contacts WITHOUT properties first (faster)');
@@ -495,13 +515,14 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
       try {
         // ANDROID 13 FIX: Fetch contacts without properties first (much faster)
         // Then only fetch phone numbers for each contact individually
-        final List<Contact> contactsWithoutProps = await FlutterContacts.getContacts(withProperties: false).timeout(
-          const Duration(seconds: 10),
-          onTimeout: () {
-            // print('[CONTACT_SYNC] ⚠️ TIMEOUT: Fetching contact list took more than 10 seconds');
-            throw TimeoutException('Contact list fetch timed out');
-          },
-        );
+        final List<Contact> contactsWithoutProps =
+            await FlutterContacts.getContacts(withProperties: false).timeout(
+              const Duration(seconds: 10),
+              onTimeout: () {
+                // print('[CONTACT_SYNC] ⚠️ TIMEOUT: Fetching contact list took more than 10 seconds');
+                throw TimeoutException('Contact list fetch timed out');
+              },
+            );
         // print('[CONTACT_SYNC] ✅ Successfully fetched ${contactsWithoutProps.length} contact names');
 
         // Now fetch phone numbers in MAXIMUM parallel batches (optimized for 10,000+ contacts)
@@ -522,7 +543,9 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
         }
 
         for (int i = 0; i < contactsWithoutProps.length; i += batchSize) {
-          int end = (i + batchSize < contactsWithoutProps.length) ? i + batchSize : contactsWithoutProps.length;
+          int end = (i + batchSize < contactsWithoutProps.length)
+              ? i + batchSize
+              : contactsWithoutProps.length;
           final batchNumber = (i / batchSize).floor() + 1;
           final totalBatches = (contactsWithoutProps.length / batchSize).ceil();
 
@@ -531,11 +554,16 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
           // Fetch all contacts in this batch in parallel
           final batch = contactsWithoutProps.sublist(i, end);
-          final fetchFutures = batch.map((contact) => FlutterContacts.getContact(contact.id)).toList();
+          final fetchFutures = batch
+              .map((contact) => FlutterContacts.getContact(contact.id))
+              .toList();
 
           try {
             // Wait for ALL contacts in batch to fetch in parallel (MAXIMUM SPEED!)
-            final batchResults = await Future.wait(fetchFutures, eagerError: false);
+            final batchResults = await Future.wait(
+              fetchFutures,
+              eagerError: false,
+            );
 
             // Add non-null results
             for (var fullContact in batchResults) {
@@ -553,7 +581,10 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
           // Update progress
           if (mounted) {
-            setState(() => _statusMessage = "Scanning contacts... ${contacts.length}/${contactsWithoutProps.length}");
+            setState(
+              () => _statusMessage =
+                  "Scanning contacts... ${contacts.length}/${contactsWithoutProps.length}",
+            );
           }
         }
 
@@ -589,15 +620,18 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
             if (!cleanedPhone.startsWith('+')) {
               // 10 digits (Indian mobile without country code) → Add +91
-              if (cleanedPhone.length == 10 && cleanedPhone.startsWith(RegExp(r'[6-9]'))) {
+              if (cleanedPhone.length == 10 &&
+                  cleanedPhone.startsWith(RegExp(r'[6-9]'))) {
                 normalizedPhone = '+91$cleanedPhone';
               }
               // 12 digits starting with 91 → Add +
-              else if (cleanedPhone.startsWith('91') && cleanedPhone.length == 12) {
+              else if (cleanedPhone.startsWith('91') &&
+                  cleanedPhone.length == 12) {
                 normalizedPhone = '+$cleanedPhone';
               }
               // 11 digits starting with 0 → Remove 0 and add +91
-              else if (cleanedPhone.startsWith('0') && cleanedPhone.length == 11) {
+              else if (cleanedPhone.startsWith('0') &&
+                  cleanedPhone.length == 11) {
                 normalizedPhone = '+91${cleanedPhone.substring(1)}';
               }
             }
@@ -626,7 +660,9 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
       // print('[CONTACT_SYNC]    - Hashed contacts to send: ${hashedContacts.length}');
 
       // Check if user's own number is in contacts (now normalized)
-      final numbersContaining877 = allCleanedPhones.where((p) => p.contains('877067') || p.contains('980625')).toList();
+      final numbersContaining877 = allCleanedPhones
+          .where((p) => p.contains('877067') || p.contains('980625'))
+          .toList();
       if (numbersContaining877.isNotEmpty) {
         // print('[CONTACT_SYNC] 🔍 Found test/registered numbers in contacts: ${numbersContaining877.length} variations');
         for (var num in numbersContaining877) {
@@ -645,7 +681,10 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
         return;
       }
 
-      setState(() => _statusMessage = "Found ${hashedContacts.length} contacts. Checking server...");
+      setState(
+        () => _statusMessage =
+            "Found ${hashedContacts.length} contacts. Checking server...",
+      );
 
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) {
@@ -659,22 +698,27 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
       try {
         // print('[CONTACT_SYNC] 🌐 Sending ${hashedContacts.length} hashed contacts to server...');
-        final url = Uri.parse('https://api.zarqmessenger.com/friends/find');
+        final url = Uri.parse('${AppConfig.baseUrl}/friends/find');
 
         // print('[CONTACT_SYNC] 📤 Request URL: $url');
         // print('[CONTACT_SYNC] 📤 Payload size: ${json.encode(hashedContacts).length} bytes');
 
-        final response = await http.post(
-          url,
-          headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
-          body: json.encode(hashedContacts),
-        ).timeout(
-          const Duration(seconds: 30),
-          onTimeout: () {
-            // print('[CONTACT_SYNC] ⚠️ Server request TIMEOUT after 30 seconds');
-            throw TimeoutException('Server request timed out');
-          },
-        );
+        final response = await http
+            .post(
+              url,
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer $token',
+              },
+              body: json.encode(hashedContacts),
+            )
+            .timeout(
+              const Duration(seconds: 30),
+              onTimeout: () {
+                // print('[CONTACT_SYNC] ⚠️ Server request TIMEOUT after 30 seconds');
+                throw TimeoutException('Server request timed out');
+              },
+            );
 
         // print('[CONTACT_SYNC] 📥 Server response code: ${response.statusCode}');
         if (response.statusCode == 200) {
@@ -724,7 +768,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
                 return Friend.fromJson({
                   ...data,
-                  'phoneNumber': phoneNumber, // Add the actual phone number
+                  'phoneNumber': phoneNumber ?? data['phoneNumber'], // Preserve server-provided numbers too.
                   'fromContacts': true, // Mark as from contact scan
                 });
               } else {
@@ -747,7 +791,8 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
           // print('[CONTACT_SYNC] ❌ Server error: ${response.statusCode}');
           // print('[CONTACT_SYNC] Error body: ${response.body}');
           setState(() {
-            _statusMessage = "Error from server (${response.statusCode}): ${response.body}";
+            _statusMessage =
+                "Error from server (${response.statusCode}): ${response.body}";
             _isLoading = false;
           });
         }
@@ -852,7 +897,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     final token = await user.getIdToken();
 
     try {
-      final url = Uri.parse('https://api.zarqmessenger.com/users/search?q=$query');
+      final url = Uri.parse('${AppConfig.baseUrl}/users/search?q=$query');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -887,64 +932,14 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
   }
 
   Widget _buildAvatar(String name, String? avatarUrl) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final avatarRadius = (screenWidth * 0.06).clamp(20.0, 28.0);
-    final avatarFontSize = (screenWidth * 0.05).clamp(18.0, 22.0);
-    final progressSize = (screenWidth * 0.05).clamp(18.0, 24.0);
-
-    final hasImage = avatarUrl != null && avatarUrl.isNotEmpty;
-    final initial = name.isNotEmpty ? name[0].toUpperCase() : '?';
-    final randomColor = Color(name.hashCode | 0xFF000000).withOpacity(1.0);
-
-    if (hasImage) {
-      return CachedNetworkImage(
-        imageUrl: avatarUrl!,
-        imageBuilder: (context, imageProvider) => CircleAvatar(
-          radius: avatarRadius,
-          backgroundImage: imageProvider,
-          backgroundColor: Colors.grey[200],
-        ),
-        placeholder: (context, url) => CircleAvatar(
-          radius: avatarRadius,
-          backgroundColor: randomColor,
-          child: SizedBox(
-            width: progressSize,
-            height: progressSize,
-            child: const CircularProgressIndicator(
-              strokeWidth: 2,
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-            ),
-          ),
-        ),
-        errorWidget: (context, url, error) => CircleAvatar(
-          radius: avatarRadius,
-          backgroundColor: randomColor,
-          child: Text(
-            initial,
-            style: TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-              fontSize: avatarFontSize,
-            ),
-          ),
-        ),
-      );
-    }
-
-    return CircleAvatar(
-      radius: avatarRadius,
-      backgroundColor: randomColor,
-      child: Text(
-        initial,
-        style: TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.bold,
-          fontSize: avatarFontSize,
-        ),
-      ),
-    );
+    final initial = name.isEmpty ? '?' : name.characters.first.toUpperCase();
+    final fallback = Container(width: 40, height: 40, alignment: Alignment.center,
+      decoration: const BoxDecoration(shape: BoxShape.circle, gradient: LinearGradient(colors: [Color(0xFFF0F3FA), Color(0xFFE7ECF5)])),
+      child: Text(initial, style: const TextStyle(fontSize: 14, color: Color(0xFF7A8BA7))));
+    if (avatarUrl == null || avatarUrl.isEmpty) return fallback;
+    return ClipOval(child: CachedNetworkImage(imageUrl: avatarUrl, width: 40, height: 40, fit: BoxFit.cover,
+      placeholder: (_, _) => fallback, errorWidget: (_, _, _) => fallback));
   }
-
   void _showFriendOptions(Friend friend) {
     final screenWidth = MediaQuery.of(context).size.width;
     final screenHeight = MediaQuery.of(context).size.height;
@@ -974,82 +969,88 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-            SizedBox(height: spacing1),
-            // Drag handle
-            Container(
-              width: handleWidth,
-              height: handleHeight,
-              decoration: BoxDecoration(
-                color: Colors.grey[400],
-                borderRadius: BorderRadius.circular(2),
+              SizedBox(height: spacing1),
+              // Drag handle
+              Container(
+                width: handleWidth,
+                height: handleHeight,
+                decoration: BoxDecoration(
+                  color: Colors.grey[400],
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
-            ),
-            SizedBox(height: spacing2),
+              SizedBox(height: spacing2),
 
-            // Profile Section
-            CircleAvatar(
-              radius: modalAvatarRadius,
-              backgroundColor: Colors.grey[800],
-              backgroundImage: friend.avatarUrl != null
-                  ? NetworkImage(friend.avatarUrl!)
-                  : null,
-              child: friend.avatarUrl == null
-                  ? Text(
-                      friend.primaryDisplay[0].toUpperCase(),
-                      style: TextStyle(fontSize: modalAvatarFontSize, color: Colors.white),
-                    )
-                  : null,
-            ),
-            SizedBox(height: spacing1),
-            Text(
-              friend.primaryDisplay,
-              style: TextStyle(
-                color: Colors.black,
-                fontSize: modalNameSize,
-                fontWeight: FontWeight.bold,
+              // Profile Section
+              CircleAvatar(
+                radius: modalAvatarRadius,
+                backgroundColor: Colors.grey[800],
+                backgroundImage: friend.avatarUrl != null
+                    ? NetworkImage(friend.avatarUrl!)
+                    : null,
+                child: friend.avatarUrl == null
+                    ? Text(
+                        friend.primaryDisplay[0].toUpperCase(),
+                        style: TextStyle(
+                          fontSize: modalAvatarFontSize,
+                          color: Colors.white,
+                        ),
+                      )
+                    : null,
               ),
-            ),
-            Text(
-              '@${friend.username}',
-              style: TextStyle(
-                color: Colors.black87,
-                fontSize: modalUsernameSize,
+              SizedBox(height: spacing1),
+              Text(
+                friend.primaryDisplay,
+                style: TextStyle(
+                  color: Colors.black,
+                  fontSize: modalNameSize,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-            ),
-            SizedBox(height: spacing2),
+              Text(
+                '@${friend.username}',
+                style: TextStyle(
+                  color: Colors.black87,
+                  fontSize: modalUsernameSize,
+                ),
+              ),
+              SizedBox(height: spacing2),
 
-            // Action Cards
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: screenWidth * 0.04),
-              child: Column(
-                children: [
-                  _buildActionCard(
-                    icon: Icons.chat_bubble_outline,
-                    title: 'Open Conversation',
-                    subtitle: 'Start chatting with ${friend.displayName ?? friend.username}',
-                    color: Colors.lightBlueAccent,
-                    onTap: () {
-                      Navigator.pop(context);
-                      _openConversationWithFriend(friend.username);
-                    },
-                  ),
-                  SizedBox(height: spacing1),
-                  _buildActionCard(
-                    icon: Icons.person_remove_outlined,
-                    title: 'Remove Friend',
-                    subtitle: 'Remove from your friends list',
-                    color: Colors.redAccent,
-                    onTap: () {
-                      Navigator.pop(context);
-                      _confirmRemoveFriend(friend);
-                    },
-                  ),
-                ],
+              // Action Cards
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: screenWidth * 0.04),
+                child: Column(
+                  children: [
+                    _buildActionCard(
+                      icon: Icons.chat_bubble_outline,
+                      title: 'Open Conversation',
+                      subtitle:
+                          'Start chatting with ${friend.displayName ?? friend.username}',
+                      color: Colors.lightBlueAccent,
+                      onTap: () {
+                        Navigator.pop(context);
+                        _openConversationWithFriend(friend.username);
+                      },
+                    ),
+                    SizedBox(height: spacing1),
+                    _buildActionCard(
+                      icon: Icons.person_remove_outlined,
+                      title: 'Remove Friend',
+                      subtitle: 'Remove from your friends list',
+                      color: Colors.redAccent,
+                      onTap: () {
+                        Navigator.pop(context);
+                        _confirmRemoveFriend(friend);
+                      },
+                    ),
+                  ],
+                ),
               ),
-            ),
-            SizedBox(height: MediaQuery.of(context).padding.bottom + spacing1),
-          ],
-        ),
+              SizedBox(
+                height: MediaQuery.of(context).padding.bottom + spacing1,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1082,10 +1083,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
         decoration: BoxDecoration(
           color: Colors.black,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: color.withOpacity(0.3),
-            width: 1,
-          ),
+          border: Border.all(color: color.withOpacity(0.3), width: 1),
         ),
         child: Row(
           children: [
@@ -1121,7 +1119,11 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
                 ],
               ),
             ),
-            Icon(Icons.arrow_forward_ios, color: Colors.grey[600], size: arrowSize),
+            Icon(
+              Icons.arrow_forward_ios,
+              color: Colors.grey[600],
+              size: arrowSize,
+            ),
           ],
         ),
       ),
@@ -1133,7 +1135,10 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: Colors.grey[900],
-        title: const Text('Remove Friend?', style: TextStyle(color: Colors.white)),
+        title: const Text(
+          'Remove Friend?',
+          style: TextStyle(color: Colors.white),
+        ),
         content: Text(
           'Are you sure you want to remove ${friend.primaryDisplay} from your friends?',
           style: const TextStyle(color: Colors.white70),
@@ -1148,7 +1153,10 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
               Navigator.pop(context);
               _removeFriend(friend.username);
             },
-            child: const Text('Remove', style: TextStyle(color: Colors.redAccent)),
+            child: const Text(
+              'Remove',
+              style: TextStyle(color: Colors.redAccent),
+            ),
           ),
         ],
       ),
@@ -1162,7 +1170,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
       final token = await user.getIdToken();
       final response = await http.post(
-        Uri.parse('https://api.zarqmessenger.com/friends/remove'),
+        Uri.parse('${AppConfig.baseUrl}/friends/remove'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
@@ -1192,10 +1200,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: $e'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
         );
       }
     }
@@ -1207,7 +1212,10 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
       if (user == null) return;
 
       // Get WebSocket service
-      final websocketService = Provider.of<WebSocketService>(context, listen: false);
+      final websocketService = Provider.of<WebSocketService>(
+        context,
+        listen: false,
+      );
       if (!websocketService.isConnected || websocketService.channel == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Connecting... Please wait a moment.')),
@@ -1218,7 +1226,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
       // Start or get conversation
       final token = await user.getIdToken();
       final response = await http.post(
-        Uri.parse('https://api.zarqmessenger.com/conversations/start'),
+        Uri.parse('${AppConfig.baseUrl}/conversations/start'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
@@ -1265,491 +1273,101 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: $e'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
         );
       }
     }
   }
 
-  Widget _buildTabContent(List<Friend> listData, FriendTab currentTab, bool isDarkTheme) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-
-    // Responsive sizing for list items
-    final itemMargin = EdgeInsets.symmetric(
-      horizontal: screenWidth * 0.04,
-      vertical: screenHeight * 0.008,
-    );
-    final itemPadding = EdgeInsets.symmetric(
-      horizontal: screenWidth * 0.04,
-      vertical: screenHeight * 0.01,
-    );
-    final nameFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final usernameFontSize = (screenWidth * 0.03).clamp(11.0, 14.0);
-    final phoneFontSize = (screenWidth * 0.0275).clamp(10.0, 13.0);
-    final chipFontSize = (screenWidth * 0.03).clamp(11.0, 14.0);
-    final phoneIconSize = (screenWidth * 0.03).clamp(11.0, 14.0);
-    final actionIconSize = (screenWidth * 0.06).clamp(22.0, 26.0);
-    final spacing1 = (screenHeight * 0.005).clamp(3.0, 6.0);
-    final spacing2 = (screenHeight * 0.0025).clamp(2.0, 4.0);
-    final spacing3 = (screenWidth * 0.01).clamp(3.0, 6.0);
-    final spacing4 = (screenWidth * 0.015).clamp(4.0, 8.0);
-
-    if (_isLoading) {
-      return Center(
-        child: CircularProgressIndicator(
-          color: isDarkTheme ? Colors.cyanAccent : Colors.lightBlueAccent,
-        ),
-      );
-    }
-
-    return Column(
-      children: [
-        // Friend counter - ALWAYS show for My Friends tab (even with 0 friends)
-        if (currentTab == FriendTab.myFriends)
-          Container(
-            margin: EdgeInsets.all(16),
-            padding: EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: isDarkTheme ? const Color(0xFF1E1E1E) : Colors.blue[50],
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: isDarkTheme ? Colors.cyanAccent.withOpacity(0.3) : Colors.blue[200]!,
-                width: 2,
-              ),
+  Widget _buildTabContent(List<Friend> listData, FriendTab currentTab, bool dark) {
+    final muted = dark ? const Color(0xFF9CA8BB) : const Color(0xFF919AAA);
+    Widget action(String icon, String label, VoidCallback? callback, {Color color = const Color(0xFF607DA5)}) => IconButton(
+      tooltip: label, onPressed: callback, constraints: const BoxConstraints(minWidth: 40, minHeight: 44),
+      padding: const EdgeInsets.all(8), icon: OpaqueIcon(icon, size: 22, color: color));
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      if (currentTab != FriendTab.search) Padding(
+        padding: const EdgeInsets.fromLTRB(22, 7, 22, 5),
+        child: Text('${currentTab == FriendTab.myFriends ? 'Total friends' : currentTab == FriendTab.receivedRequests ? 'Received requests' : 'Sent requests'} · ${listData.length}', style: TextStyle(fontSize: 11, color: muted))),
+      Expanded(child: (currentTab == FriendTab.search ? _isLoading : _isRefreshingTabs && !_hasLoadedTabs) ? const Center(child: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF607DA5)))) : listData.isEmpty
+        ? Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(currentTab == FriendTab.search ? _statusMessage : currentTab == FriendTab.myFriends ? "You don't have any friends yet." : currentTab == FriendTab.receivedRequests ? 'No pending friend requests.' : 'No pending requests sent by you.', textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: muted))))
+        : ListView.builder(padding: const EdgeInsets.symmetric(horizontal: 15), itemCount: listData.length, itemBuilder: (context, index) {
+          final friend = listData[index];
+          final mine = currentTab == FriendTab.myFriends || _myFriends.any((f) => f.username == friend.username);
+          final pending = currentTab == FriendTab.sentRequests || _pendingRequests.contains(friend.username);
+          return InkWell(
+            onTap: mine ? () => _openConversationWithFriend(friend.username) : null,
+            onLongPress: mine ? () => _showFriendOptions(friend) : null,
+            child: Container(padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 15),
+              decoration: BoxDecoration(border: Border(bottom: BorderSide(color: dark ? const Color(0xFF303947) : const Color(0xFFF0F1F4)))),
+              child: Row(children: [
+                _buildAvatar(friend.primaryDisplay, friend.avatarUrl), const SizedBox(width: 10),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(friend.primaryDisplay, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: dark ? const Color(0xFFE0E6EF) : const Color(0xFF343D4C))),
+                  const SizedBox(height: 3), Text('@${friend.username}', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: muted)),
+                  if (friend.fromContacts && friend.phoneNumber != null) Padding(padding: const EdgeInsets.only(top: 5), child: Text(friend.phoneNumber!, style: TextStyle(fontSize: 11, letterSpacing: .15, color: muted))),
+                ])),
+                if (mine) action('chats', 'Message ${friend.primaryDisplay}', () => _openConversationWithFriend(friend.username))
+                else if (currentTab == FriendTab.receivedRequests) ...[
+                  action('check', 'Accept request from ${friend.primaryDisplay}', () => _acceptRequest(friend.username), color: const Color(0xFF45966E)),
+                  action('close', 'Decline request from ${friend.primaryDisplay}', () => _declineRequest(friend.username), color: const Color(0xFFAC8C8B)),
+                ] else if (pending) Tooltip(message: 'Request pending', child: Padding(padding: const EdgeInsets.all(11), child: OpaqueIcon('pending', color: const Color(0xFFC39154))))
+                else action('add', 'Add ${friend.primaryDisplay}', () => _sendFriendRequest(friend.username)),
+              ]),
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Total Friends',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: isDarkTheme ? Colors.white : Colors.black87,
-                  ),
-                ),
-                Container(
-                  padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: isDarkTheme ? Colors.cyanAccent.withOpacity(0.8) : Colors.blue[600],
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    '${listData.length} / 500',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: isDarkTheme ? Colors.black : Colors.white,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        Expanded(
-          child: listData.isEmpty
-              ? Center(
-                  child: Text(
-                    _statusMessage,
-                    style: TextStyle(
-                      color: isDarkTheme ? Colors.white70 : Colors.black87,
-                      fontSize: nameFontSize,
-                    ),
-                  ),
-                )
-              : ListView.builder(
-            controller: _scrollController,
-            itemCount: listData.length,
-      itemBuilder: (context, index) {
-        final friend = listData[index];
-        final isMyFriend = _myFriends.any((f) => f.username == friend.username);
-        final isPending = _pendingRequests.contains(friend.username);
-
-        Widget trailingWidget;
-        if (isMyFriend) {
-          trailingWidget = Chip(
-            label: Text(
-              'Friends',
-              style: TextStyle(
-                color: Colors.lightBlueAccent,
-                fontSize: chipFontSize,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            backgroundColor: Colors.white,
-            side: BorderSide(color: Colors.black, width: 1.0),
           );
-        } else if (isPending) {
-          trailingWidget = Chip(
-            label: Text(
-              'Pending',
-              style: TextStyle(color: Colors.white, fontSize: chipFontSize),
-            ),
-            backgroundColor: Colors.orange.withOpacity(0.4),
-          );
-        } else if (currentTab == FriendTab.receivedRequests) {
-          trailingWidget = Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              IconButton(
-                icon: Icon(
-                  Icons.check_circle,
-                  color: Colors.lightBlueAccent,
-                  size: actionIconSize,
-                ),
-                tooltip: 'Accept Request',
-                onPressed: _isLoading
-                    ? null
-                    : () => _acceptRequest(friend.username),
-              ),
-              IconButton(
-                icon: Icon(Icons.cancel, color: Colors.red, size: actionIconSize),
-                tooltip: 'Decline Request',
-                onPressed: _isLoading
-                    ? null
-                    : () => _declineRequest(friend.username),
-              ),
-            ],
-          );
-        } else {
-          trailingWidget = IconButton(
-            icon: Icon(
-              Icons.person_add_alt_1_outlined,
-              color: isDarkTheme ? Colors.white : Colors.black,
-              size: actionIconSize,
-            ),
-            tooltip: 'Send Friend Request',
-            onPressed: _isLoading
-                ? null
-                : () => _sendFriendRequest(friend.username),
-          );
-        }
-
-        return Container(
-          margin: itemMargin,
-          decoration: BoxDecoration(
-            color: isDarkTheme ? const Color(0xFF1E1E1E) : Colors.lightBlue[50],
-            borderRadius: BorderRadius.circular(12.0),
-            border: Border.all(
-              color: isDarkTheme ? Colors.cyanAccent.withOpacity(0.3) : Colors.lightBlue[200]!,
-              width: 1.0,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.1),
-                blurRadius: 5,
-                spreadRadius: 1,
-              ),
-            ],
-          ),
-          child: ListTile(
-            contentPadding: itemPadding,
-            leading: _buildAvatar(friend.primaryDisplay, friend.avatarUrl),
-            title: Text(
-              friend.primaryDisplay,
-              style: TextStyle(
-                color: isDarkTheme ? Colors.white : Colors.black,
-                fontWeight: FontWeight.bold,
-                fontSize: nameFontSize,
-              ),
-            ),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(height: spacing1),
-                // Always show username
-                Text(
-                  '@${friend.username}',
-                  style: TextStyle(
-                    color: isDarkTheme ? Colors.grey.shade400 : Colors.black87,
-                    fontSize: usernameFontSize,
-                  ),
-                ),
-                // Show phone number if from contacts
-                if (friend.fromContacts && friend.phoneNumber != null) ...[
-                  SizedBox(height: spacing2),
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.phone,
-                        size: phoneIconSize,
-                        color: isDarkTheme ? Colors.grey[500] : Colors.grey[600],
-                      ),
-                      SizedBox(width: spacing3),
-                      Flexible(
-                        child: Text(
-                          friend.phoneNumber!.replaceFirst('+91', ''),
-                          style: TextStyle(
-                            color: isDarkTheme ? Colors.grey[400] : Colors.grey[700],
-                            fontSize: phoneFontSize,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      SizedBox(width: spacing4),
-                      Text(
-                        '· From Contacts',
-                        style: TextStyle(
-                          color: isDarkTheme ? Colors.cyanAccent : Colors.lightBlueAccent,
-                          fontSize: phoneFontSize,
-                          fontStyle: FontStyle.italic,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ],
-            ),
-            trailing: trailingWidget,
-            onTap: currentTab == FriendTab.receivedRequests
-                ? null
-                : () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Tapped on ${friend.primaryDisplay}')),
-                    );
-                  },
-            onLongPress: currentTab == FriendTab.myFriends
-                ? () => _showFriendOptions(friend)
-                : null,
-          ),
-        );
-      },
-          ),
-        ),
-      ],
-    );
+        })),
+    ]);
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Consumer<UserSettingsProvider>(
-      builder: (context, userSettings, child) {
-        final isDarkTheme = userSettings.findFriendsScreenStyle == 'dark';
-        final screenWidth = MediaQuery.of(context).size.width;
-        final appBarTitleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
-        final tabFontSize = (screenWidth * 0.03).clamp(11.0, 14.0);
-        final tabIconSize = (screenWidth * 0.06).clamp(20.0, 26.0);
+  Widget build(BuildContext context) => Consumer<UserSettingsProvider>(builder: (context, settings, _) {
+    final dark = settings.isDarkMode;
+    final surface = dark ? const Color(0xFF19202A) : Colors.white;
+    return CallAwareScreen(screenName: 'FindFriendsScreen', child: Scaffold(
+      backgroundColor: surface,
+      appBar: widget.embedded ? null : AppBar(backgroundColor: surface, elevation: 0, scrolledUnderElevation: 0, foregroundColor: dark ? Colors.white : const Color(0xFF424D60)),
+      body: Column(children: [
+        OpaqueFriendTabs(controller: _tabController, isDark: dark),
+        Expanded(child: TabBarView(controller: _tabController, children: [
+          _buildTabContent(_myFriends, FriendTab.myFriends, dark),
+          _buildTabContent(_receivedRequests, FriendTab.receivedRequests, dark),
+          _buildTabContent(_sentRequests, FriendTab.sentRequests, dark),
+          _buildSearchTab(dark),
+        ])),
+      ]),
+    ));
+  });
 
-        return CallAwareScreen(
-          screenName: 'FindFriendsScreen',
-          child: Scaffold(
-            backgroundColor: isDarkTheme ? const Color(0xFF121212) : Colors.white,
-            appBar: AppBar(
-            title: Text(
-              'Find Friends',
-              style: TextStyle(
-                color: isDarkTheme ? Colors.white : Colors.black,
-                fontWeight: FontWeight.bold,
-                fontSize: appBarTitleSize,
-              ),
-            ),
-            backgroundColor: isDarkTheme ? const Color(0xFF0a1128) : Colors.white,
-            elevation: 0,
-            iconTheme: IconThemeData(color: isDarkTheme ? Colors.white : Colors.black),
-            bottom: TabBar(
-              controller: _tabController,
-              labelColor: isDarkTheme ? Colors.cyanAccent : Colors.black,
-              unselectedLabelColor: isDarkTheme ? Colors.white54 : Colors.black54,
-              indicatorColor: isDarkTheme ? Colors.cyanAccent : Colors.black,
-              labelStyle: TextStyle(fontSize: tabFontSize),
-              unselectedLabelStyle: TextStyle(fontSize: tabFontSize),
-              tabs: [
-                Tab(text: 'My Friends', icon: Icon(Icons.people, size: tabIconSize)),
-                Tab(text: 'Sent', icon: Icon(Icons.outbox, size: tabIconSize)),
-                Tab(text: 'Received', icon: Icon(Icons.inbox, size: tabIconSize)),
-                Tab(text: 'Search', icon: Icon(Icons.search, size: tabIconSize)),
-              ],
-            ),
+  Widget _buildSearchTab(bool dark) {
+    final query = _searchController.text.trim().toLowerCase().replaceFirst(RegExp(r'^@'), '');
+    final filtered = _searchResults.where((f) => f.username.toLowerCase().contains(query) || (_contactMode && (f.primaryDisplay.toLowerCase().contains(query) || (f.phoneNumber ?? '').contains(query)))).toList();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Padding(padding: const EdgeInsets.fromLTRB(20, 0, 20, 13), child: Row(children: [
+        Expanded(child: SizedBox(height: 40, child: TextField(
+          controller: _searchController, style: TextStyle(fontSize: 16, color: dark ? Colors.white : const Color(0xFF4A5568)),
+          decoration: InputDecoration(hintText: _contactMode ? 'Search contacts' : 'Search by username',
+            hintStyle: const TextStyle(fontSize: 12, color: Color(0xFF979FAD)),
+            prefixIcon: const Padding(padding: EdgeInsets.all(11), child: OpaqueIcon('search', size: 18, color: Color(0xFF919CAD))),
+            filled: true, fillColor: dark ? const Color(0xFF283241) : const Color(0xFFF3F5F8), contentPadding: const EdgeInsets.symmetric(horizontal: 11),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: BorderSide.none),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: BorderSide.none),
+            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: const BorderSide(color: Color(0xFFC6CBD3))),
           ),
-          body: SafeArea(
-            child: TabBarView(
-              controller: _tabController,
-              children: [
-                _buildTabContent(_myFriends, FriendTab.myFriends, isDarkTheme),
-                // --- CHANGE ---
-                // No longer need to map the list, as it's already List<Friend>.
-                _buildTabContent(_sentRequests, FriendTab.sentRequests, isDarkTheme),
-                // --- CHANGE ---
-                // No longer need to map the list, as it's already List<Friend>.
-                _buildTabContent(_receivedRequests, FriendTab.receivedRequests, isDarkTheme),
-                _buildSearchTab(isDarkTheme),
-              ],
-            ),
-          ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildSearchTab(bool isDarkTheme) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-
-    final searchPadding = EdgeInsets.symmetric(
-      horizontal: screenWidth * 0.04,
-      vertical: screenHeight * 0.02,
-    );
-    final searchFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final searchIconSize = (screenWidth * 0.06).clamp(20.0, 26.0);
-    final buttonIconSize = (screenWidth * 0.06).clamp(20.0, 26.0);
-    final buttonPadding = EdgeInsets.symmetric(
-      horizontal: screenWidth * 0.03,
-      vertical: screenHeight * 0.015,
-    );
-    final statusFontSize = (screenWidth * 0.035).clamp(12.0, 16.0);
-    final emptyTextSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final spacing1 = (screenWidth * 0.025).clamp(8.0, 12.0);
-    final spacing2 = (screenHeight * 0.025).clamp(16.0, 24.0);
-    final spacing3 = (screenHeight * 0.01).clamp(6.0, 10.0);
-
-    final filteredFriends = _searchResults.where((friend) {
-      final usernameLower = friend.username.toLowerCase();
-      final queryLower = _searchController.text.toLowerCase();
-      return usernameLower.contains(queryLower);
-    }).toList();
-
-    return Column(
-      children: [
-        Padding(
-          padding: searchPadding,
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _searchController,
-                  style: TextStyle(
-                    color: isDarkTheme ? Colors.white : Colors.black87,
-                    fontSize: searchFontSize,
-                  ),
-                  decoration: InputDecoration(
-                    labelText: 'Search by Username',
-                    labelStyle: TextStyle(
-                      color: isDarkTheme ? Colors.grey.shade400 : Colors.black54,
-                      fontSize: searchFontSize,
-                    ),
-                    hintStyle: TextStyle(
-                      color: isDarkTheme ? Colors.grey.shade600 : Colors.black38,
-                      fontSize: searchFontSize,
-                    ),
-                    prefixIcon: Icon(
-                      Icons.search,
-                      color: isDarkTheme ? Colors.cyanAccent : Colors.black54,
-                      size: searchIconSize,
-                    ),
-                    filled: true,
-                    fillColor: isDarkTheme ? const Color(0xFF1E1E1E) : Colors.lightBlue[50],
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(30.0),
-                      borderSide: BorderSide.none,
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(30.0),
-                      borderSide: BorderSide(
-                        color: isDarkTheme
-                          ? Colors.cyanAccent.withOpacity(0.3)
-                          : Colors.lightBlue[200]!,
-                        width: 1.0,
-                      ),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(30.0),
-                      borderSide: BorderSide(
-                        color: isDarkTheme ? Colors.cyanAccent : Colors.lightBlueAccent,
-                        width: 2.0,
-                      ),
-                    ),
-                    suffixIcon: _searchController.text.isNotEmpty
-                        ? IconButton(
-                            icon: Icon(
-                              Icons.clear,
-                              color: isDarkTheme ? Colors.grey.shade400 : Colors.black54,
-                              size: searchIconSize,
-                            ),
-                            onPressed: () => _searchController.clear(),
-                          )
-                        : null,
-                  ),
-                ),
-              ),
-              SizedBox(width: spacing1),
-              if (!kIsWeb)
-                GestureDetector(
-                  onLongPress: () {
-                    showDialog(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        backgroundColor: Colors.white,
-                        title: Text(
-                          'Find from Contacts',
-                          style: TextStyle(color: Colors.black, fontSize: emptyTextSize),
-                        ),
-                        content: Text(
-                          'This scans your phone contacts to find friends who are already using Zarq Messenger.',
-                          style: TextStyle(color: Colors.black87, fontSize: statusFontSize),
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(context),
-                            child: const Text('Got it'),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                  child: ElevatedButton(
-                    onPressed: _isLoading ? null : _findFriendsInContacts,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.lightBlue[900],
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(30),
-                      ),
-                      padding: buttonPadding,
-                    ),
-                    child: Icon(Icons.contacts, color: Colors.white, size: buttonIconSize),
-                  ),
-                ),
-            ],
-          ),
-        ),
-        _isLoading
-            ? Padding(
-                padding: EdgeInsets.all(spacing2),
-                child: CircularProgressIndicator(
-                  color: isDarkTheme ? Colors.cyanAccent : Colors.lightBlueAccent,
-                ),
-              )
-            : Padding(
-                padding: EdgeInsets.all(spacing3),
-                child: Text(
-                  _statusMessage,
-                  style: TextStyle(
-                    color: isDarkTheme ? Colors.white70 : Colors.black87,
-                    fontSize: statusFontSize,
-                  ),
-                ),
-              ),
-        Expanded(
-          child: filteredFriends.isEmpty
-              ? Center(
-                  child: Text(
-                    _searchController.text.isNotEmpty
-                        ? "No users found."
-                        : "Enter a username or scan contacts to search.",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: isDarkTheme ? Colors.white70 : Colors.black87,
-                      fontSize: emptyTextSize,
-                    ),
-                  ),
-                )
-              : _buildTabContent(filteredFriends, FriendTab.search, isDarkTheme),
-        ),
-      ],
-    );
+        ))),
+        if (!kIsWeb) ...[const SizedBox(width: 8), Container(
+          decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: _contactMode ? const [Color(0xFF608BD0), Color(0xFF416DB0)] : const [Color(0xFF719CDD), Color(0xFF507FC3)]), borderRadius: BorderRadius.circular(14)),
+          child: IconButton(tooltip: _contactMode ? 'Return to username search' : 'Find friends in contacts',
+            onPressed: _isLoading ? null : () {
+              _debounce?.cancel();
+              setState(() { _contactMode = !_contactMode; _searchResults = []; });
+              _searchController.clear();
+              if (_contactMode) { _findFriendsInContacts(); } else { _searchUsers(''); }
+            },
+            icon: OpaqueIcon(_contactMode ? 'friends' : 'calls', size: 24, color: Colors.white), constraints: const BoxConstraints(minWidth: 42, minHeight: 40)),
+        )],
+      ])),
+      Padding(padding: const EdgeInsets.fromLTRB(22, 7, 22, 5), child: Text(_statusMessage, style: const TextStyle(fontSize: 11, color: Color(0xFF929BA9)))),
+      Expanded(child: _buildTabContent(filtered, FriendTab.search, dark)),
+    ]);
   }
 }

@@ -1,0 +1,5 @@
+00:00 +0: loading E:/Zarq Final/zarq_git/opaque/test/opaque_style_header_test.dart
+00:00 +0: Style edits persist without overwriting unrelated preferences
+00:02 +1: Header stays centred and menu works at width 320.0
+00:03 +2: Header stays centred and menu works at width 360.0
+00:03 +3: All tests passed!

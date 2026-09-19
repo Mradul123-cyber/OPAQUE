@@ -55,6 +55,22 @@
           "client_type": 1,
           "android_info": {
             "package_name": "com.zarq.messenger",
+            "certificate_hash": "59e9b9991ac987649c567a89bb85c868706a11e8"
+          }
+        },
+        {
+          "client_id": "463692732659-f6rmigeiajbkk3rqj4ku72ge7n0le0af.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.zarq.messenger",
+            "certificate_hash": "206e0619cf9b31c1018950b66c799046fc3f386e"
+          }
+        },
+        {
+          "client_id": "463692732659-ub9s3g8dsgd47rjrfcag2e13j40os5na.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.zarq.messenger",
             "certificate_hash": "bf7567fa9404a7ec0658ad0d31da6d580deab9d8"
           }
         },

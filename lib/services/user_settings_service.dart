@@ -14,6 +14,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:zarq_messenger/app_config.dart';
 
 // --- Existing Model for available styles ---
 class BubbleOption {
@@ -48,7 +49,7 @@ class UserSettings {
 }
 
 class UserSettingsService {
-  final String _baseUrl = 'https://api.zarqmessenger.com';
+  final String _baseUrl = '${AppConfig.baseUrl}';
 
   Future<String> _getToken() async {
     final token = await FirebaseAuth.instance.currentUser?.getIdToken();

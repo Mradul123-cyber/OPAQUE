@@ -6,6 +6,7 @@ import 'dart:async';
 import 'package:zarq_messenger/starfield_background.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
 import 'screens/phone_otp_verification_screen.dart';
+import 'package:zarq_messenger/app_config.dart';
 
 
 class RegisterScreen extends StatefulWidget {
@@ -31,7 +32,7 @@ class RegisterScreen extends StatefulWidget {
 class _RegisterScreenState extends State<RegisterScreen> {
   bool _isLoading = false;
   // Define the backend URL once to avoid repetition and potential typos.
-  final String backendBaseUrl = 'https://api.zarqmessenger.com';
+  final String backendBaseUrl = '${AppConfig.baseUrl}';
 
   // Phone number with country code (e.g., +919876543210)
   String _completePhoneNumber = '';

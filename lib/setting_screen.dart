@@ -11,7 +11,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:zarq_messenger/screens/backup_management_screen.dart';
-import 'package:zarq_messenger/screens/customization_screen.dart';
+import 'package:zarq_messenger/screens/style_screen.dart';
 import 'package:zarq_messenger/screens/tutorial_screen.dart';
 import 'package:zarq_messenger/screens/premium_plans_screen.dart';
 import 'profile_background.dart';
@@ -25,6 +25,7 @@ import 'services/database_service.dart';
 import 'widgets/call_aware_screen.dart';
 import 'services/overlay_permission_helper.dart';
 import 'services/system_overlay_service.dart';
+import 'package:zarq_messenger/app_config.dart';
 
 class Friend {
   final String username;
@@ -79,7 +80,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       final token = await user.getIdToken();
       final response = await http.get(
-        Uri.parse('https://api.zarqmessenger.com/profiles/me'),
+        Uri.parse('${AppConfig.baseUrl}/profiles/me'),
         headers: {'Authorization': 'Bearer $token'},
       );
 
@@ -167,7 +168,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (token == null) throw Exception("User not authenticated");
 
     final response = await http.post(
-      Uri.parse('https://api.zarqmessenger.com/profile/avatar/update'),
+      Uri.parse('${AppConfig.baseUrl}/profile/avatar/update'),
       headers: {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
@@ -188,7 +189,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final token = await _currentUser?.getIdToken();
       if (token == null) throw Exception("Not authenticated");
 
-      final url = Uri.parse('https://api.zarqmessenger.com/friends/list');
+      final url = Uri.parse('${AppConfig.baseUrl}/friends/list');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -277,7 +278,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       final token = await user.getIdToken();
       final response = await http.post(
-        Uri.parse('https://api.zarqmessenger.com/profile/displayname/update'),
+        Uri.parse('${AppConfig.baseUrl}/profile/displayname/update'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
@@ -715,7 +716,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         SizedBox(height: spacing1),
 
                         // 🚨 NEW CUSTOMIZATION SECTION 🚨
-                        _buildCustomizationSection(
+                        _buildStyleSection(
                           sectionTitleSize: sectionTitleSize,
                           iconSize1: iconSize1,
                           bodyTextSize: bodyTextSize,
@@ -900,7 +901,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildCustomizationSection({
+  Widget _buildStyleSection({
     required double sectionTitleSize,
     required double iconSize1,
     required double bodyTextSize,
@@ -947,8 +948,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // Customization Button
         _buildActionButton(
           icon: Icons.palette,
-          text: 'Customization',
-          onTap: _navigateToCustomization,
+          text: 'Style',
+          onTap: _navigateToStyle,
           color: Colors.purpleAccent,
           buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
           borderRadius: borderRadius1 * 0.75,
@@ -957,11 +958,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _navigateToCustomization() {
+  void _navigateToStyle() {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => const CustomizationScreen(),
+        builder: (context) => const StyleScreen(),
       ),
     );
   }
@@ -1257,7 +1258,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (user != null) {
         try {
           final token = await user.getIdToken();
-          final url = Uri.parse('https://api.zarqmessenger.com/v1/fcm/token');
+          final url = Uri.parse('${AppConfig.baseUrl}/v1/fcm/token');
           await http.post(
             url,
             headers: {
@@ -1491,7 +1492,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       // Call backend delete account endpoint
       final response = await http.delete(
-        Uri.parse('https://api.zarqmessenger.com/v1/user/account/delete'),
+        Uri.parse('${AppConfig.baseUrl}/v1/user/account/delete'),
         headers: {
           'Authorization': 'Bearer $token',
           'Content-Type': 'application/json',

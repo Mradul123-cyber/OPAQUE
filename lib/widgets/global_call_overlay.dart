@@ -112,7 +112,7 @@ class _GlobalCallOverlayState extends State<GlobalCallOverlay> with WidgetsBindi
   String? _lastShownCallerId; // Track which call we've shown
   bool _isMinimized = false; // Track if call UI is minimized
   Offset _position = const Offset(20, 100); // Draggable position
-  bool _isCircularStyle = false; // false = horizontal, true = circular
+  bool _isCircularStyle = true; // false = horizontal, true = circular
   bool _isCircularExpanded = false; // For circular style: show/hide buttons
 
   @override
@@ -124,8 +124,9 @@ class _GlobalCallOverlayState extends State<GlobalCallOverlay> with WidgetsBindi
 
   Future<void> _loadOverlayStyle() async {
     final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
     setState(() {
-      _isCircularStyle = prefs.getBool('call_overlay_circular') ?? false;
+      _isCircularStyle = prefs.getBool('call_overlay_circular') ?? true;
     });
   }
 

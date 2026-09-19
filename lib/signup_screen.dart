@@ -27,7 +27,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
   bool _isLoading = false;
   bool _isGoogleLoading = false;
   bool _isPasswordVisible = false;
-  final String backendBaseUrl = 'https://api.zarqmessenger.com';
+  final String backendBaseUrl = '${AppConfig.baseUrl}';
   String _passwordStrength = '';
   Color _passwordStrengthColor = Colors.transparent;
   final GoogleAuthService _googleAuthService = GoogleAuthService();

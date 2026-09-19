@@ -4,11 +4,12 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'package:zarq_messenger/services/SignalService.dart';
 import 'package:zarq_messenger/services/device_service.dart';
+import 'package:zarq_messenger/app_config.dart';
 
 class KeyRotationService {
   static Timer? _rotationTimer;
 
-  static const String baseUrl = 'https://api.zarqmessenger.com';
+  static const String baseUrl = '${AppConfig.baseUrl}';
 
 
   static Future<Map<String, String>> _getAuthHeaders() async {

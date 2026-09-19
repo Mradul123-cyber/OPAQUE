@@ -47,12 +47,11 @@ import 'screens/share_conversation_picker_screen.dart';
 
 // Import the NavigationHandler
 import 'services/navigation_handler.dart';
+import 'package:zarq_messenger/app_config.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
   // Initialize auto-backup workmanager
   await AutoBackupManager.initialize();
@@ -88,13 +87,24 @@ void main() async {
         ChangeNotifierProvider(create: (_) => UserSettingsProvider()),
         ChangeNotifierProvider(create: (_) => BackupSettingsProvider()),
         ChangeNotifierProvider.value(value: globalCallManager),
-        ChangeNotifierProxyProvider2<ConversationService, WebSocketService, HomeProvider>(
+        ChangeNotifierProxyProvider2<
+          ConversationService,
+          WebSocketService,
+          HomeProvider
+        >(
           create: (context) => HomeProvider(
-            conversationService: Provider.of<ConversationService>(context, listen: false),
-            webSocketService: Provider.of<WebSocketService>(context, listen: false),
+            conversationService: Provider.of<ConversationService>(
+              context,
+              listen: false,
+            ),
+            webSocketService: Provider.of<WebSocketService>(
+              context,
+              listen: false,
+            ),
           ),
           update: (_, conversationService, webSocketService, homeProvider) =>
-          homeProvider!..updateServices(conversationService, webSocketService),
+              homeProvider!
+                ..updateServices(conversationService, webSocketService),
         ),
       ],
       child: const MyApp(),
@@ -104,7 +114,8 @@ void main() async {
 
 class MyApp extends StatefulWidget {
   const MyApp({super.key});
-  static final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+  static final GlobalKey<NavigatorState> navigatorKey =
+      GlobalKey<NavigatorState>();
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -113,7 +124,9 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   // IMPORTANT: Use a SEPARATE channel for Kotlin->Flutter triggers
   // to avoid conflicts with the bidirectional com.zarq/backup channel
-  static const MethodChannel _backupTriggerChannel = MethodChannel('com.zarq/backup_trigger');
+  static const MethodChannel _backupTriggerChannel = MethodChannel(
+    'com.zarq/backup_trigger',
+  );
 
   StreamSubscription<SharedContent>? _shareSubscription;
 
@@ -132,21 +145,31 @@ class _MyAppState extends State<MyApp> {
 
   void _setupShareListener() {
     debugPrint('📤 [MyApp] Setting up share content listener...');
-    _shareSubscription = ShareService.sharedContentStream.listen((sharedContent) {
+    _shareSubscription = ShareService.sharedContentStream.listen((
+      sharedContent,
+    ) {
       debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      debugPrint('📤 [MyApp] 🔥 STREAM FIRED! Received shared content: ${sharedContent.type}');
+      debugPrint(
+        '📤 [MyApp] 🔥 STREAM FIRED! Received shared content: ${sharedContent.type}',
+      );
       debugPrint('📤 [MyApp] URI: ${sharedContent.uri}');
-      debugPrint('📤 [MyApp] Navigator key: ${MyApp.navigatorKey.currentState}');
+      debugPrint(
+        '📤 [MyApp] Navigator key: ${MyApp.navigatorKey.currentState}',
+      );
       debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
       // Navigate to conversation picker screen
       final navigatorState = MyApp.navigatorKey.currentState;
       if (navigatorState != null) {
-        debugPrint('📤 [MyApp] ✅ Navigating to ShareConversationPickerScreen...');
+        debugPrint(
+          '📤 [MyApp] ✅ Navigating to ShareConversationPickerScreen...',
+        );
         navigatorState.push(
           MaterialPageRoute(
             builder: (context) {
-              debugPrint('📤 [MyApp] 🏗️ Building ShareConversationPickerScreen...');
+              debugPrint(
+                '📤 [MyApp] 🏗️ Building ShareConversationPickerScreen...',
+              );
               return ShareConversationPickerScreen(
                 sharedContent: sharedContent,
               );
@@ -167,8 +190,12 @@ class _MyAppState extends State<MyApp> {
   }
 
   void _setupBackupHandler() {
-    debugPrint('🔧 [MyApp] Setting up PERSISTENT backup MethodChannel handler...');
-    debugPrint('🔧 [MyApp] Channel: com.zarq/backup_trigger (one-way Kotlin->Flutter)');
+    debugPrint(
+      '🔧 [MyApp] Setting up PERSISTENT backup MethodChannel handler...',
+    );
+    debugPrint(
+      '🔧 [MyApp] Channel: com.zarq/backup_trigger (one-way Kotlin->Flutter)',
+    );
     debugPrint('🔧 [MyApp] Handler address: ${_backupTriggerChannel.hashCode}');
     _backupTriggerChannel.setMethodCallHandler((call) async {
       debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -179,9 +206,15 @@ class _MyAppState extends State<MyApp> {
 
       if (call.method == 'executeAutoBackupNow') {
         debugPrint('');
-        debugPrint('╔════════════════════════════════════════════════════════════╗');
-        debugPrint('║ 🔥 FLUTTER RECEIVED AUTO-BACKUP TRIGGER!                  ║');
-        debugPrint('╚════════════════════════════════════════════════════════════╝');
+        debugPrint(
+          '╔════════════════════════════════════════════════════════════╗',
+        );
+        debugPrint(
+          '║ 🔥 FLUTTER RECEIVED AUTO-BACKUP TRIGGER!                  ║',
+        );
+        debugPrint(
+          '╚════════════════════════════════════════════════════════════╝',
+        );
         debugPrint('');
 
         try {
@@ -194,20 +227,30 @@ class _MyAppState extends State<MyApp> {
 
           if (settings.enabled) {
             // Show initial progress notification
-            await BackupNotificationService.showProgressNotification('Starting auto-backup...', 0);
+            await BackupNotificationService.showProgressNotification(
+              'Starting auto-backup...',
+              0,
+            );
 
             debugPrint('[MyApp] Step 3: Creating local backup...');
 
             // Create local backup (WhatsApp approach: Media stays on device, only messages + keys)
-            await BackupNotificationService.showProgressNotification('Collecting messages...', 20);
+            await BackupNotificationService.showProgressNotification(
+              'Collecting messages...',
+              20,
+            );
             final backupData = await backupService.createLocalBackup(
-              includeMedia: false, // Consistent with manual backup - media stays on device
+              includeMedia:
+                  false, // Consistent with manual backup - media stays on device
             );
             debugPrint('[MyApp] Step 4: Backup data created');
 
             // Encrypt the backup
             debugPrint('[MyApp] Step 5: Encrypting backup...');
-            await BackupNotificationService.showProgressNotification('Encrypting backup...', 50);
+            await BackupNotificationService.showProgressNotification(
+              'Encrypting backup...',
+              50,
+            );
             final encryptedFile = await backupService.encryptBackup(
               backupData,
               settings.lastBackupPassphrase ?? '',
@@ -216,13 +259,22 @@ class _MyAppState extends State<MyApp> {
 
             // Save to MediaStore Downloads (persists after uninstall, no permissions needed)
             debugPrint('[MyApp] Step 7: Saving to MediaStore Downloads...');
-            await BackupNotificationService.showProgressNotification('Saving to local storage...', 70);
+            await BackupNotificationService.showProgressNotification(
+              'Saving to local storage...',
+              70,
+            );
 
             // Use "auto_backup_" prefix to differentiate from manual backups
-            final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+            final timestamp = DateTime.now()
+                .toIso8601String()
+                .replaceAll(':', '-')
+                .split('.')[0];
             final fileName = 'auto_backup_$timestamp.encrypted';
 
-            final uri = await MediaStoreBackupService.saveBackupFile(encryptedFile, fileName);
+            final uri = await MediaStoreBackupService.saveBackupFile(
+              encryptedFile,
+              fileName,
+            );
             if (uri != null) {
               debugPrint('[MyApp] Backup saved to MediaStore: $uri');
             } else {
@@ -236,29 +288,50 @@ class _MyAppState extends State<MyApp> {
 
             // Update last backup time
             debugPrint('[MyApp] Step 9: Updating last backup time...');
-            await BackupNotificationService.showProgressNotification('Finalizing...', 95);
+            await BackupNotificationService.showProgressNotification(
+              'Finalizing...',
+              95,
+            );
             await backupService.updateLastBackupTime(DateTime.now());
 
             debugPrint('');
-            debugPrint('╔════════════════════════════════════════════════════════════╗');
-            debugPrint('║ ✅ AUTO-BACKUP COMPLETED SUCCESSFULLY!                    ║');
-            debugPrint('╠════════════════════════════════════════════════════════════╣');
-            debugPrint('╚════════════════════════════════════════════════════════════╝');
+            debugPrint(
+              '╔════════════════════════════════════════════════════════════╗',
+            );
+            debugPrint(
+              '║ ✅ AUTO-BACKUP COMPLETED SUCCESSFULLY!                    ║',
+            );
+            debugPrint(
+              '╠════════════════════════════════════════════════════════════╣',
+            );
+            debugPrint(
+              '╚════════════════════════════════════════════════════════════╝',
+            );
             debugPrint('');
 
             // Show success notification
             await BackupNotificationService.showSuccessNotification('Auto');
           } else {
-            debugPrint('[MyApp] ⚠️ Auto-backup is disabled in settings, skipping');
+            debugPrint(
+              '[MyApp] ⚠️ Auto-backup is disabled in settings, skipping',
+            );
           }
         } catch (e, stackTrace) {
           debugPrint('');
-          debugPrint('╔════════════════════════════════════════════════════════════╗');
-          debugPrint('║ ❌ AUTO-BACKUP FAILED!                                    ║');
-          debugPrint('╠════════════════════════════════════════════════════════════╣');
+          debugPrint(
+            '╔════════════════════════════════════════════════════════════╗',
+          );
+          debugPrint(
+            '║ ❌ AUTO-BACKUP FAILED!                                    ║',
+          );
+          debugPrint(
+            '╠════════════════════════════════════════════════════════════╣',
+          );
           debugPrint('║ Error: $e');
           debugPrint('║ Stack: $stackTrace');
-          debugPrint('╚════════════════════════════════════════════════════════════╝');
+          debugPrint(
+            '╚════════════════════════════════════════════════════════════╝',
+          );
           debugPrint('');
 
           // Show failure notification
@@ -287,14 +360,18 @@ class _MyAppState extends State<MyApp> {
 
       // Filter only auto-backups (filename starts with "auto_backup_")
       final autoBackups = allBackups
-          .where((backup) => (backup['name'] as String).startsWith('auto_backup_'))
+          .where(
+            (backup) => (backup['name'] as String).startsWith('auto_backup_'),
+          )
           .toList();
 
       debugPrint('[MyApp] Found ${autoBackups.length} auto-backup files');
 
       // If 2 or fewer auto-backups exist, don't delete anything
       if (autoBackups.length <= 2) {
-        debugPrint('[MyApp] Only ${autoBackups.length} auto-backups, no cleanup needed');
+        debugPrint(
+          '[MyApp] Only ${autoBackups.length} auto-backups, no cleanup needed',
+        );
         return;
       }
 
@@ -307,7 +384,9 @@ class _MyAppState extends State<MyApp> {
 
       // Keep only the 2 most recent, delete the rest
       final backupsToDelete = autoBackups.sublist(2);
-      debugPrint('[MyApp] Deleting ${backupsToDelete.length} old auto-backups (keeping 2 most recent)');
+      debugPrint(
+        '[MyApp] Deleting ${backupsToDelete.length} old auto-backups (keeping 2 most recent)',
+      );
 
       for (final backup in backupsToDelete) {
         try {
@@ -336,59 +415,69 @@ class _MyAppState extends State<MyApp> {
     // Initialize navigation handler for Kotlin communication
     NavigationHandler.initialize(MyApp.navigatorKey);
 
-    return MaterialApp(
-      title: 'Zarq Messenger',
-      theme: zarqDarkTheme,
-      navigatorKey: MyApp.navigatorKey,
-      localizationsDelegates: const [
-        FlutterQuillLocalizations.delegate,
-      ],
-      home: const AuthGate(),
-      builder: (context, child) {
-        return Consumer<GlobalCallManager>(
-          builder: (context, callManager, _) {
-            // print('[Main] Builder - isInCall: ${callManager.isInCall}');
-            return PopScope(
-              canPop: !callManager.isInCall || GlobalCallOverlay.isMinimized,
-              onPopInvokedWithResult: (didPop, result) {
-                // print('[Main] 🔙 PopScope triggered - didPop: $didPop');
-                if (!didPop && callManager.isInCall && !GlobalCallOverlay.isMinimized) {
-                  // print('[Main] 🔙 Call is maximized - minimizing overlay');
-                  GlobalCallOverlay.minimize();
-                }
+    return Consumer<UserSettingsProvider>(
+      builder: (context, userSettings, _) {
+        return MaterialApp(
+          title: 'Zarq Messenger',
+          theme: userSettings.isDarkMode ? zarqDarkTheme : zarqLightTheme,
+          themeMode: userSettings.isDarkMode ? ThemeMode.dark : ThemeMode.light,
+          navigatorKey: MyApp.navigatorKey,
+          localizationsDelegates: const [FlutterQuillLocalizations.delegate],
+          home: const AuthGate(),
+          builder: (context, child) {
+            return Consumer<GlobalCallManager>(
+              builder: (context, callManager, _) {
+                // print('[Main] Builder - isInCall: ${callManager.isInCall}');
+                return PopScope(
+                  canPop:
+                      !callManager.isInCall || GlobalCallOverlay.isMinimized,
+                  onPopInvokedWithResult: (didPop, result) {
+                    // print('[Main] 🔙 PopScope triggered - didPop: $didPop');
+                    if (!didPop &&
+                        callManager.isInCall &&
+                        !GlobalCallOverlay.isMinimized) {
+                      // print('[Main] 🔙 Call is maximized - minimizing overlay');
+                      GlobalCallOverlay.minimize();
+                    }
+                  },
+                  child: Stack(
+                    children: [
+                      child!,
+                      GlobalCallOverlay(key: GlobalCallOverlay.globalKey),
+                    ],
+                  ),
+                );
               },
-              child: Stack(
-                children: [
-                  child!,
-                  GlobalCallOverlay(key: GlobalCallOverlay.globalKey),
-                ],
-              ),
             );
           },
+          // Add routes for navigation from notifications
+          routes: {
+            '/chat': (context) {
+              final args =
+                  ModalRoute.of(context)?.settings.arguments
+                      as Map<String, dynamic>?;
+
+              if (args != null) {
+                final conversationId = args['conversation_id'] as int?;
+                // print('[Route] Notification navigation to conversation: $conversationId');
+
+                if (conversationId != null) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    Navigator.of(context).pushReplacementNamed(
+                      '/home_with_conversation',
+                      arguments: {'target_conversation_id': conversationId},
+                    );
+                  });
+                }
+              }
+
+              return const HomeScreen();
+            },
+            '/home_with_conversation': (context) {
+              return const HomeScreen();
+            },
+          },
         );
-      },
-      // Add routes for navigation from notifications
-      routes: {
-        '/chat': (context) {
-          final args = ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
-
-          if (args != null) {
-            final conversationId = args['conversation_id'] as int?;
-            // print('[Route] Notification navigation to conversation: $conversationId');
-
-            if (conversationId != null) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                Navigator.of(context).pushReplacementNamed('/home_with_conversation',
-                    arguments: {'target_conversation_id': conversationId});
-              });
-            }
-          }
-
-          return const HomeScreen();
-        },
-        '/home_with_conversation': (context) {
-          return const HomeScreen();
-        },
       },
     );
   }
@@ -473,7 +562,10 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     callManager.handleAppLifecycleState(state);
 
     // Handle WebSocket reconnection when app comes to foreground
-    final websocketService = Provider.of<WebSocketService>(context, listen: false);
+    final websocketService = Provider.of<WebSocketService>(
+      context,
+      listen: false,
+    );
 
     if (state == AppLifecycleState.resumed) {
       // print('[AuthWrapper] App resumed - checking WebSocket connection');
@@ -571,18 +663,25 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
       // IMPORTANT: Use existing device ID and registration ID (restored from backup)
       final deviceId = await platform.invokeMethod<int>('getDeviceId');
-      final registrationId = await platform.invokeMethod<int>('getRegistrationId');
+      final registrationId = await platform.invokeMethod<int>(
+        'getRegistrationId',
+      );
 
       // print("[AuthWrapper] Retrieved IDs - Device: $deviceId, Registration: $registrationId");
 
-      if (deviceId == null || deviceId <= 0 || registrationId == null || registrationId <= 0) {
+      if (deviceId == null ||
+          deviceId <= 0 ||
+          registrationId == null ||
+          registrationId <= 0) {
         // print("[AuthWrapper] ⚠️ Invalid device ID or registration ID");
         return null;
       }
 
       // Call a special method to get key bundle WITHOUT regenerating device ID
       // This will use existing identity keys and device ID (restored from backup)
-      final keyBundle = await platform.invokeMethod<Map<dynamic, dynamic>>('getKeyBundleForRegistration');
+      final keyBundle = await platform.invokeMethod<Map<dynamic, dynamic>>(
+        'getKeyBundleForRegistration',
+      );
 
       if (keyBundle == null) {
         // print("[AuthWrapper] ⚠️ Could not retrieve existing key bundle");
@@ -601,11 +700,12 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     }
   }
 
-// Check if user is already fully initialized - UPDATED
+  // Check if user is already fully initialized - UPDATED
   Future<bool> _isUserAlreadyInitialized() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final isInitialized = prefs.getBool('user_${widget.user.uid}_initialized') ?? false;
+      final isInitialized =
+          prefs.getBool('user_${widget.user.uid}_initialized') ?? false;
 
       // UPDATED: Also check if Signal keys exist
       final hasKeys = await _checkExistingKeys();
@@ -631,13 +731,18 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   }
 
   // Mark undelivered messages as delivered on app login
-  Future<void> _markUndeliveredMessagesAsDelivered(WebSocketService websocketService, DatabaseService dbService) async {
+  Future<void> _markUndeliveredMessagesAsDelivered(
+    WebSocketService websocketService,
+    DatabaseService dbService,
+  ) async {
     try {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return;
 
       final prefs = await SharedPreferences.getInstance();
-      final undeliveredMessages = await dbService.getAllUndeliveredMessages(currentUser.uid);
+      final undeliveredMessages = await dbService.getAllUndeliveredMessages(
+        currentUser.uid,
+      );
 
       for (final message in undeliveredMessages) {
         // Check if we already marked this message as delivered
@@ -645,7 +750,9 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
         final lastDeliveredTimestamp = prefs.getInt(deliveredKey);
 
         if (lastDeliveredTimestamp != null) {
-          final lastDelivered = DateTime.fromMillisecondsSinceEpoch(lastDeliveredTimestamp);
+          final lastDelivered = DateTime.fromMillisecondsSinceEpoch(
+            lastDeliveredTimestamp,
+          );
           if (DateTime.now().difference(lastDelivered) < Duration(hours: 1)) {
             // print("Skipping message ${message.id} - already marked delivered recently");
             continue;
@@ -661,7 +768,10 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
           conversationId: message.conversationId,
         );
 
-        await dbService.updateMessageStatus(message.id, MessageStatus.delivered);
+        await dbService.updateMessageStatus(
+          message.id,
+          MessageStatus.delivered,
+        );
         // print("Marked message ${message.id} as delivered on app login");
       }
 
@@ -676,8 +786,14 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   Future<bool> _initializeUserServices() async {
     try {
       final dbService = Provider.of<DatabaseService>(context, listen: false);
-      final websocketService = Provider.of<WebSocketService>(context, listen: false);
-      final globalCallManager = Provider.of<GlobalCallManager>(context, listen: false);
+      final websocketService = Provider.of<WebSocketService>(
+        context,
+        listen: false,
+      );
+      final globalCallManager = Provider.of<GlobalCallManager>(
+        context,
+        listen: false,
+      );
 
       // Connect WebSocket to GlobalCallManager for call signaling
       websocketService.setGlobalCallManager(globalCallManager);
@@ -690,7 +806,8 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
         // Check if device needs re-registration (after restore)
         final prefs = await SharedPreferences.getInstance();
-        final needsReregistration = prefs.getBool('needs_device_reregistration') ?? false;
+        final needsReregistration =
+            prefs.getBool('needs_device_reregistration') ?? false;
 
         // Hide progress bar for normal fast startup, show for restore flow
         _showProgressBar.value = needsReregistration;
@@ -703,9 +820,9 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
             if (!exists) throw Exception("Profile missing");
           }),
           _testSignalProtocol(),
-          widget.user.getIdToken(true).then((token) =>
-              websocketService.connect(token)
-          ),
+          widget.user
+              .getIdToken(true)
+              .then((token) => websocketService.connect(token)),
         ]);
 
         _updateProgress(0.3, 'Verifying session...');
@@ -721,11 +838,15 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
           final keyBundle = await _getExistingKeyBundle();
 
           if (keyBundle != null) {
-            final oneTimeKeys = (keyBundle['one_time_prekeys'] as List<dynamic>? ?? [])
-                .map((key) => {
-              'key_id': key['key_id'],
-              'public_key_b64': key['public_key_b64'],
-            }).toList();
+            final oneTimeKeys =
+                (keyBundle['one_time_prekeys'] as List<dynamic>? ?? [])
+                    .map(
+                      (key) => {
+                        'key_id': key['key_id'],
+                        'public_key_b64': key['public_key_b64'],
+                      },
+                    )
+                    .toList();
 
             // print("[AuthWrapper] Re-registering device ${keyBundle['device_id']} to backend...");
             // print("[AuthWrapper] This will REPLACE any existing device in backend");
@@ -742,7 +863,8 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
               registrationId: keyBundle['registration_id'] as int,
               signedPreKeyId: keyBundle['signed_prekey_id'] as int,
               signedPreKeyB64: keyBundle['signed_prekey_b64'] as String,
-              signedPreKeySignatureB64: keyBundle['signed_prekey_signature_b64'] as String,
+              signedPreKeySignatureB64:
+                  keyBundle['signed_prekey_signature_b64'] as String,
               oneTimePreKeys: oneTimeKeys,
             );
 
@@ -805,12 +927,15 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       final keyBundleToRegister = newKeyBundle ?? await _getExistingKeyBundle();
 
       if (keyBundleToRegister != null) {
-        final oneTimeKeys = (keyBundleToRegister['one_time_prekeys'] as List<dynamic>? ?? [])
-            .map((key) => {
-          'key_id': key['key_id'],
-          'public_key_b64': key['public_key_b64'],
-        })
-            .toList();
+        final oneTimeKeys =
+            (keyBundleToRegister['one_time_prekeys'] as List<dynamic>? ?? [])
+                .map(
+                  (key) => {
+                    'key_id': key['key_id'],
+                    'public_key_b64': key['public_key_b64'],
+                  },
+                )
+                .toList();
 
         // print("[AuthWrapper] Registering device ${keyBundleToRegister['device_id']} to backend...");
         _updateProgress(0.71, 'Registering device to server...');
@@ -824,7 +949,8 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
           registrationId: keyBundleToRegister['registration_id'] as int,
           signedPreKeyId: keyBundleToRegister['signed_prekey_id'] as int,
           signedPreKeyB64: keyBundleToRegister['signed_prekey_b64'] as String,
-          signedPreKeySignatureB64: keyBundleToRegister['signed_prekey_signature_b64'] as String,
+          signedPreKeySignatureB64:
+              keyBundleToRegister['signed_prekey_signature_b64'] as String,
           oneTimePreKeys: oneTimeKeys,
         );
 
@@ -861,7 +987,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       }
 
       return true;
-
     } catch (e, st) {
       // print("Initialization FAILED: $e\n$st");
       rethrow;
@@ -881,14 +1006,16 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       final fcmToken = await utilityChannel.invokeMethod('getFCMToken');
 
       if (fcmToken != null && fcmToken.isNotEmpty) {
-        print("[AuthWrapper] 📤 Uploading FCM token to server: ${fcmToken.substring(0, 20)}...");
+        print(
+          "[AuthWrapper] 📤 Uploading FCM token to server: ${fcmToken.substring(0, 20)}...",
+        );
 
         // Get actual device ID
         final actualDeviceId = await SignalService.getDeviceId();
         print("[AuthWrapper] Using device ID: $actualDeviceId");
 
         final token = await user.getIdToken();
-        final url = Uri.parse('https://api.zarqmessenger.com/v1/fcm/token');
+        final url = Uri.parse('${AppConfig.baseUrl}/v1/fcm/token');
 
         final response = await http.post(
           url,
@@ -906,10 +1033,14 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
         if (response.statusCode == 200) {
           print("[AuthWrapper] ✅ FCM token uploaded successfully");
         } else {
-          print("[AuthWrapper] ❌ FCM token upload failed: ${response.statusCode} - ${response.body}");
+          print(
+            "[AuthWrapper] ❌ FCM token upload failed: ${response.statusCode} - ${response.body}",
+          );
         }
       } else {
-        print("[AuthWrapper] ⚠️ No FCM token available yet - will retry on next app start");
+        print(
+          "[AuthWrapper] ⚠️ No FCM token available yet - will retry on next app start",
+        );
         // Schedule retry after 2 seconds (token might be generated soon)
         Future.delayed(const Duration(seconds: 2), () {
           _uploadFCMTokenToServer();
@@ -927,7 +1058,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       // For now, just log that we would fetch messages
       // TODO: Implement when Signal Protocol encryption is ready
       // print("[OFFLINE] Message fetching temporarily disabled - waiting for Signal Protocol implementation");
-
     } catch (e) {
       // print("[OFFLINE] Fetch failed: $e");
     }
@@ -935,8 +1065,11 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
   Future<bool> _checkIfProfileExists() async {
     final token = await widget.user.getIdToken(true);
-    final url = Uri.parse('https://api.zarqmessenger.com/profiles/me');
-    final response = await http.get(url, headers: {'Authorization': 'Bearer $token'});
+    final url = Uri.parse('${AppConfig.baseUrl}/profiles/me');
+    final response = await http.get(
+      url,
+      headers: {'Authorization': 'Bearer $token'},
+    );
     return response.statusCode == 200;
   }
 
@@ -949,17 +1082,23 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
     try {
       // TEMPORARY: Check for backups in BOTH MediaStore (new) and file system (old)
-      debugPrint('[BackupDetection] 🔍 Checking for backups (MediaStore + old files)...');
+      debugPrint(
+        '[BackupDetection] 🔍 Checking for backups (MediaStore + old files)...',
+      );
 
       final backupFiles = await MediaStoreBackupService.listAllBackups();
-      debugPrint('[BackupDetection] 📋 Found ${backupFiles.length} total backup files');
+      debugPrint(
+        '[BackupDetection] 📋 Found ${backupFiles.length} total backup files',
+      );
 
       if (backupFiles.isEmpty) {
         debugPrint('[BackupDetection] ⚠️ No backup files found');
         return;
       }
 
-      debugPrint('[BackupDetection] ✅ Found ${backupFiles.length} backup(s) after login');
+      debugPrint(
+        '[BackupDetection] ✅ Found ${backupFiles.length} backup(s) after login',
+      );
 
       // Backups are already sorted by modification time (newest first) from MediaStore
       final mostRecentBackup = backupFiles.first;
@@ -968,11 +1107,16 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
       final prefs = await SharedPreferences.getInstance();
       final lastRestoredBackupUri = prefs.getString('last_restored_backup_uri');
-      final lastRestoredTimestamp = prefs.getInt('last_restored_backup_timestamp');
+      final lastRestoredTimestamp = prefs.getInt(
+        'last_restored_backup_timestamp',
+      );
 
       // Skip if this exact backup was already restored
-      if (lastRestoredBackupUri == backupUri && lastRestoredTimestamp == backupModified) {
-        debugPrint('[BackupDetection] ✅ Most recent backup was already restored. Skipping.');
+      if (lastRestoredBackupUri == backupUri &&
+          lastRestoredTimestamp == backupModified) {
+        debugPrint(
+          '[BackupDetection] ✅ Most recent backup was already restored. Skipping.',
+        );
         return;
       }
 
@@ -989,8 +1133,11 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
   void _showBackupRestoreDialog(List<Map<String, dynamic>> backups) {
     final mostRecentBackup = backups.first;
-    final backupDate = DateTime.fromMillisecondsSinceEpoch(mostRecentBackup['dateModified'] as int).toLocal();
-    final backupSize = ((mostRecentBackup['size'] as int) / (1024 * 1024)).toStringAsFixed(2);
+    final backupDate = DateTime.fromMillisecondsSinceEpoch(
+      mostRecentBackup['dateModified'] as int,
+    ).toLocal();
+    final backupSize = ((mostRecentBackup['size'] as int) / (1024 * 1024))
+        .toStringAsFixed(2);
     final backupName = mostRecentBackup['name'] as String;
 
     showDialog(
@@ -1101,9 +1248,10 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
                                     child: LinearProgressIndicator(
                                       value: progress,
                                       backgroundColor: Colors.grey.shade800,
-                                      valueColor: const AlwaysStoppedAnimation<Color>(
-                                        Color(0xFF00D9FF),
-                                      ),
+                                      valueColor:
+                                          const AlwaysStoppedAnimation<Color>(
+                                            Color(0xFF00D9FF),
+                                          ),
                                     ),
                                   ),
                                 ),
@@ -1143,7 +1291,9 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
           final errorString = snapshot.error.toString().toLowerCase();
 
-          if (errorString.contains('network') || errorString.contains('connection') || errorString.contains('internet')) {
+          if (errorString.contains('network') ||
+              errorString.contains('connection') ||
+              errorString.contains('internet')) {
             friendlyMessage = 'No Internet Connection';
             suggestion = 'Please check your internet and try again';
             errorIcon = Icons.wifi_off;
@@ -1203,8 +1353,14 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFF667eea),
                           foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 32,
+                            vertical: 16,
+                          ),
+                          textStyle: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ),
                     ],
@@ -1222,27 +1378,28 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
           // User has Firebase account but no backend profile - complete registration
           return ProfileSetupScreen(
             user: widget.user,
-            onSetupComplete: (String? displayName, String? avatarUrl, String? username) {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (context) => RegisterScreen(
-                    user: widget.user,
-                    displayName: displayName,
-                    avatarUrl: avatarUrl,
-                    username: username,
-                    onRegistrationComplete: () {
-                      // print("[AuthWrapper] onRegistrationComplete triggered. Re-initializing services...");
-                      // Pop RegisterScreen to go back to AuthWrapper
-                      Navigator.of(context).pop();
-                      // Trigger re-initialization which will connect WebSocket and show HomeScreen
-                      setState(() {
-                        _initializationFuture = _initializeUserServices();
-                      });
-                    },
-                  ),
-                ),
-              );
-            },
+            onSetupComplete:
+                (String? displayName, String? avatarUrl, String? username) {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => RegisterScreen(
+                        user: widget.user,
+                        displayName: displayName,
+                        avatarUrl: avatarUrl,
+                        username: username,
+                        onRegistrationComplete: () {
+                          // print("[AuthWrapper] onRegistrationComplete triggered. Re-initializing services...");
+                          // Pop RegisterScreen to go back to AuthWrapper
+                          Navigator.of(context).pop();
+                          // Trigger re-initialization which will connect WebSocket and show HomeScreen
+                          setState(() {
+                            _initializationFuture = _initializeUserServices();
+                          });
+                        },
+                      ),
+                    ),
+                  );
+                },
           );
         }
       },
@@ -1304,12 +1461,13 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
               Navigator.pop(context);
               openAppSettings();
             },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.cyanAccent,
-            ),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.cyanAccent),
             child: const Text(
               'Open Settings',
-              style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold),
+              style: TextStyle(
+                color: Colors.black87,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ),
         ],
@@ -1348,7 +1506,9 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
 
       final prefs = await SharedPreferences.getInstance();
       final lastRestoredBackupUri = prefs.getString('last_restored_backup_uri');
-      final lastRestoredTimestamp = prefs.getInt('last_restored_backup_timestamp');
+      final lastRestoredTimestamp = prefs.getInt(
+        'last_restored_backup_timestamp',
+      );
 
       // Skip if this exact backup was already restored
       if (lastRestoredBackupUri == backupUri &&
@@ -1379,10 +1539,7 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
           children: [
             const Icon(Icons.backup, color: Colors.cyanAccent),
             const SizedBox(width: 12),
-            const Text(
-              'Backups Found!',
-              style: TextStyle(color: Colors.white),
-            ),
+            const Text('Backups Found!', style: TextStyle(color: Colors.white)),
           ],
         ),
         content: Column(
@@ -1411,10 +1568,7 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text(
-              'Skip',
-              style: TextStyle(color: Colors.white70),
-            ),
+            child: const Text('Skip', style: TextStyle(color: Colors.white70)),
           ),
           if (backups.length > 1)
             TextButton(
@@ -1432,12 +1586,13 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
               Navigator.pop(context);
               _restoreBackup(backups.first['uri'] as String);
             },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.cyanAccent,
-            ),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.cyanAccent),
             child: const Text(
               'Restore',
-              style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold),
+              style: TextStyle(
+                color: Colors.black87,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ),
         ],
@@ -1448,7 +1603,9 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
   Widget _buildBackupInfo(Map<String, dynamic> backup) {
     final fileName = backup['name'] as String;
     final size = MediaStoreBackupService.formatBytes(backup['size'] as int);
-    final date = DateTime.fromMillisecondsSinceEpoch(backup['dateModified'] as int).toLocal();
+    final date = DateTime.fromMillisecondsSinceEpoch(
+      backup['dateModified'] as int,
+    ).toLocal();
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -1517,8 +1674,12 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
             itemBuilder: (context, index) {
               final backup = backups[index];
               final fileName = backup['name'] as String;
-              final size = MediaStoreBackupService.formatBytes(backup['size'] as int);
-              final date = DateTime.fromMillisecondsSinceEpoch(backup['dateModified'] as int).toLocal();
+              final size = MediaStoreBackupService.formatBytes(
+                backup['size'] as int,
+              );
+              final date = DateTime.fromMillisecondsSinceEpoch(
+                backup['dateModified'] as int,
+              ).toLocal();
               final uri = backup['uri'] as String;
 
               return Card(
@@ -1608,10 +1769,15 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
 
       // Write to temporary file for decryption
       final tempDir = Directory.systemTemp;
-      final tempFile = File('${tempDir.path}/temp_restore_${DateTime.now().millisecondsSinceEpoch}.encrypted');
+      final tempFile = File(
+        '${tempDir.path}/temp_restore_${DateTime.now().millisecondsSinceEpoch}.encrypted',
+      );
       await tempFile.writeAsBytes(bytes);
 
-      final backupData = await backupService.decryptBackup(tempFile, passphrase);
+      final backupData = await backupService.decryptBackup(
+        tempFile,
+        passphrase,
+      );
       await backupService.restoreBackup(backupData);
 
       // Clean up temp file
@@ -1650,7 +1816,9 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
       // Show FAILURE notification with sound
       await BackupNotificationService.showFailureNotification(
         'Restore',
-        e.toString().contains('Incorrect passphrase') ? 'Incorrect password' : 'Restore error occurred',
+        e.toString().contains('Incorrect passphrase')
+            ? 'Incorrect password'
+            : 'Restore error occurred',
       );
 
       if (mounted) {
@@ -1658,7 +1826,9 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
 
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Restore failed: ${e.toString().contains('Incorrect passphrase') ? 'Incorrect passphrase' : 'Error - $e'}'),
+            content: Text(
+              'Restore failed: ${e.toString().contains('Incorrect passphrase') ? 'Incorrect passphrase' : 'Error - $e'}',
+            ),
             backgroundColor: Colors.red,
             duration: const Duration(seconds: 4),
           ),
@@ -1692,7 +1862,9 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
               hintText: 'Backup passphrase',
               hintStyle: TextStyle(color: Colors.white.withOpacity(0.5)),
               enabledBorder: UnderlineInputBorder(
-                borderSide: BorderSide(color: Colors.cyanAccent.withOpacity(0.5)),
+                borderSide: BorderSide(
+                  color: Colors.cyanAccent.withOpacity(0.5),
+                ),
               ),
               focusedBorder: const UnderlineInputBorder(
                 borderSide: BorderSide(color: Colors.cyanAccent),
@@ -1717,7 +1889,10 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
               ),
               child: const Text(
                 "Restore",
-                style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  color: Colors.black87,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
           ],
@@ -1732,4 +1907,3 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
     return const HomeScreen();
   }
 }
-

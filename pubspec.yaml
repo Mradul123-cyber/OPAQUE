@@ -28,6 +28,7 @@ environment:
 # the latest version available on pub.dev. To see which dependencies have newer
 # versions available, run `flutter pub outdated`.
 dependencies:
+  uuid: ^4.5.1
   flutter:
     sdk: flutter
 
@@ -86,6 +87,9 @@ dependencies:
   signature: ^6.3.0
   flutter_flow_chart: ^3.2.3
   flutter_staggered_animations: ^1.1.1
+  geolocator: ^14.0.2
+  flutter_map: 8.2.2
+  latlong2: ^0.9.1
   # razorpay_flutter removed - now using native Kotlin Razorpay SDK for better error handling
   # video_compress removed - now using native Kotlin MediaCodec for better reliability
   # google_generative_ai removed - now using secure backend

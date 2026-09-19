@@ -9,6 +9,7 @@ import 'package:zarq_messenger/starfield_background.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
+import 'package:zarq_messenger/app_config.dart';
 
 class ProfileSetupScreen extends StatefulWidget {
   final User user;
@@ -38,7 +39,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   String? _usernameError;
   Timer? _debounce;
   bool _showUsernameField = false; // Track if username field should be shown (not used for Google users anymore)
-  final String backendBaseUrl = 'https://api.zarqmessenger.com';
+  final String backendBaseUrl = '${AppConfig.baseUrl}';
 
   bool _isGoogleSignIn() {
     // Check if user signed in with Google

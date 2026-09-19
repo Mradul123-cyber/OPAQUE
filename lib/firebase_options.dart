@@ -57,7 +57,7 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions android = FirebaseOptions(
     apiKey: 'AIzaSyDysX-_VI4BJjviLhDtouZX10mJIiXOQ7c',
-    appId: '1:463692732659:android:4ba468a0fdbb200b3cff86',
+    appId: '1:463692732659:android:35d62248982fe8ad3cff86',
     messagingSenderId: '463692732659',
     projectId: 'zarq-messenger',
     storageBucket: 'zarq-messenger.firebasestorage.app',

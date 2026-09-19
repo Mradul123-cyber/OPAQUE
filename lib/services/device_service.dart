@@ -2,10 +2,11 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:zarq_messenger/app_config.dart';
 
 class DeviceService {
   // Replace with your backend base URL (use http://10.0.2.2:8080 for Android emulator)
-  static const String baseUrl = 'https://api.zarqmessenger.com';
+  static const String baseUrl = '${AppConfig.baseUrl}';
 
   /// Register device + keys with the backend.
   /// - deviceId: integer device id (1 for first device)

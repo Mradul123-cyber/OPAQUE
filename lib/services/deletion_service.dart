@@ -2,9 +2,10 @@ import 'dart:convert';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
+import 'package:zarq_messenger/app_config.dart';
 
 class DeletionService {
-  static const String baseUrl = 'https://api.zarqmessenger.com';
+  static const String baseUrl = '${AppConfig.baseUrl}';
 
   static Future<bool> deleteMessage({
     required int messageId,

@@ -1,40 +1,52 @@
+import 'package:zarq_messenger/screens/backup_management_screen.dart';
+import 'widgets/opaque_navigation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
-import 'package:zarq_messenger/screens/call_history_screen.dart';
-import 'package:zarq_messenger/screens/customization_screen.dart';
-import 'package:zarq_messenger/screens/notes_screen.dart';
-import 'package:zarq_messenger/services/SignalService.dart';
-import 'package:zarq_messenger/services/database_service.dart';
-import 'package:zarq_messenger/services/navigation_handler.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'dart:async';
 import 'dart:ui';
 import 'dart:convert';
 
-import 'providers/home_provider.dart';
-import 'providers/chat_provider.dart';
-import 'services/websocket_service.dart';
-import 'services/user_settings_provider.dart';
+import 'package:zarq_messenger/providers/home_provider.dart';
+import 'package:zarq_messenger/services/websocket_service.dart';
+import 'package:zarq_messenger/services/user_settings_provider.dart';
+import 'package:zarq_messenger/services/database_service.dart';
+import 'package:zarq_messenger/services/SignalService.dart';
+import 'package:zarq_messenger/services/navigation_handler.dart';
 
 // Import Screens and Widgets
-import 'expandable_fab.dart';
-import 'login_screen.dart';
-import 'setting_screen.dart';
-import 'find_friends_screen.dart';
-import 'chat_screen.dart';
-import 'create_group_screen.dart';
-import 'widgets/call_aware_screen.dart';
-import 'widgets/animated_profile_avatar.dart';
-import 'services/overlay_permission_helper.dart';
-import 'about_screen.dart';
-import 'package:zarq_messenger/widgets/breathing_unread_badge.dart';
-import 'package:zarq_messenger/screens/ai_chat_screen.dart';
-// import 'screens/tasks_screen.dart';
-// import 'screens/moments_main_screen.dart';
+import 'package:zarq_messenger/login_screen.dart';
+import 'package:zarq_messenger/setting_screen.dart';
+import 'package:zarq_messenger/find_friends_screen.dart';
+import 'package:zarq_messenger/chat_screen.dart';
+import 'package:zarq_messenger/create_group_screen.dart';
+import 'package:zarq_messenger/screens/notes_screen.dart';
+import 'package:zarq_messenger/about_screen.dart';
+import 'package:zarq_messenger/screens/call_history_screen.dart';
+import 'package:zarq_messenger/screens/style_screen.dart';
+import 'package:zarq_messenger/widgets/call_aware_screen.dart';
+import 'package:zarq_messenger/services/overlay_permission_helper.dart';
+
+import 'package:zarq_messenger/app_config.dart';
+import 'package:zarq_messenger/widgets/opaque_header.dart';
+import 'models/chat_payloads.dart';
+
+// ─── Brand Colours ────────────────────────────────────────────────────────────
+const Color _kIndigo = Color(0xFF3D00B8);
+
+
+const Color _kWhite = Colors.white;
+const Color _kTextDark = Color(0xFF1A1A2E);
+const Color _kTextGrey = Color(0xFF8A8A9A);
+const Color _kDivider = Color(0xFFEEEEF4);
+const Color _kOnlineGreen = Color(0xFF22C55E);
+// ─────────────────────────────────────────────────────────────────────────────
 
 class ConversationInfo {
   final int conversationId;
@@ -44,8 +56,11 @@ class ConversationInfo {
   final String? avatarUrl;
   final String? partnerUid;
   final bool hasUnreadMessages;
-  final DateTime? lastMessageTimestamp; // For sorting
-  final int unreadCount; // Number of unread messages
+  final DateTime? lastMessageTimestamp;
+  final int unreadCount;
+  final String? lastMessage;
+  final bool isTyping;
+  final bool isOnline;
 
   ConversationInfo({
     required this.conversationId,
@@ -57,8 +72,10 @@ class ConversationInfo {
     this.hasUnreadMessages = false,
     this.lastMessageTimestamp,
     this.unreadCount = 0,
+    this.lastMessage,
+    this.isTyping = false,
+    this.isOnline = false,
   });
-
 
   factory ConversationInfo.fromJson(Map<String, dynamic> json) {
     return ConversationInfo(
@@ -71,6 +88,7 @@ class ConversationInfo {
       lastMessageTimestamp: json['lastMessageTimestamp'] != null
           ? DateTime.parse(json['lastMessageTimestamp'] as String)
           : null,
+      lastMessage: json['lastMessage'] as String?,
     );
   }
 }
@@ -82,72 +100,68 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
-  String _displayName = "User";
-  String? _currentUserAvatarUrl;
-  String? _currentUserUid;
-
   bool _isGroupSelectionMode = false;
   ConversationInfo? _selectedConversation;
 
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
-  List<ConversationInfo> _filteredConversations = [];
+  String _conversationFilter = 'All';
   bool _isSearching = false;
-  double _previousKeyboardHeight = 0;
+  final Set<String> _blockedUsers = {};
 
-  bool _isAvatarHovering = false;
-  bool _isDeleteHovering = false;
-  bool _isLeaveHovering = false;
+  // Bottom nav index: 0=Chats, 1=Calls, 2=Friends, 3=Style, 4=Notes
+  int _currentNavIndex = 0;
+  int _friendsOpenRequest = 0;
+  FriendTab _friendsInitialTab = FriendTab.myFriends;
+  bool _addMenuOpen = false;
 
   StreamSubscription? _websocketSubscription;
 
-  // Blocked users
-  List<String> _blockedUsers = [];
-
-  // AI button position
-  double _aiButtonX = 0.0;
-  double _aiButtonY = 0.0;
-  bool _aiButtonPositionLoaded = false;
+  // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-
+    _initializeUser();
     _loadBlockedUsers();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _loadAIButtonPosition();
+      if (!mounted) return;
       _checkPendingNavigation();
 
-      // Only fetch if not already fetched by _checkPendingNavigation
       final homeProvider = Provider.of<HomeProvider>(context, listen: false);
       if (homeProvider.conversations.isEmpty) {
         homeProvider.fetchInitialConversations();
       }
 
-      // Request overlay permission for floating call window
       OverlayPermissionHelper.checkAndRequestPermission(context);
 
-      // Listen for conversation updates
-      final websocketService = Provider.of<WebSocketService>(context, listen: false);
+      final websocketService = Provider.of<WebSocketService>(
+        context,
+        listen: false,
+      );
       _websocketSubscription = websocketService.stream.listen((data) {
+        if (!mounted) return;
         if (data is Map<String, dynamic>) {
           if (data['type'] == 'conversation_update') {
-            // print('[HomeScreen] 🔄 Conversation update received, refreshing...');
-            Provider.of<HomeProvider>(context, listen: false).fetchInitialConversations();
+            Provider.of<HomeProvider>(
+              context,
+              listen: false,
+            ).fetchInitialConversations();
           } else if (data['type'] == 'group_deleted') {
-            // print('[HomeScreen] 🗑️ Group deleted notification received');
             final conversationId = data['conversationId'];
             if (conversationId != null) {
-              Provider.of<HomeProvider>(context, listen: false).removeConversation(conversationId);
+              Provider.of<HomeProvider>(
+                context,
+                listen: false,
+              ).removeConversation(conversationId);
             }
           }
         }
       });
     });
 
-    _initializeUser();
     _searchController.addListener(_onSearchChanged);
   }
 
@@ -161,202 +175,86 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  @override
-  void didChangeMetrics() {
-    super.didChangeMetrics();
-    final currentKeyboardHeight = MediaQuery.of(context).viewInsets.bottom;
-
-    // If keyboard was visible and now it's closed, unfocus the search field
-    if (_previousKeyboardHeight > 0 && currentKeyboardHeight == 0) {
-      if (_searchFocusNode.hasFocus) {
-        _searchFocusNode.unfocus();
-      }
-    }
-
-    _previousKeyboardHeight = currentKeyboardHeight;
-  }
+  // ─── Search ────────────────────────────────────────────────────────────────
 
   void _onSearchChanged() {
-    final homeProvider = Provider.of<HomeProvider>(context, listen: false);
-    final query = _searchController.text.toLowerCase();
-    setState(() {
-      _isSearching = query.isNotEmpty;
-      _filteredConversations = homeProvider.conversations.where((convo) {
-        return convo.chatTitle.toLowerCase().contains(query);
-      }).toList();
-    });
+    setState(() { _isSearching = _searchController.text.trim().isNotEmpty; _addMenuOpen = false; });
   }
 
-  /// Load blocked users from SharedPreferences
+  // ─── Blocked users ─────────────────────────────────────────────────────────
+
   Future<void> _loadBlockedUsers() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final blockedUsers = prefs.getStringList('blocked_users') ?? [];
-
       setState(() {
-        _blockedUsers = blockedUsers;
+        _blockedUsers.clear();
+        _blockedUsers.addAll(blockedUsers);
       });
-    } catch (e) {
-      // print('[HomeScreen] Error loading blocked users: $e');
-    }
+    } catch (_) {}
   }
 
-  /// Load AI button position from SharedPreferences
-  Future<void> _loadAIButtonPosition() async {
-    try {
-      print('[HomeScreen] Loading AI button position...');
-      final prefs = await SharedPreferences.getInstance();
-      final x = prefs.getDouble('ai_button_x');
-      final y = prefs.getDouble('ai_button_y');
-      print('[HomeScreen] Loaded position: x=$x, y=$y');
-
-      if (mounted) {
-        setState(() {
-          if (x != null && y != null) {
-            _aiButtonX = x;
-            _aiButtonY = y;
-            print('[HomeScreen] Using saved position: $_aiButtonX, $_aiButtonY');
-          } else {
-            // Set default position on first load
-            final screenWidth = MediaQuery.of(context).size.width;
-            final screenHeight = MediaQuery.of(context).size.height;
-            final bottomPadding = MediaQuery.of(context).padding.bottom;
-            final buttonSize = (screenWidth * 0.16).clamp(60.0, 72.0);
-
-            // Calculate bottom nav height: icon (22-28) + spacing (4-8) + label (10-13) + vertical padding (screenHeight * 0.012 * 2)
-            // Plus the EdgeInsets padding: top (screenHeight * 0.015) + bottom (bottomPadding + screenHeight * 0.015)
-            final navIconSize = (screenWidth * 0.06).clamp(22.0, 28.0);
-            final navLabelSize = (screenWidth * 0.028).clamp(10.0, 13.0);
-            final navSpacing = (screenHeight * 0.007).clamp(4.0, 8.0);
-            final navVerticalPadding = screenHeight * 0.012;
-            final navContainerPadding = screenHeight * 0.015;
-
-            final bottomNavHeight = navIconSize + navSpacing + navLabelSize + (navVerticalPadding * 2) + navContainerPadding + bottomPadding + navContainerPadding;
-
-            _aiButtonX = screenWidth - buttonSize - 16.0;
-            _aiButtonY = screenHeight - bottomNavHeight - buttonSize - 16.0; // 16px gap above bottom nav
-            print('[HomeScreen] Set default position: $_aiButtonX, $_aiButtonY (screen: $screenWidth x $screenHeight, bottom: $bottomPadding, bottomNavHeight: $bottomNavHeight, buttonSize: $buttonSize)');
-          }
-          _aiButtonPositionLoaded = true;
-          print('[HomeScreen] AI button position loaded: $_aiButtonPositionLoaded');
-        });
-      }
-    } catch (e) {
-      print('[HomeScreen] ERROR loading AI button position: $e');
-      if (mounted) {
-        setState(() {
-          _aiButtonPositionLoaded = true;
-        });
-      }
-    }
-  }
-
-  /// Save AI button position to SharedPreferences
-  Future<void> _saveAIButtonPosition(double x, double y) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setDouble('ai_button_x', x);
-      await prefs.setDouble('ai_button_y', y);
-    } catch (e) {
-      // print('[HomeScreen] Error saving AI button position: $e');
-    }
-  }
+  // ─── Navigation helpers ────────────────────────────────────────────────────
 
   Future<void> _checkPendingNavigation() async {
     final targetConversationId = NavigationHandler.getPendingConversationId();
     if (targetConversationId != null) {
-      // print('[HomeScreen] Found pending navigation to conversation: $targetConversationId');
-
-      // Wait for conversations to load
       final homeProvider = Provider.of<HomeProvider>(context, listen: false);
-
-      // If conversations are empty, wait for fetch to complete
       if (homeProvider.conversations.isEmpty) {
-        // print('[HomeScreen] Waiting for conversations to load...');
         await homeProvider.fetchInitialConversations();
       }
-
-      // Small delay for UI to settle
-      await Future.delayed(Duration(milliseconds: 300));
-
-      // Now open the conversation
+      await Future.delayed(const Duration(milliseconds: 300));
       await _openConversationById(targetConversationId);
     }
   }
 
   Future<void> _openConversationById(int conversationId) async {
     try {
-      // print('[HomeScreen] Attempting to open conversation: $conversationId');
-
-      // Get the home provider to access conversations
+      if (!mounted) return;
       final homeProvider = Provider.of<HomeProvider>(context, listen: false);
-      final websocketService = Provider.of<WebSocketService>(context, listen: false);
+      final websocketService = Provider.of<WebSocketService>(
+        context,
+        listen: false,
+      );
 
-      // Check if WebSocket is connected
       if (!websocketService.isConnected || websocketService.channel == null) {
-        // print('[HomeScreen] WebSocket not connected, cannot open conversation');
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Still connecting... Please wait a moment.')),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Still connecting… Please wait a moment.'),
+            ),
+          );
+        }
         return;
       }
 
-      // Find the conversation by ID
       final targetConversation = homeProvider.conversations.firstWhere(
-            (convo) => convo.conversationId == conversationId,
+        (convo) => convo.conversationId == conversationId,
         orElse: () => throw Exception('Conversation not found'),
       );
 
-      // print('[HomeScreen] Found conversation: ${targetConversation.chatTitle}');
-
-      // Navigate to ChatScreen using the same method as your onTap
-      await Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (context) => ChatScreen(
-            channel: websocketService.channel!,
-            conversationInfo: targetConversation,
-          ),
-        ),
-      );
-
-      // print('[HomeScreen] Successfully navigated to conversation: $conversationId');
-
+      if (mounted) _navigateToChat(targetConversation);
     } catch (e) {
-      // print('[HomeScreen] Error opening conversation $conversationId: $e');
-
-      // If conversation not found in current list, refresh and try again
       if (e.toString().contains('Conversation not found')) {
-        // print('[HomeScreen] Conversation not in current list, refreshing...');
-
-        final homeProvider = Provider.of<HomeProvider>(context, listen: false);
-        await homeProvider.fetchInitialConversations();
-
-        // Try one more time after refresh
         try {
-          final targetConversation = homeProvider.conversations.firstWhere(
-                (convo) => convo.conversationId == conversationId,
+          final homeProvider = Provider.of<HomeProvider>(
+            context,
+            listen: false,
           );
-
-          final websocketService = Provider.of<WebSocketService>(context, listen: false);
-          if (websocketService.isConnected && websocketService.channel != null) {
-            await Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (context) => ChatScreen(
-                  channel: websocketService.channel!,
-                  conversationInfo: targetConversation,
-                ),
+          await homeProvider.fetchInitialConversations();
+          final refreshedConvo = homeProvider.conversations.firstWhere(
+            (convo) => convo.conversationId == conversationId,
+          );
+          if (mounted) _navigateToChat(refreshedConvo);
+        } catch (_) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Conversation not found or no longer exists'),
+                backgroundColor: Colors.orange,
               ),
             );
-            // print('[HomeScreen] Successfully navigated after refresh');
           }
-        } catch (e2) {
-          // print('[HomeScreen] Still could not find conversation after refresh: $e2');
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Conversation not found or no longer exists'),
-              backgroundColor: Colors.orange,
-            ),
-          );
         }
       }
     }
@@ -366,45 +264,51 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
       await user.reload();
-      final refreshedUser = FirebaseAuth.instance.currentUser;
       if (!mounted) return;
-      setState(() {
-        _displayName = refreshedUser?.displayName ?? user.email ?? "User";
-        _currentUserUid = refreshedUser?.uid;
-        _currentUserAvatarUrl = refreshedUser?.photoURL;
-      });
     }
   }
 
-  Future<void> _refreshUserData() async {
-    await _initializeUser();
-  }
+  Future<void> _refreshUserData() async => _initializeUser();
 
+  // ─── Logout ────────────────────────────────────────────────────────────────
 
-
-  // Show dialog for simple logout (keeps data)
   void _showLogoutDialog(BuildContext context) {
     showDialog(
       context: context,
       builder: (BuildContext dialogContext) {
         return AlertDialog(
-          backgroundColor: Colors.grey[900],
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Row(
+          backgroundColor: _kWhite,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          title: Row(
             children: [
-              Icon(Icons.logout, color: Colors.orange),
-              SizedBox(width: 10),
-              Text('Logout', style: TextStyle(color: Colors.white)),
+              const Icon(Icons.logout_rounded, color: Colors.orange),
+              const SizedBox(width: 10),
+              Text(
+                'Logout',
+                style: GoogleFonts.poppins(
+                  fontWeight: FontWeight.w600,
+                  color: _kTextDark,
+                ),
+              ),
             ],
           ),
-          content: const Text(
-            'You will be logged out but your messages will stay on this phone.\n\nYou can login again anytime to see your messages.',
-            style: TextStyle(color: Colors.white70, fontSize: 15),
+          content: Text(
+            'You will be logged out but your messages will stay on this phone.\n\nYou can login again anytime.',
+            style: GoogleFonts.inter(
+              color: _kTextGrey,
+              fontSize: 14,
+              height: 1.5,
+            ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+              child: Text(
+                'Cancel',
+                style: GoogleFonts.inter(color: _kTextGrey),
+              ),
             ),
             ElevatedButton(
               onPressed: () {
@@ -413,9 +317,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.orange,
-                foregroundColor: Colors.white,
+                foregroundColor: _kWhite,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
-              child: const Text('Logout'),
+              child: Text('Logout', style: GoogleFonts.inter()),
             ),
           ],
         );
@@ -423,119 +330,50 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  // Show dialog for logout with data clear
-  void _showLogoutWithClearDataDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (BuildContext dialogContext) {
-        return AlertDialog(
-          backgroundColor: Colors.grey[900],
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Row(
-            children: [
-              Icon(Icons.warning, color: Colors.redAccent),
-              SizedBox(width: 10),
-              Text('Clear All Data?', style: TextStyle(color: Colors.white)),
-            ],
-          ),
-          content: const Text(
-            '⚠️ All your messages will be deleted from this phone.\n\nYou won\'t be able to see them again!\n\nUse this if:\n• You share this phone with others\n• You want to start fresh\n• You\'re switching to a new phone',
-            style: TextStyle(color: Colors.white70, fontSize: 15),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.of(dialogContext).pop();
-                _performLogout(clearData: true);
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.redAccent,
-                foregroundColor: Colors.white,
-              ),
-              child: const Text('Delete & Logout'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  // Perform logout with optional data clearing
   Future<void> _performLogout({required bool clearData}) async {
-    // print("[HomeScreen] _performLogout triggered (clearData: $clearData) at ${DateTime.now().toUtc()}");
-
     try {
-      // 1. Clear FCM token from backend (so no more notifications)
       final user = FirebaseAuth.instance.currentUser;
       if (user != null) {
         try {
           final token = await user.getIdToken();
-          final url = Uri.parse('https://api.zarqmessenger.com/v1/fcm/token');
+          final url = Uri.parse('${AppConfig.baseUrl}/v1/fcm/token');
           await http.post(
             url,
             headers: {
               'Authorization': 'Bearer $token',
               'Content-Type': 'application/json',
             },
-            body: json.encode({
-              'fcm_token': '', // Empty string to clear
-              'device_id': 1,
-            }),
+            body: json.encode({'fcm_token': '', 'device_id': 1}),
           );
-          // print("[HomeScreen] FCM token cleared from backend");
-        } catch (e) {
-          // print("[HomeScreen] Error clearing FCM token: $e");
-          // Continue with logout even if this fails
-        }
+        } catch (_) {}
       }
 
       if (clearData) {
-        // 2. Reset Signal Protocol user context (only if clearing data)
-        // print("[HomeScreen] Resetting Signal Protocol user context...");
-        final signalResetSuccess = await SignalService.resetUserContext();
-        if (signalResetSuccess) {
-          // print("[HomeScreen] Signal Protocol context reset successfully");
-        } else {
-          // print("[HomeScreen] Warning: Signal Protocol context reset failed");
-        }
-
-        // 3. Reset database (only if clearing data)
+        await SignalService.resetUserContext();
         final dbService = Provider.of<DatabaseService>(context, listen: false);
         await dbService.resetDatabase();
-        // print("[HomeScreen] Database reset");
       } else {
-        // Just reset in-memory state without clearing persistent data
-        // print("[HomeScreen] Keeping Signal Protocol keys and database");
-        await SignalService.resetUserContext(); // Reset in-memory state only
+        await SignalService.resetUserContext();
       }
 
-      // 4. Disconnect WebSocket (always)
-      final websocketService = Provider.of<WebSocketService>(context, listen: false);
+      final websocketService = Provider.of<WebSocketService>(
+        context,
+        listen: false,
+      );
       websocketService.disconnect();
 
-      // 5. Firebase logout (always)
       await FirebaseAuth.instance.signOut();
-      // print("[HomeScreen] Firebase logout completed");
+    } catch (_) {}
 
-    } catch (e) {
-      // print("[HomeScreen] Error during logout: $e");
-      // Continue with navigation even if some cleanup fails
-    }
-
-    // 6. Navigate to login screen
     if (context.mounted) {
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (context) => const LoginScreen()),
-            (Route<dynamic> route) => false,
+        (Route<dynamic> route) => false,
       );
     }
   }
 
-
+  // ─── Group selection ───────────────────────────────────────────────────────
 
   void _enterGroupSelectionMode(ConversationInfo conversation) {
     setState(() {
@@ -548,49 +386,59 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     setState(() {
       _isGroupSelectionMode = false;
       _selectedConversation = null;
-      _isDeleteHovering = false;
-      _isLeaveHovering = false;
     });
   }
 
   Future<void> _showGroupActionDialog({required String action}) async {
     if (_selectedConversation == null) return;
-
     final conversationId = _selectedConversation!.conversationId;
     final chatTitle = _selectedConversation!.chatTitle;
 
-    String title = '';
-    String content = '';
-
-    if (action == 'delete') {
-      title = 'Delete Group?';
-      content = 'Are you sure you want to permanently delete "$chatTitle"? This action cannot be undone.';
-    } else if (action == 'leave') {
-      title = 'Leave Group?';
-      content = 'Are you sure you want to leave "$chatTitle"? You will no longer receive messages from this group.';
-    }
+    final title = action == 'delete' ? 'Delete Group?' : 'Leave Group?';
+    final content = action == 'delete'
+        ? 'Are you sure you want to permanently delete "$chatTitle"? This cannot be undone.'
+        : 'Are you sure you want to leave "$chatTitle"?';
 
     return showDialog<void>(
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: Text(title),
-          content: Text(content),
-          actions: <Widget>[
+          backgroundColor: _kWhite,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          title: Text(
+            title,
+            style: GoogleFonts.poppins(
+              fontWeight: FontWeight.w600,
+              color: _kTextDark,
+            ),
+          ),
+          content: Text(
+            content,
+            style: GoogleFonts.inter(color: _kTextGrey, fontSize: 14),
+          ),
+          actions: [
             TextButton(
-              child: const Text('Cancel'),
+              child: Text(
+                'Cancel',
+                style: GoogleFonts.inter(color: _kTextGrey),
+              ),
               onPressed: () => Navigator.of(context).pop(),
             ),
             TextButton(
               child: Text(
                 action == 'delete' ? 'Delete' : 'Leave',
-                style: TextStyle(color: action == 'delete' ? Colors.red : Colors.orange),
+                style: GoogleFonts.inter(
+                  color: action == 'delete' ? Colors.red : Colors.orange,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
               onPressed: () async {
                 Navigator.of(context).pop();
                 if (action == 'delete') {
                   await _deleteGroup(conversationId);
-                } else if (action == 'leave') {
+                } else {
                   await _leaveGroup(conversationId);
                 }
                 _exitGroupSelectionMode();
@@ -607,24 +455,23 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (user == null) return;
     final token = await user.getIdToken();
     try {
-      final url = Uri.parse('https://api.zarqmessenger.com/groups/delete/$conversationId');
-      final response = await http.delete(url, headers: {'Authorization': 'Bearer $token'});
+      final response = await http.delete(
+        Uri.parse('${AppConfig.baseUrl}/groups/delete/$conversationId'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
       if (mounted) {
         if (response.statusCode == 200) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Group deleted successfully!')));
-          Provider.of<HomeProvider>(context, listen: false).fetchInitialConversations();
+          _showSnack('Group deleted successfully!');
+          Provider.of<HomeProvider>(
+            context,
+            listen: false,
+          ).fetchInitialConversations();
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('Failed to delete group: ${response.body}'),
-              backgroundColor: Colors.red));
+          _showSnack('Failed to delete group', isError: true);
         }
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Error deleting group: $e'), backgroundColor: Colors.red));
-      }
+      if (mounted) _showSnack('Error: $e', isError: true);
     }
   }
 
@@ -633,964 +480,501 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (user == null) return;
     final token = await user.getIdToken();
     try {
-      final url = Uri.parse('https://api.zarqmessenger.com/groups/leave/$conversationId');
-      final response = await http.post(url, headers: {'Authorization': 'Bearer $token'});
+      final response = await http.post(
+        Uri.parse('${AppConfig.baseUrl}/groups/leave/$conversationId'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
       if (mounted) {
         if (response.statusCode == 200) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Successfully left group!')));
-          Provider.of<HomeProvider>(context, listen: false).fetchInitialConversations();
+          _showSnack('Successfully left group!');
+          Provider.of<HomeProvider>(
+            context,
+            listen: false,
+          ).fetchInitialConversations();
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('Failed to leave group: ${response.body}'),
-              backgroundColor: Colors.red));
+          _showSnack('Failed to leave group', isError: true);
         }
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Error leaving group: $e'), backgroundColor: Colors.red));
-      }
+      if (mounted) _showSnack('Error: $e', isError: true);
     }
   }
 
-  Widget _buildAvatar(ConversationInfo convo) {
-    final hasImage = convo.avatarUrl != null && convo.avatarUrl!.isNotEmpty;
-    final title = convo.chatTitle;
-    final initial = title.isNotEmpty ? title[0].toUpperCase() : '?';
-    final colorSeed = title.hashCode;
-    final color = Color(colorSeed).withOpacity(1.0).withBlue(200).withGreen(150);
-
-    // Responsive sizing
-    final screenWidth = MediaQuery.of(context).size.width;
-    final avatarSize = (screenWidth * 0.12).clamp(40.0, 56.0);
-    final fontSize = (screenWidth * 0.05).clamp(18.0, 22.0);
-    final progressSize = (screenWidth * 0.05).clamp(18.0, 24.0);
-    final unreadBadgeSize = (screenWidth * 0.03).clamp(10.0, 14.0);
-
-    return Stack(
-      children: [
-        Container(
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: Colors.black,
-              width: 2.0,
-            ),
-          ),
-          child: hasImage
-              ? CachedNetworkImage(
-                  imageUrl: convo.avatarUrl!,
-                  imageBuilder: (context, imageProvider) => CircleAvatar(
-                    radius: avatarSize / 2,
-                    backgroundImage: imageProvider,
-                    backgroundColor: Colors.transparent,
-                  ),
-                  placeholder: (context, url) => CircleAvatar(
-                    radius: avatarSize / 2,
-                    backgroundColor: color,
-                    child: SizedBox(
-                      width: progressSize,
-                      height: progressSize,
-                      child: const CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                      ),
-                    ),
-                  ),
-                  errorWidget: (context, url, error) => CircleAvatar(
-                    radius: avatarSize / 2,
-                    backgroundColor: color,
-                    child: Text(
-                      initial,
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: fontSize,
-                      ),
-                    ),
-                  ),
-                )
-              : CircleAvatar(
-                  radius: avatarSize / 2,
-                  backgroundColor: color,
-                  child: Text(
-                    initial,
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: fontSize,
-                    ),
-                  ),
-                ),
-        ),
-        if (convo.hasUnreadMessages)
-          Positioned(
-            right: 0,
-            top: 0,
-            child: BreathingUnreadBadge(size: unreadBadgeSize),
-          ),
-      ],
-    );
-  }
-
-  PreferredSizeWidget _buildAppBar({required bool isDarkTheme}) {
-    final bool isCreatorOfSelectedGroup = _isGroupSelectionMode &&
-        _selectedConversation != null &&
-        _selectedConversation!.creatorUid == _currentUserUid;
-    final bool currentUserHasImage = _currentUserAvatarUrl != null &&
-        _currentUserAvatarUrl!.isNotEmpty;
-
-    // Responsive sizing
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-    final userAvatarRadius = (screenWidth * 0.075).clamp(25.0, 35.0);
-    final userAvatarFontSize = (screenWidth * 0.045).clamp(16.0, 20.0);
-    final actionButtonSize = (screenWidth * 0.1).clamp(36.0, 44.0);
-    final actionIconSize = (screenWidth * 0.06).clamp(22.0, 26.0);
-    final titleFontSize = (screenWidth * 0.05).clamp(18.0, 24.0);
-
-    // Theme colors
-    final Color textColor = isDarkTheme ? Colors.white : Colors.black87;
-    final Color iconColor = isDarkTheme ? Colors.white : Colors.black87;
-    final Color appBarBgColor = isDarkTheme ? const Color(0xFF0a1128) : Colors.white;
-
-    return PreferredSize(
-      preferredSize: const Size.fromHeight(kToolbarHeight),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        decoration: BoxDecoration(
-          color: _isGroupSelectionMode ? null : appBarBgColor,
-          gradient: _isGroupSelectionMode
-              ? const LinearGradient(colors: [Colors.green, Colors.teal],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight)
-              : null,
-        ),
-        child: AppBar(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          titleTextStyle: Theme.of(context).textTheme.titleLarge?.copyWith(
-            color: textColor,
-            fontWeight: FontWeight.bold,
-            fontSize: titleFontSize,
-          ),
-          iconTheme: IconThemeData(color: _isGroupSelectionMode ? Colors.white : iconColor),
-          leading: _isGroupSelectionMode
-              ? IconButton(icon: const Icon(Icons.close), onPressed: _exitGroupSelectionMode)
-              : MouseRegion(
-            onEnter: (_) => setState(() => _isAvatarHovering = true),
-            onExit: (_) => setState(() => _isAvatarHovering = false),
-            cursor: SystemMouseCursors.click,
-            child: GestureDetector(
-              onTap: () async {
-                await Navigator.of(context).push(MaterialPageRoute(
-                    builder: (context) => const SettingsScreen()));
-                _refreshUserData();
-              },
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                margin: EdgeInsets.all(screenWidth * 0.02),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: const Color(0xFFF0F2F5),
-                  border: Border.all(
-                    color: Colors.black,
-                    width: 2.0
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.lightBlueAccent.withOpacity(_isAvatarHovering ? 0.6 : 0.3),
-                      blurRadius: _isAvatarHovering ? 8 : 5,
-                    ),
-                  ],
-                ),
-                child: AnimatedProfileAvatar(
-                  imageUrl: currentUserHasImage ? _currentUserAvatarUrl : null,
-                  size: userAvatarRadius * 2,
-                  enableAnimation: true,
-                  flipDuration: const Duration(milliseconds: 800),
-                  displayDuration: const Duration(seconds: 4),
-                ),
-              ),
-            ),
-          ),
-          title: Text(_isGroupSelectionMode ? _selectedConversation!.chatTitle : 'Zarq'),
-          centerTitle: true,
-          actions: [
-            if (_isGroupSelectionMode) ...[
-              // Group actions remain the same...
-              if (isCreatorOfSelectedGroup)
-                MouseRegion(
-                  onEnter: (_) => setState(() => _isDeleteHovering = true),
-                  onExit: (_) => setState(() => _isDeleteHovering = false),
-                  cursor: SystemMouseCursors.click,
-                  child: GestureDetector(
-                    onTap: () => _showGroupActionDialog(action: 'delete'),
-                    child: AnimatedScale(
-                      scale: _isDeleteHovering ? 1.1 : 1.0,
-                      duration: const Duration(milliseconds: 200),
-                      child: Tooltip(
-                        message: 'Delete Group',
-                        child: Container(
-                          margin: EdgeInsets.symmetric(
-                            horizontal: screenWidth * 0.03,
-                            vertical: screenHeight * 0.01,
-                          ),
-                          width: actionButtonSize,
-                          height: actionButtonSize,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            gradient: const LinearGradient(
-                                colors: [Color(0xFFE57373), Color(0xFFD32F2F)],
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.red.withOpacity(_isDeleteHovering ? 0.7 : 0.3),
-                                spreadRadius: _isDeleteHovering ? 3 : 1,
-                                blurRadius: _isDeleteHovering ? 5 : 3,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          child: Icon(Icons.delete_outline, color: Colors.white, size: actionIconSize),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              if (!isCreatorOfSelectedGroup)
-                MouseRegion(
-                  onEnter: (_) => setState(() => _isLeaveHovering = true),
-                  onExit: (_) => setState(() => _isLeaveHovering = false),
-                  cursor: SystemMouseCursors.click,
-                  child: GestureDetector(
-                    onTap: () => _showGroupActionDialog(action: 'leave'),
-                    child: AnimatedScale(
-                      scale: _isLeaveHovering ? 1.1 : 1.0,
-                      duration: const Duration(milliseconds: 200),
-                      child: Tooltip(
-                        message: 'Leave Group',
-                        child: Container(
-                          margin: EdgeInsets.symmetric(
-                            horizontal: screenWidth * 0.03,
-                            vertical: screenHeight * 0.01,
-                          ),
-                          width: actionButtonSize,
-                          height: actionButtonSize,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            gradient: const LinearGradient(
-                                colors: [Color(0xFFFFB74D), Color(0xFFF57C00)],
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.orange.withOpacity(_isLeaveHovering ? 0.7 : 0.3),
-                                spreadRadius: _isLeaveHovering ? 3 : 1,
-                                blurRadius: _isLeaveHovering ? 5 : 3,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          child: Icon(Icons.exit_to_app, color: Colors.white, size: actionIconSize),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-            ] else ...[
-              PopupMenuButton<String>(
-                icon: const Icon(Icons.more_vert),
-                color: const Color(0xFF1b263b).withOpacity(0.8),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(15.0),
-                  side: BorderSide(color: Colors.white.withOpacity(0.2)),
-                ),
-                itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-                  PopupMenuItem<String>(
-                    value: 'settings',
-                    child: Row(
-                      children: [
-                        const Icon(Icons.settings, color: Colors.white),
-                        const SizedBox(width: 10),
-                        const Text('Settings', style: TextStyle(color: Colors.white)),
-                      ],
-                    ),
-                  ),
-                  PopupMenuItem<String>(
-                    value: 'call_history',
-                    child: Row(
-                      children: [
-                        const Icon(Icons.history, color: Colors.green),
-                        const SizedBox(width: 10),
-                        const Text('Call History', style: TextStyle(color: Colors.white)),
-                      ],
-                    ),
-                  ),
-                  PopupMenuItem<String>(
-                    value: 'about',
-                    child: Row(
-                      children: [
-                        const Icon(Icons.info_outline, color: Colors.cyanAccent),
-                        const SizedBox(width: 10),
-                        const Text('About', style: TextStyle(color: Colors.white)),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuDivider(),
-                  PopupMenuItem<String>(
-                    value: 'logout',
-                    child: Row(
-                      children: [
-                        const Icon(Icons.logout, color: Colors.orange),
-                        const SizedBox(width: 10),
-                        const Text('Logout', style: TextStyle(color: Colors.white)),
-                      ],
-                    ),
-                  ),
-                  PopupMenuItem<String>(
-                    value: 'logout_clear',
-                    child: Row(
-                      children: [
-                        Icon(Icons.delete_forever, color: Colors.redAccent.withOpacity(0.8)),
-                        const SizedBox(width: 10),
-                        const Text('Logout & Clear Data', style: TextStyle(color: Colors.white)),
-                      ],
-                    ),
-                  ),
-                ],
-                onSelected: (String result) async {
-                  if (result == 'logout') {
-                    _showLogoutDialog(context);
-                  } else if (result == 'logout_clear') {
-                    _showLogoutWithClearDataDialog(context);
-                  } else if (result == 'settings') {
-                    await Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (context) => const SettingsScreen(),
-                      ),
-                    );
-                    _refreshUserData();
-                  } else if (result == 'call_history') {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (context) => const CallHistoryScreen(),
-                      ),
-                    );
-                  } else if (result == 'about') {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (context) => const AboutScreen(),
-                      ),
-                    );
-                  }
-                },
-              ),
-            ],
-          ],
-        ),
+  void _showSnack(String msg, {bool isError = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg, style: GoogleFonts.inter()),
+        backgroundColor: isError ? Colors.red[700] : _kIndigo,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
   }
 
+  // ─── Chat navigation ───────────────────────────────────────────────────────
 
-  Widget _buildConversationList(List<ConversationInfo> conversations, bool isReady, bool isDarkTheme) {
-    // Responsive sizing
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-    final searchPadding = EdgeInsets.fromLTRB(
-      screenWidth * 0.04,
-      screenHeight * 0.01,
-      screenWidth * 0.04,
-      screenHeight * 0.01,
+  void _navigateToChat(ConversationInfo convo) async {
+    final websocketService = Provider.of<WebSocketService>(
+      context,
+      listen: false,
     );
-    final searchFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final searchIconSize = (screenWidth * 0.06).clamp(20.0, 26.0);
-    final listItemMargin = EdgeInsets.symmetric(
-      horizontal: screenWidth * 0.03,
-      vertical: screenHeight * 0.008,
-    );
-    final listItemTitleSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final badgeFontSize = (screenWidth * 0.025).clamp(9.0, 12.0);
-    final badgeIconSize = (screenWidth * 0.03).clamp(11.0, 14.0);
+    WebSocketChannel? channel = websocketService.channel;
 
-    // Theme colors
-    final Color searchBgColor = isDarkTheme ? const Color(0xFF1E1E1E) : const Color(0xFFF0F2F5);
-    final Color searchTextColor = isDarkTheme ? Colors.white : Colors.black87;
-    final Color searchHintColor = isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade500;
-    final Color searchIconColor = isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600;
-    final Color cardBgColor = isDarkTheme ? const Color(0xFF1E1E1E) : Colors.lightBlue[50]!;
-    final Color cardBorderColor = isDarkTheme ? Colors.cyanAccent.withOpacity(0.3) : Colors.lightBlue[200]!;
-    final Color titleColor = isDarkTheme ? Colors.white : Colors.black;
-    final Color noResultsColor = isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600;
+    if (channel == null) {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        try {
+          final token = await user.getIdToken();
+          if (!mounted) return;
+          await websocketService.connect(token);
+          if (!mounted) return;
+          channel = websocketService.channel;
+        } catch (_) {}
+      }
+    }
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: searchPadding,
-          child: Container(
-            decoration: BoxDecoration(
-              color: searchBgColor,
-              borderRadius: BorderRadius.circular(10.0),
-              border: Border.all(
-                color: Colors.transparent
-              ),
-            ),
-            child: TextField(
-              controller: _searchController,
-              focusNode: _searchFocusNode,
-              cursorColor: isDarkTheme ? Colors.white : Colors.black,
-              style: TextStyle(
-                color: searchTextColor,
-                fontSize: searchFontSize,
-              ),
-              decoration: InputDecoration(
-                hintText: 'Search chats...',
-                hintStyle: TextStyle(
-                  color: searchHintColor,
-                  fontSize: searchFontSize,
-                ),
-                prefixIcon: Icon(
-                  Icons.search,
-                  color: searchIconColor,
-                  size: searchIconSize,
-                ),
-                suffixIcon: _isSearching
-                    ? IconButton(
-                  icon: Icon(
-                    Icons.clear,
-                    color: searchIconColor,
-                    size: searchIconSize,
-                  ),
-                  onPressed: () {
-                    _searchController.clear();
-                    FocusScope.of(context).unfocus();
-                  },
-                )
-                    : null,
-                border: InputBorder.none,
-                contentPadding: EdgeInsets.symmetric(
-                  horizontal: screenWidth * 0.05,
-                  vertical: screenHeight * 0.017,
-                ),
-              ),
-            ),
+    Provider.of<HomeProvider>(
+      context,
+      listen: false,
+    ).markConversationAsRead(convo.conversationId);
+
+    Navigator.of(context)
+        .push(
+          MaterialPageRoute(
+            builder: (context) =>
+                ChatScreen(channel: channel, conversationInfo: convo),
           ),
-        ),
-        Expanded(
-          child: conversations.isEmpty
-              ? Center(
-            child: Text(
-              _isSearching
-                  ? "No results found for '${_searchController.text}'"
-                  : "You have no conversations yet.",
-              style: TextStyle(
-                color: noResultsColor,
-                fontSize: searchFontSize,
-              ),
-            ),
-          )
-              : ListView.builder(
-            itemCount: conversations.length,
-            itemBuilder: (context, index) {
-              final convo = conversations[index];
-              final isSelected = _isGroupSelectionMode &&
-                  _selectedConversation?.conversationId == convo.conversationId;
-              return Container(
-                margin: listItemMargin,
-                decoration: BoxDecoration(
-                  color: isSelected
-                      ? Colors.teal.withOpacity(0.3)
-                      : cardBgColor,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: isSelected
-                        ? Colors.teal
-                        : cardBorderColor,
-                    width: 1.0,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.1),
-                      blurRadius: 5,
-                      spreadRadius: 1,
-                    ),
-                  ],
-                ),
-                child: ListTile(
-                  leading: _buildAvatar(convo),
-                  title: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          convo.chatTitle,
-                          style: TextStyle(
-                            color: titleColor,
-                            fontWeight: FontWeight.bold,
-                            fontSize: listItemTitleSize,
-                          ),
-                        ),
-                      ),
-                      // Show blocked badge for blocked users
-                      if (!convo.isGroup && convo.partnerUid != null && _blockedUsers.contains(convo.partnerUid))
-                        Container(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: screenWidth * 0.02,
-                            vertical: screenHeight * 0.005,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.red[100],
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.red[300]!, width: 1),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.block, size: badgeIconSize, color: Colors.red[700]),
-                              SizedBox(width: screenWidth * 0.01),
-                              Text(
-                                'Blocked',
-                                style: TextStyle(
-                                  color: Colors.red[900],
-                                  fontSize: badgeFontSize,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                    ],
-                  ),
-                  trailing: convo.unreadCount > 0
-                      ? Container(
-                          width: (screenWidth * 0.08).clamp(28.0, 36.0),
-                          height: (screenWidth * 0.08).clamp(28.0, 36.0),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: Colors.black,
-                              width: 2.0,
-                            ),
-                          ),
-                          child: Center(
-                            child: Text(
-                              convo.unreadCount > 99 ? '99+' : '${convo.unreadCount}',
-                              style: TextStyle(
-                                color: Colors.black,
-                                fontSize: (screenWidth * 0.035).clamp(11.0, 14.0),
-                                fontWeight: FontWeight.w900,
-                                letterSpacing: 0.5,
-                              ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ),
-                        )
-                      : null,
-                  onTap: () async {
-                    if (_isGroupSelectionMode) {
-                      _exitGroupSelectionMode();
-                    } else {
-                      final websocketService = Provider.of<WebSocketService>(context, listen: false);
+        )
+        .then((_) => _loadBlockedUsers());
 
-                      // 🚀 OFFLINE MODE: Try to get or create WebSocket channel
-                      WebSocketChannel? channel = websocketService.channel;
-
-                        if (channel == null) {
-                          // Try to connect with current user's token
-                          final user = FirebaseAuth.instance.currentUser;
-                          if (user != null) {
-                            try {
-                              final token = await user.getIdToken();
-                              await websocketService.connect(token);
-                              channel = websocketService.channel;
-                            } catch (e) {
-                              // Offline mode - can't connect
-                              print('[HomeScreen] ⚠️ Could not connect WebSocket (offline?): $e');
-                            }
-                          }
-                        }
-
-                      // Mark conversation as read
-                      Provider.of<HomeProvider>(context, listen: false)
-                          .markConversationAsRead(convo.conversationId);
-
-                      // Navigate to chat screen (works online and offline!)
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (context) => ChatScreen(
-                            channel: channel, // Can be null in offline mode
-                            conversationInfo: convo,
-                          ),
-                        ),
-                      ).then((_) {
-                        // Reload blocked users when coming back from chat
-                        _loadBlockedUsers();
-                      });
-
-                      // Show offline indicator if no channel
-                      if (channel == null) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('📴 Offline mode - Viewing cached messages'),
-                            duration: Duration(seconds: 2),
-                            backgroundColor: Colors.orange,
-                          ),
-                        );
-                      }
-                    }
-                  },
-                  onLongPress: () {
-                    if (convo.isGroup) {
-                      _enterGroupSelectionMode(convo);
-                    }
-                  },
-                ),
-              );
-            },
-          ),
-        ),
-      ],
-    );
+    if (channel == null) {
+      _showSnack('📴 Offline mode — Viewing cached messages', isError: false);
+    }
   }
 
-  Widget? _buildFab(bool isReady) {
-    if (_isGroupSelectionMode) return null; // FAB disappears completely
+  // ─── Avatar ────────────────────────────────────────────────────────────────
 
-    const isLightTheme = true; // Always light theme
+  Widget _buildAvatar(ConversationInfo convo, bool isDark, Color cardColor) {
+    final words = convo.chatTitle.trim().split(RegExp(r'\s+')).where((s) => s.isNotEmpty).take(2);
+    final initials = words.map((s) => s.characters.first.toUpperCase()).join();
+    final radius = BorderRadius.circular(convo.isGroup ? 13 : 22);
+    final fallback = Center(child: Text(initials.isEmpty ? '?' : initials, style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500, color: isDark ? const Color(0xFFBCC7D8) : const Color(0xFF4C4F58))));
+    return Stack(children: [
+      Container(width: 44, height: 44, clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(borderRadius: radius, border: Border.all(color: isDark ? const Color(0xFF354256) : const Color(0xFFE6E7ED)),
+          gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: isDark ? const [Color(0xFF303947), Color(0xFF283241)] : const [Color(0xFFF5F5F7), Color(0xFFE5E6EB)])),
+        child: convo.avatarUrl != null && convo.avatarUrl!.isNotEmpty ? CachedNetworkImage(imageUrl: convo.avatarUrl!, fit: BoxFit.cover, placeholder: (_, _) => fallback, errorWidget: (_, _, _) => fallback) : fallback),
+      if (convo.isOnline && !convo.isGroup) Positioned(right: 0, bottom: 0, child: Semantics(label: 'Online', child: Container(width: 9, height: 9,
+        decoration: BoxDecoration(shape: BoxShape.circle, color: _kOnlineGreen, border: Border.all(color: cardColor, width: 2))))),
+    ]);
+  }
+  // ─── Timestamp ─────────────────────────────────────────────────────────────
 
-    return ExpandableFab(
-      distance: 112.0,
-      isLightTheme: isLightTheme,
-      children: [
-        ActionButton(
-          onPressed: isReady
-              ? () {
-            final websocketService = Provider.of<WebSocketService>(context, listen: false);
-            if (websocketService.isConnected && websocketService.channel != null) {
-              Navigator.of(context)
-                  .push(MaterialPageRoute(
-                  builder: (context) => FindFriendsScreen(
-                    channel: websocketService.channel!,
-                  )))
-                  .then((_) => Provider.of<HomeProvider>(context, listen: false)
-                  .fetchInitialConversations());
-            } else {
-              ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Still connecting... Please wait a moment.')));
-            }
-          }
-              : null,
-          icon: const Icon(Icons.person_add, color: Colors.white),
-          isLightTheme: isLightTheme,
-        ),
-        ActionButton(
-          onPressed: isReady
-              ? () {
-            final websocketService = Provider.of<WebSocketService>(context, listen: false);
-            if (websocketService.isConnected && websocketService.channel != null) {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (context) => CreateGroupScreen(
-                    channel: websocketService.channel!,
-                    onGroupCreated: () => Provider.of<HomeProvider>(context, listen: false)
-                        .fetchInitialConversations(),
-                  ),
-                ),
-              );
-            } else {
-              ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Still connecting... Please wait a moment.')));
-            }
-          }
-              : null,
-          icon: const Icon(Icons.group_add, color: Colors.white),
-          isLightTheme: isLightTheme,
-        ),
-      ],
-    );
+  String _formatTimestamp(DateTime timestamp) {
+    final now = DateTime.now();
+    final difference = now.difference(timestamp);
+    if (difference.inDays == 0) {
+      final h = timestamp.hour;
+      final m = timestamp.minute.toString().padLeft(2, '0');
+      final suffix = h >= 12 ? 'PM' : 'AM';
+      final hour = h > 12 ? h - 12 : (h == 0 ? 12 : h);
+      return '$hour:$m $suffix';
+    } else if (difference.inDays < 7) {
+      return [
+        'Mon',
+        'Tue',
+        'Wed',
+        'Thu',
+        'Fri',
+        'Sat',
+        'Sun',
+      ][timestamp.weekday - 1];
+    } else {
+      return '${timestamp.day}/${timestamp.month}/${timestamp.year % 100}';
+    }
   }
 
+  // ─── AppBar ────────────────────────────────────────────────────────────────
 
-  @override
-  Widget build(BuildContext context) {
-    return Consumer<UserSettingsProvider>(
-      builder: (context, userSettings, child) {
-        final isDarkTheme = userSettings.homeScreenStyle == 'dark';
+  PreferredSizeWidget _buildAppBar(
+    bool isDark,
+    Color cardColor,
+    Color textColor,
+  ) {
+    final user = FirebaseAuth.instance.currentUser;
+    final bool isCreatorOfSelectedGroup =
+        _isGroupSelectionMode &&
+        _selectedConversation != null &&
+        _selectedConversation!.creatorUid == user?.uid;
 
-        return CallAwareScreen(
-          screenName: 'HomeScreen',
-          child: Scaffold(
-            backgroundColor: isDarkTheme ? const Color(0xFF121212) : Colors.white,
-            appBar: _buildAppBar(isDarkTheme: isDarkTheme),
-        body: Builder(
-          builder: (context) {
-            print('[HomeScreen] Building body, _isGroupSelectionMode: $_isGroupSelectionMode');
-            return Stack(
-              children: [
-                // Main conversation list
-                Consumer2<HomeProvider, WebSocketService>(
-                  builder: (context, homeProvider, websocketService, child) {
-                    final conversations = _isSearching ? _filteredConversations : homeProvider.conversations;
-                    final isReady = websocketService.isConnected;
-
-                    return _buildConversationList(conversations, isReady, isDarkTheme);
-                  },
-                ),
-
-                // Floating AI button (only show when not in group selection mode) - MUST be after conversation list to appear on top
-                if (!_isGroupSelectionMode) ...[
-                  Builder(
-                    builder: (context) {
-                      print('[HomeScreen] Building AI button in Stack');
-                      return _buildFloatingAIButton(isDarkTheme);
-                    },
-                  ),
-                ],
-              ],
-            );
-          },
+    if (_isGroupSelectionMode) {
+      return AppBar(
+        backgroundColor: _kIndigo,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.close_rounded, color: _kWhite),
+          onPressed: _exitGroupSelectionMode,
         ),
-            bottomNavigationBar: _isGroupSelectionMode ? null : Consumer<WebSocketService>(
-              builder: (context, websocketService, child) {
-                return _buildBottomNavBar(websocketService.isConnected, isDarkTheme);
-              },
-            ),
+        title: Text(
+          _selectedConversation!.chatTitle,
+          style: GoogleFonts.poppins(
+            color: _kWhite,
+            fontWeight: FontWeight.w600,
           ),
-        );
+        ),
+        actions: [
+          if (isCreatorOfSelectedGroup)
+            IconButton(
+              icon: const Icon(Icons.delete_outline_rounded, color: _kWhite),
+              onPressed: () => _showGroupActionDialog(action: 'delete'),
+            )
+          else
+            IconButton(
+              icon: const Icon(Icons.exit_to_app_rounded, color: _kWhite),
+              onPressed: () => _showGroupActionDialog(action: 'leave'),
+            ),
+        ],
+      );
+    }
+
+    return OpaqueHeader(
+      isDark: isDark,
+      profile: user?.photoURL != null
+          ? CachedNetworkImage(
+              imageUrl: user!.photoURL!,
+              fit: BoxFit.cover,
+              errorWidget: (_, __, ___) =>
+                  _buildDefaultUserAvatar(user, isDark, textColor),
+            )
+          : _buildDefaultUserAvatar(user, isDark, textColor),
+      onProfile: () async {
+        await Navigator.of(
+          context,
+        ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+        if (mounted) _refreshUserData();
+      },
+      menuItems: [
+        _popupItem(
+          textColor: textColor,
+          value: 'settings',
+          icon: Icons.settings_outlined,
+          label: 'Settings',
+          color: textColor,
+        ),
+        _popupItem(
+          textColor: textColor,
+          value: 'backup_restore',
+          icon: Icons.backup_outlined,
+          label: 'Backup / Restore',
+          color: Colors.green,
+        ),
+        _popupItem(
+          textColor: textColor,
+          value: 'about',
+          icon: Icons.info_outline_rounded,
+          label: 'About',
+          color: Colors.cyan,
+        ),
+        const PopupMenuDivider(),
+        _popupItem(
+          textColor: textColor,
+          value: 'logout',
+          icon: Icons.logout_rounded,
+          label: 'Logout',
+          color: Colors.orange,
+        ),
+      ],
+      onMenuSelected: (result) async {
+        if (result == 'logout') {
+          _showLogoutDialog(context);
+        } else if (result == 'settings') {
+          await Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+          if (mounted) _refreshUserData();
+        } else if (result == 'backup_restore') {
+          Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => const BackupManagementScreen()));
+        } else if (result == 'about') {
+          Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => const AboutScreen()));
+        }
       },
     );
   }
 
-  Widget _buildFloatingAIButton(bool isDarkTheme) {
-    print('[HomeScreen] _buildFloatingAIButton called');
-
-    final bottomPadding = MediaQuery.of(context).padding.bottom;
-
-    // Adjust this number to move button up/down
-    // Higher number = button goes UP (away from bottom)
-    final bottomPosition = 50.0 - bottomPadding;
-
-    // Theme colors
-    final Color buttonBgColor = isDarkTheme ? const Color(0xFF1E1E1E) : Colors.white;
-    final Color buttonTextColor = isDarkTheme ? Colors.cyanAccent : Colors.black;
-    final Color buttonBorderColor = isDarkTheme ? Colors.cyanAccent : Colors.black;
-
-    return Positioned(
-      right: 16,
-      bottom: bottomPosition,
-      child: GestureDetector(
-        onTap: () {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (context) => const AIChatScreen(),
-            ),
-          );
-        },
-        child: Container(
-          width: 60,
-          height: 60,
-          decoration: BoxDecoration(
-            color: buttonBgColor,
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: buttonBorderColor,
-              width: 2.5,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.2),
-                blurRadius: 12,
-                spreadRadius: 1,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Center(
-            child: Text(
-              'AI',
-              style: TextStyle(
-                color: buttonTextColor,
-                fontSize: 24,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 1,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildBottomNavBar(bool isReady, bool isDarkTheme) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-
-    // Theme colors
-    final Color navBgColor = isDarkTheme ? const Color(0xFF0a1128) : Colors.white;
-    final Color navBorderColor = isDarkTheme ? Colors.cyanAccent.withOpacity(0.3) : Colors.black;
-
+  Widget _buildDefaultUserAvatar(User? user, bool isDark, Color textColor) {
+    final initial = (user?.displayName?.isNotEmpty == true)
+        ? user!.displayName![0].toUpperCase()
+        : (user?.email?.isNotEmpty == true)
+        ? user!.email![0].toUpperCase()
+        : 'U';
     return Container(
-      padding: EdgeInsets.only(
-        left: screenWidth * 0.02,
-        right: screenWidth * 0.02,
-        top: screenHeight * 0.015,
-        bottom: MediaQuery.of(context).padding.bottom + screenHeight * 0.015,
-      ),
-      decoration: BoxDecoration(
-        color: navBgColor,
-        border: Border(
-          top: BorderSide(
-            color: navBorderColor,
-            width: 1,
+      color: isDark ? Colors.white10 : Colors.black.withOpacity(0.15),
+      child: Center(
+        child: Text(
+          initial,
+          style: GoogleFonts.poppins(
+            color: isDark ? Colors.white : Colors.black,
+            fontWeight: FontWeight.bold,
+            fontSize: 16,
           ),
         ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, -3),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          _buildNavCard(
-            icon: Icons.history,
-            label: 'Calls',
-            isDarkTheme: isDarkTheme,
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (context) => const CallHistoryScreen(),
-                ),
-              );
-            },
-          ),
-          _buildNavCard(
-            icon: Icons.person_add,
-            label: 'Friends',
-            isDarkTheme: isDarkTheme,
-            onTap: () {
-              if (!isReady) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Still connecting... Please wait a moment.')),
-                );
-                return;
-              }
-              final websocketService = Provider.of<WebSocketService>(context, listen: false);
-              if (websocketService.isConnected && websocketService.channel != null) {
-                Navigator.of(context)
-                    .push(MaterialPageRoute(
-                        builder: (context) => FindFriendsScreen(
-                          channel: websocketService.channel!,
-                        )))
-                    .then((_) => Provider.of<HomeProvider>(context, listen: false)
-                        .fetchInitialConversations());
-              }
-            },
-          ),
-          _buildNavCard(
-            icon: Icons.group_add,
-            label: 'Groups',
-            isDarkTheme: isDarkTheme,
-            onTap: () {
-              if (!isReady) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Still connecting... Please wait a moment.')),
-                );
-                return;
-              }
-              final websocketService = Provider.of<WebSocketService>(context, listen: false);
-              if (websocketService.isConnected && websocketService.channel != null) {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (context) => CreateGroupScreen(
-                      channel: websocketService.channel!,
-                      onGroupCreated: () => Provider.of<HomeProvider>(context, listen: false)
-                          .fetchInitialConversations(),
-                    ),
-                  ),
-                );
-              }
-            },
-          ),
-          _buildNavCard(
-            icon: Icons.note,
-            label: 'Notes',
-            isDarkTheme: isDarkTheme,
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (context) => const NotesScreen(),
-                ),
-              );
-            },
-          ),
-          _buildNavCard(
-            icon: Icons.palette,
-            label: 'Personalize',
-            isDarkTheme: isDarkTheme,
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (context) => const CustomizationScreen(),
-                ),
-              );
-            },
-          ),
-        ],
       ),
     );
   }
 
-
-  Widget _buildNavCard({
+  PopupMenuItem<String> _popupItem({
+    required String value,
     required IconData icon,
     required String label,
-    required bool isDarkTheme,
-    required VoidCallback onTap,
+    required Color color,
+    required Color textColor,
   }) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-    final navIconSize = (screenWidth * 0.06).clamp(22.0, 28.0);
-    final navLabelSize = (screenWidth * 0.028).clamp(10.0, 13.0);
-    final navSpacing = (screenHeight * 0.007).clamp(4.0, 8.0);
-
-    // Theme colors
-    final Color iconColor = isDarkTheme ? Colors.cyanAccent : Colors.black;
-    final Color textColor = isDarkTheme ? Colors.white : Colors.black87;
-
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          margin: EdgeInsets.symmetric(horizontal: screenWidth * 0.005),
-          padding: EdgeInsets.symmetric(vertical: screenHeight * 0.012),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, color: iconColor, size: navIconSize),
-              SizedBox(height: navSpacing),
-              Text(
-                label,
-                style: TextStyle(
-                  color: textColor,
-                  fontSize: navLabelSize,
-                  fontWeight: FontWeight.w600,
-                ),
-                textAlign: TextAlign.center,
-                overflow: TextOverflow.ellipsis,
-                maxLines: 1,
-              ),
-            ],
+    return PopupMenuItem<String>(
+      value: value,
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(width: 12),
+          Text(
+            label,
+            style: GoogleFonts.inter(color: textColor, fontSize: 14),
           ),
-        ),
+        ],
       ),
+    );
+  }
+
+  // ─── Search Bar ────────────────────────────────────────────────────────────
+
+  Widget _buildSearchBar(bool isDark, Color cardColor, Color textColor, Color textGreyColor) => Padding(
+    padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+    child: SizedBox(height: 36, child: TextField(
+      key: const ValueKey('home_search_bar'), controller: _searchController, focusNode: _searchFocusNode,
+      cursorColor: const Color(0xFF73747C), style: GoogleFonts.inter(color: textColor, fontSize: 16),
+      decoration: InputDecoration(
+        hintText: 'Search conversations', hintStyle: GoogleFonts.inter(color: textGreyColor, fontSize: 12),
+        filled: true, fillColor: isDark ? const Color(0xFF283241) : const Color(0xFFF5F5F7),
+        prefixIcon: Padding(padding: const EdgeInsets.all(10), child: OpaqueIcon('search', size: 16, color: textGreyColor)),
+        suffixIcon: _isSearching ? IconButton(tooltip: 'Clear search', padding: EdgeInsets.zero, iconSize: 16,
+          onPressed: () { _searchController.clear(); _searchFocusNode.unfocus(); }, icon: Icon(Icons.close, color: textGreyColor)) : null,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 13),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(19), borderSide: BorderSide.none),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(19), borderSide: BorderSide.none),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(19), borderSide: const BorderSide(color: Color(0xFFC6CBD3))),
+      ),
+    )),
+  );
+
+  Widget _buildConversationList(List<ConversationInfo> conversations, bool isReady, bool isDark, Color cardColor, Color textColor, Color textGreyColor, Color dividerColor) {
+    final query = _searchController.text.trim().toLowerCase();
+    final visible = conversations.where((convo) => convo.chatTitle.toLowerCase().contains(query)
+      && (_conversationFilter == 'All' || (_conversationFilter == 'Unread' && (convo.unreadCount > 0 || convo.hasUnreadMessages)) || (_conversationFilter == 'Groups' && convo.isGroup))).toList();
+    visible.sort((a, b) {
+      final comparison = (b.lastMessageTimestamp ?? DateTime(1970)).compareTo(a.lastMessageTimestamp ?? DateTime(1970));
+      return comparison != 0 ? comparison : b.conversationId.compareTo(a.conversationId);
+    });
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _buildSearchBar(isDark, cardColor, textColor, textGreyColor),
+      Container(margin: const EdgeInsets.fromLTRB(20, 12, 20, 8), padding: const EdgeInsets.all(2),
+        decoration: BoxDecoration(color: isDark ? const Color(0xFF283241) : const Color(0xFFF1F2F5), borderRadius: BorderRadius.circular(16)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [for (final filter in ['All', 'Unread', 'Groups']) Padding(
+          padding: const EdgeInsets.symmetric(horizontal: .5), child: Semantics(selected: _conversationFilter == filter, button: true,
+            child: InkWell(borderRadius: BorderRadius.circular(14), onTap: () => setState(() { _conversationFilter = filter; _addMenuOpen = false; }),
+              child: Container(constraints: const BoxConstraints(minHeight: 27, minWidth: 47), padding: const EdgeInsets.symmetric(horizontal: 12), alignment: Alignment.center,
+                decoration: BoxDecoration(color: _conversationFilter == filter ? (isDark ? const Color(0xFF354256) : Colors.white) : null, borderRadius: BorderRadius.circular(14)),
+                child: Text(filter, style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w500, color: _conversationFilter == filter ? textColor : textGreyColor))),
+            ),
+          ),
+        )]),
+      ),
+      Expanded(child: Stack(children: [
+        Positioned.fill(child: visible.isEmpty
+          ? Center(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 32), child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(query.isNotEmpty ? 'No matching conversations' : _conversationFilter == 'Unread' ? 'You’re all caught up' : _conversationFilter == 'Groups' ? 'Bring everyone together' : 'Your conversations start here',
+                  textAlign: TextAlign.center, style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600, color: textColor)),
+                const SizedBox(height: 8),
+                Text(query.isNotEmpty ? 'Try searching for a different name.' : _conversationFilter == 'Unread' ? 'New unread messages will appear here.' : _conversationFilter == 'Groups' ? 'Tap + to create a group and start chatting.' : 'Tap + to find a friend and start chatting.',
+                  textAlign: TextAlign.center, style: GoogleFonts.inter(fontSize: 12, height: 1.7, color: textGreyColor)),
+              ],
+            )))
+          : ListView.builder(padding: EdgeInsets.fromLTRB(MediaQuery.sizeOf(context).width < 350 ? 9 : 15, 0, MediaQuery.sizeOf(context).width < 350 ? 9 : 15, 80),
+              itemCount: visible.length, itemBuilder: (context, index) => _buildConversationTile(visible[index], isDark, cardColor, textColor, textGreyColor, dividerColor))),
+        if (_addMenuOpen) Positioned.fill(child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => setState(() => _addMenuOpen = false))),
+      ])),
+    ]);
+  }
+
+  Widget _buildConversationTile(ConversationInfo convo, bool isDark, Color cardColor, Color textColor, Color textGreyColor, Color dividerColor) {
+    final unread = convo.unreadCount > 0 || convo.hasUnreadMessages;
+    return Material(color: _isGroupSelectionMode && _selectedConversation?.conversationId == convo.conversationId
+      ? (isDark ? const Color(0xFF283241) : const Color(0xFFF1F2F5)) : Colors.transparent,
+      borderRadius: BorderRadius.circular(12), child: InkWell(
+        borderRadius: BorderRadius.circular(12), onTap: () { setState(() => _addMenuOpen = false); _navigateToChat(convo); },
+        onLongPress: convo.isGroup ? () { setState(() => _addMenuOpen = false); _enterGroupSelectionMode(convo); } : null,
+        child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16), child: Row(children: [
+          _buildAvatar(convo, isDark, cardColor), SizedBox(width: MediaQuery.sizeOf(context).width < 350 ? 9 : 12),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(convo.chatTitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: GoogleFonts.inter(fontSize: 14, letterSpacing: -.15, fontWeight: unread ? FontWeight.w600 : FontWeight.w500, color: textColor)),
+            const SizedBox(height: 5),
+            Text(convo.isTyping ? 'typing...' : ChatPayloadParser.getPreviewText(convo.lastMessage), maxLines: 1, overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.inter(fontSize: 12, color: convo.isTyping ? const Color(0xFF6087BD) : unread ? (isDark ? const Color(0xFFDCE3EF) : const Color(0xFF4E515C)) : textGreyColor)),
+          ])),
+          const SizedBox(width: 8),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            if (convo.lastMessageTimestamp != null) Text(_formatTimestamp(convo.lastMessageTimestamp!.toLocal()), style: GoogleFonts.inter(fontSize: 10, color: textGreyColor)),
+            if (unread) ...[const SizedBox(height: 12), Semantics(label: '${convo.unreadCount > 0 ? convo.unreadCount : ''} unread messages', child: Container(width: 7, height: 7, decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xFF335FE8))))],
+          ]),
+        ])),
+      ),
+    );
+  }
+
+  Widget _buildBottomNavigationBar(bool isReady, bool isDark, Color cardColor, Color textColor) => OpaqueBottomNavigation(
+    index: _currentNavIndex, isDark: isDark,
+    onSelected: (index) => setState(() { _currentNavIndex = index; _addMenuOpen = false; }),
+  );
+
+  Future<void> _openAddDestination(bool group) async {
+    final ws = context.read<WebSocketService>();
+    setState(() => _addMenuOpen = false);
+    if (!ws.isConnected || ws.channel == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Connecting... Please wait a moment.')));
+      return;
+    }
+    if (!group) {
+      setState(() {
+        _friendsInitialTab = FriendTab.search;
+        _friendsOpenRequest++;
+        _currentNavIndex = 2;
+      });
+      return;
+    }
+    await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => CreateGroupScreen(channel: ws.channel!, onGroupCreated: () => context.read<HomeProvider>().fetchInitialConversations())));
+    if (mounted) context.read<HomeProvider>().fetchInitialConversations();
+  }
+
+  Widget _buildAddMenu(bool dark) {
+    final ink = dark ? const Color(0xFFE0E6EF) : const Color(0xFF343D4C);
+    Widget option(String label, String icon, bool group) => InkWell(
+      borderRadius: BorderRadius.circular(12), onTap: () => _openAddDestination(group),
+      child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7), child: Row(children: [
+        Container(width: 30, height: 30, alignment: Alignment.center, decoration: BoxDecoration(color: dark ? const Color(0xFF354256) : const Color(0xFFF0F2F6), borderRadius: BorderRadius.circular(10)), child: OpaqueIcon(icon, size: 18, color: ink)),
+        const SizedBox(width: 10), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w500, color: ink)),
+        ])), const Icon(Icons.chevron_right, size: 14, color: Color(0xFF9399A5)),
+      ])),
+    );
+    return TapRegion(onTapOutside: (_) { if (_addMenuOpen && mounted) setState(() => _addMenuOpen = false); }, child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.end, children: [
+      AnimatedSize(duration: const Duration(milliseconds: 220), alignment: Alignment.bottomRight, curve: Curves.easeOutCubic,
+        child: _addMenuOpen ? Container(width: 216, margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(color: dark ? const Color(0xFF283241) : Colors.white, borderRadius: BorderRadius.circular(18), border: Border.all(color: dark ? const Color(0xFF354256) : const Color(0xFFE9EAF0)), boxShadow: const [BoxShadow(color: Color(0x14202127), blurRadius: 24, offset: Offset(0, 8))]),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [option('Add new friend', 'add', false),
+            const Padding(padding: EdgeInsets.symmetric(vertical: 4), child: Divider(height: 1, indent: 48, endIndent: 8, color: Color(0xFFE9EBF0))),
+            option('New group', 'users', true),
+          ]),
+        ) : const SizedBox.shrink()),
+      SizedBox(width: 44, height: 44, child: FloatingActionButton(heroTag: 'opaque-add', tooltip: _addMenuOpen ? 'Close add options' : 'Add friend or group',
+        elevation: _addMenuOpen ? 0 : 2, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        backgroundColor: _addMenuOpen ? const Color(0xFF3B4050) : const Color(0xFF252832), foregroundColor: Colors.white,
+        onPressed: () { _searchFocusNode.unfocus(); setState(() => _addMenuOpen = !_addMenuOpen); },
+        child: AnimatedRotation(turns: _addMenuOpen ? .125 : 0, duration: const Duration(milliseconds: 220), child: const Icon(Icons.add, size: 22)))),
+    ]));
+  }
+
+  // ─── Build ─────────────────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer2<WebSocketService, UserSettingsProvider>(
+      builder: (context, websocketService, userSettings, child) {
+        final isReady = websocketService.isConnected;
+        final isDark = userSettings.isDarkMode;
+
+        // Force appropriate status bar icons based on theme
+        SystemChrome.setSystemUIOverlayStyle(
+          SystemUiOverlayStyle(
+            statusBarColor: Colors.transparent,
+            statusBarIconBrightness: isDark
+                ? Brightness.light
+                : Brightness.dark,
+          ),
+        );
+
+        // Theme-aware colors
+        final Color bgColor = isDark ? const Color(0xFF19202A) : Colors.white;
+        final Color cardColor = bgColor;
+        final Color textColor = isDark ? const Color(0xFFDCE3EF) : const Color(0xFF202127);
+        final Color textGreyColor = isDark ? const Color(0xFF97A3B6) : const Color(0xFF7C7D85);
+        final Color dividerColor = isDark ? Colors.white10 : _kDivider;
+
+        return CallAwareScreen(
+          screenName: 'HomeScreen',
+          child: Scaffold(
+            backgroundColor: bgColor,
+            appBar: _currentNavIndex <= 4
+                ? _buildAppBar(isDark, cardColor, textColor)
+                : null,
+            body: IndexedStack(
+              index: _currentNavIndex,
+              children: [
+                // Index 0: Chats
+                Consumer<HomeProvider>(
+                  builder: (context, homeProvider, _) {
+                    final conversations = homeProvider.conversations;
+                    return _buildConversationList(
+                      conversations,
+                      isReady,
+                      isDark,
+                      cardColor,
+                      textColor,
+                      textGreyColor,
+                      dividerColor,
+                    );
+                  },
+                ),
+
+                // Index 1: Calls
+                const CallHistoryScreen(embedded: true),
+
+                // Index 2: Friends
+                if (websocketService.channel != null)
+                  FindFriendsScreen(
+                    embedded: true,
+                    key: ValueKey(_friendsOpenRequest), initialTab: _friendsInitialTab,
+                    channel: websocketService.channel!,
+                    onFriendRequestAccepted: () => Provider.of<HomeProvider>(
+                      context,
+                      listen: false,
+                    ).fetchInitialConversations(),
+                  )
+                else
+                  const Center(child: CircularProgressIndicator()),
+
+                // Index 3: Style
+                const StyleScreen(embedded: true),
+
+                // Index 4: Notes
+                const NotesScreen(embedded: true),
+              ],
+            ),
+            floatingActionButton: _currentNavIndex == 0 && !_isGroupSelectionMode ? _buildAddMenu(isDark) : null,
+            bottomNavigationBar: _isGroupSelectionMode
+                ? null
+                : _buildBottomNavigationBar(
+                    isReady,
+                    isDark,
+                    cardColor,
+                    textColor,
+                  ),
+          ),
+        );
+      },
     );
   }
 }

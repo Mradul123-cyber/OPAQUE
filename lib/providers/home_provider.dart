@@ -115,22 +115,33 @@ class HomeProvider with ChangeNotifier {
   }
 
   void markConversationAsRead(int conversationId) {
+    // Reading a conversation changes only its unread state. Keep the message
+    // preview and presence fields intact during the chat route transition.
+    ConversationInfo asRead(ConversationInfo conversation) => ConversationInfo(
+      conversationId: conversation.conversationId,
+      chatTitle: conversation.chatTitle,
+      isGroup: conversation.isGroup,
+      creatorUid: conversation.creatorUid,
+      avatarUrl: conversation.avatarUrl,
+      partnerUid: conversation.partnerUid,
+      hasUnreadMessages: false,
+      unreadCount: 0,
+      lastMessageTimestamp: conversation.lastMessageTimestamp,
+      lastMessage: conversation.lastMessage,
+      isTyping: conversation.isTyping,
+      isOnline: conversation.isOnline,
+    );
+
     final index = _conversations.indexWhere((c) => c.conversationId == conversationId);
-    if (index != -1) {
-      _conversations[index] = ConversationInfo(
-        conversationId: _conversations[index].conversationId,
-        chatTitle: _conversations[index].chatTitle,
-        isGroup: _conversations[index].isGroup,
-        creatorUid: _conversations[index].creatorUid,
-        avatarUrl: _conversations[index].avatarUrl,
-        partnerUid: _conversations[index].partnerUid,
-        hasUnreadMessages: false, // Clear the green dot
-        unreadCount: 0, // Clear the count
-        lastMessageTimestamp: _conversations[index].lastMessageTimestamp, // Preserve timestamp
-      );
-      notifyListeners();
-      // print('[HomeProvider] Cleared unread indicator for conversation $conversationId');
+    if (index == -1) return;
+    _conversations[index] = asRead(_conversations[index]);
+    // A cache-backed refresh must not restore the old unread indicator.
+    final cached = _cachedConversations;
+    if (cached != null) {
+      final cachedIndex = cached.indexWhere((c) => c.conversationId == conversationId);
+      if (cachedIndex != -1) cached[cachedIndex] = asRead(cached[cachedIndex]);
     }
+    notifyListeners();
   }
 
   void removeConversation(int conversationId) {

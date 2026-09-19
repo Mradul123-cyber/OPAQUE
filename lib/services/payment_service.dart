@@ -2,9 +2,10 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/services.dart';
+import 'package:zarq_messenger/app_config.dart';
 
 class PaymentService {
-  static const String baseUrl = 'https://zarqmessenger.com/v1';
+  static const String baseUrl = '${AppConfig.baseUrl}';
   static const MethodChannel _paymentChannel = MethodChannel('com.zarq/payment');
 
   // Create Razorpay order

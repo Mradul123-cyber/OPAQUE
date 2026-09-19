@@ -3,8 +3,8 @@
 
 // Backend API URL
 class AppConfig {
-  static const String baseUrl = 'https://api.zarqmessenger.com';
-  static const String momentsBaseUrl = 'https://api.zarqmessenger.com/v1';
+  static const String baseUrl =
+      'http://192.168.29.81:8080'; // 192.168.29.81 allows WSA to access Windows via network
 }
 
 // Email verification enabled for production

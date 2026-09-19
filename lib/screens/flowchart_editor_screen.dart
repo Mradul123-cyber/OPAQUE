@@ -1,16 +1,13 @@
+import '../widgets/notes_design.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_flow_chart/flutter_flow_chart.dart';
 import 'package:provider/provider.dart';
 import '../services/user_settings_provider.dart';
-import 'dart:ui' as ui;
 
 class FlowchartEditorScreen extends StatefulWidget {
   final String? initialFlowchartJson;
 
-  const FlowchartEditorScreen({
-    super.key,
-    this.initialFlowchartJson,
-  });
+  const FlowchartEditorScreen({super.key, this.initialFlowchartJson});
 
   @override
   State<FlowchartEditorScreen> createState() => _FlowchartEditorScreenState();
@@ -24,41 +21,51 @@ class _FlowchartEditorScreenState extends State<FlowchartEditorScreen> {
   void initState() {
     super.initState();
 
-    final userSettings = Provider.of<UserSettingsProvider>(context, listen: false);
-    final isDark = userSettings.notesScreenStyle == 'dark';
+    final userSettings = Provider.of<UserSettingsProvider>(
+      context,
+      listen: false,
+    );
+    final isDark = userSettings.isDarkMode;
 
     // Load existing flowchart if provided
-    if (widget.initialFlowchartJson != null && widget.initialFlowchartJson!.isNotEmpty) {
+    if (widget.initialFlowchartJson != null &&
+        widget.initialFlowchartJson!.isNotEmpty) {
       try {
         // Load the dashboard from JSON
         dashboard = Dashboard.fromJson(widget.initialFlowchartJson!);
       } catch (e) {
         print('Error loading flowchart: $e');
-        dashboard = Dashboard(
-          defaultArrowStyle: ArrowStyle.curve,
-        );
+        dashboard = Dashboard(defaultArrowStyle: ArrowStyle.curve);
       }
     } else {
-      dashboard = Dashboard(
-        defaultArrowStyle: ArrowStyle.curve,
-      );
+      dashboard = Dashboard(defaultArrowStyle: ArrowStyle.curve);
     }
 
+    final c = NotesColors(context);
     // Set grid background parameters
     dashboard.setGridBackgroundParams(
       GridBackgroundParams(
-        gridColor: isDark ? Colors.white.withOpacity(0.1) : Colors.grey.withOpacity(0.15),
+        gridColor: isDark
+            ? Colors.white.withOpacity(0.1)
+            : Colors.grey.withOpacity(0.15),
         gridThickness: 1.0,
         gridSquare: 20.0,
-        backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+        backgroundColor: c.soft,
       ),
     );
+    _initialSnapshot = dashboard.toJson();
   }
 
   void _addElement(String kind) {
+    final c = NotesColors(context);
     final element = FlowElement(
+      textColor: c.ink,
+      textSize: 13,
+      backgroundColor: c.surface,
+      borderColor: const Color(0xFFB2C7E4),
+      borderThickness: 1,
       position: const Offset(100, 100),
-      size: const Size(120, 80),
+      size: const Size(150, 62),
       text: 'New ${kind.capitalize()}',
       kind: _getElementKind(kind),
       handlers: [
@@ -91,372 +98,295 @@ class _FlowchartEditorScreenState extends State<FlowchartEditorScreen> {
     }
   }
 
-  void _clearAll() {
-    setState(() {
-      dashboard.removeAllElements();
+  bool _leaving = false;
+  bool _saving = false;
+  late String _initialSnapshot;
+
+  Future<void> _leave() async {
+    bool changed = true;
+    try {
+      changed = dashboard.toJson() != _initialSnapshot;
+    } catch (_) {}
+    if (changed) {
+      final discard = await showNotesConfirmation(
+        context,
+        title: 'Discard changes?',
+        body:
+            'Your latest flowchart changes haven’t been saved. Leave without saving them?',
+        confirm: 'Discard',
+        danger: true,
+        icon: Icons.account_tree_outlined,
+      );
+      if (!mounted || !discard) return;
+    }
+    if (!mounted) return;
+    setState(() => _leaving = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) Navigator.pop(context);
     });
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    _saving = true;
+    try {
+      final save = await showNotesConfirmation(
+        context,
+        title: 'Save flowchart?',
+        body:
+            'Keep this flowchart attached to your note. Save the note to keep your changes.',
+        confirm: 'Save flowchart',
+        icon: Icons.account_tree_outlined,
+      );
+      if (!mounted || !save) return;
+      final json = dashboard.toJson();
+      setState(() => _leaving = true);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) Navigator.pop(context, json);
+      });
+    } catch (_) {
+      if (mounted)
+        await showNotesConfirmation(
+          context,
+          title: 'Couldn’t save flowchart',
+          body:
+              'Your diagram is still here. Close this message and try saving again.',
+          confirm: 'Continue editing',
+          icon: Icons.account_tree_outlined,
+        );
+    } finally {
+      _saving = false;
+    }
+  }
+
+  Future<void> _clearAll() async {
+    final clear = await showNotesConfirmation(
+      context,
+      title: 'Clear flowchart?',
+      body:
+          'Remove all shapes and connections from this diagram? The note’s text will stay.',
+      confirm: 'Clear all',
+      danger: true,
+      icon: Icons.account_tree_outlined,
+    );
+    if (mounted && clear) setState(() => dashboard.removeAllElements());
   }
 
   @override
   Widget build(BuildContext context) {
-    final userSettings = Provider.of<UserSettingsProvider>(context);
-    final isDark = userSettings.notesScreenStyle == 'dark';
-
-    return Scaffold(
-      backgroundColor: isDark ? const Color(0xFF121212) : const Color(0xFFF5F5F5),
-      appBar: AppBar(
-        backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
-        elevation: 0,
-        leading: IconButton(
-          icon: Icon(
-            Icons.close_rounded,
-            color: isDark ? Colors.white : Colors.black,
-          ),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: Text(
-          'Flowchart Editor',
-          style: TextStyle(
-            color: isDark ? Colors.white : Colors.black,
-            fontSize: 20,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        actions: [
-          IconButton(
-            icon: Icon(
-              Icons.delete_outline_rounded,
-              color: isDark ? Colors.redAccent : Colors.red,
-            ),
-            onPressed: _clearAll,
-            tooltip: 'Clear all',
-          ),
-          IconButton(
-            icon: Icon(
-              Icons.check_rounded,
-              color: isDark ? Colors.greenAccent : Colors.green,
-            ),
-            onPressed: () {
-              // Return the flowchart JSON
-              try {
-                final jsonData = dashboard.toJson();
-                Navigator.pop(context, jsonData);
-              } catch (e) {
-                print('Error saving flowchart: $e');
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('Error saving flowchart: $e'),
-                    backgroundColor: Colors.red,
-                  ),
-                );
-              }
-            },
-            tooltip: 'Save',
-          ),
-          const SizedBox(width: 8),
-        ],
-      ),
-      body: Column(
-        children: [
-          // Toolbar
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.05),
-                  blurRadius: 10,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  _buildShapeButton(
-                    'rectangle',
-                    Icons.crop_square_rounded,
-                    'Rectangle',
-                    isDark,
-                  ),
-                  const SizedBox(width: 8),
-                  _buildShapeButton(
-                    'diamond',
-                    Icons.change_history_rounded,
-                    'Diamond',
-                    isDark,
-                  ),
-                  const SizedBox(width: 8),
-                  _buildShapeButton(
-                    'oval',
-                    Icons.circle_outlined,
-                    'Oval',
-                    isDark,
-                  ),
-                  const SizedBox(width: 8),
-                  _buildShapeButton(
-                    'storage',
-                    Icons.storage_rounded,
-                    'Storage',
-                    isDark,
-                  ),
-                  const SizedBox(width: 8),
-                  _buildShapeButton(
-                    'parallelogram',
-                    Icons.view_stream_rounded,
-                    'Parallelogram',
-                    isDark,
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          // Instructions
-          Container(
-            padding: const EdgeInsets.all(12),
-            margin: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: isDark
-                  ? Colors.blueAccent.withOpacity(0.1)
-                  : Colors.blue.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: isDark
-                    ? Colors.blueAccent.withOpacity(0.3)
-                    : Colors.blue.withOpacity(0.3),
-              ),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.info_outline_rounded,
-                  color: isDark ? Colors.blueAccent : Colors.blue,
-                  size: 20,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Tap shapes above to add • Drag to move • Tap & hold to edit • Connect shapes by dragging from dots',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: isDark ? Colors.white70 : Colors.black87,
-                      height: 1.4,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          // Flowchart Canvas
-          Expanded(
-            child: Container(
-              margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.05),
-                    blurRadius: 20,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(20),
-                child: SizedBox.expand(
-                  child: FlowChart(
-                    dashboard: dashboard,
-                    onDashboardTapped: ((context, position) {
-                      // Optional: Add element at tapped position
-                    }),
-                    onDashboardLongTapped: ((context, position) {}),
-                    onDashboardSecondaryTapped: ((context, position) {}),
-                    onElementPressed: (context, position, element) {
-                      // Show element edit dialog
-                      _showEditElementDialog(element, isDark);
-                    },
-                    onElementLongPressed: (context, position, element) {},
-                    onElementSecondaryTapped: (context, position, element) {},
-                    onHandlerPressed: (context, position, handler, element) {},
-                    onHandlerLongPressed: (context, position, handler, element) {},
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildShapeButton(String kind, IconData icon, String label, bool isDark) {
-    final isSelected = selectedElement == kind;
-
-    return InkWell(
-      onTap: () {
-        setState(() {
-          selectedElement = kind;
-        });
-        _addElement(kind);
+    context.watch<UserSettingsProvider>();
+    final c = NotesColors(context);
+    return PopScope(
+      canPop: _leaving,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _leave();
       },
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: isSelected
-                ? (isDark
-                    ? [Colors.blueAccent.withOpacity(0.3), Colors.blue.withOpacity(0.2)]
-                    : [Colors.blue.withOpacity(0.2), Colors.lightBlue.withOpacity(0.1)])
-                : (isDark
-                    ? [Colors.white.withOpacity(0.05), Colors.white.withOpacity(0.02)]
-                    : [Colors.grey.shade100, Colors.grey.shade50]),
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
+      child: Scaffold(
+        backgroundColor: c.surface,
+        appBar: AppBar(
+          backgroundColor: c.surface,
+          foregroundColor: c.ink,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          leading: IconButton(
+            tooltip: 'Back to note',
+            onPressed: _leave,
+            icon: Icon(Icons.arrow_back, size: 20, color: c.muted),
           ),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected
-                ? (isDark ? Colors.blueAccent : Colors.blue)
-                : (isDark ? Colors.white.withOpacity(0.1) : Colors.grey.shade300),
-            width: isSelected ? 2 : 1,
+          title: Text('Flowchart', style: c.text(15, bold: true)),
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(1),
+            child: Divider(height: 1, color: c.line),
           ),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              size: 18,
-              color: isSelected
-                  ? (isDark ? Colors.blueAccent : Colors.blue)
-                  : (isDark ? Colors.white70 : Colors.black87),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
-                color: isSelected
-                    ? (isDark ? Colors.blueAccent : Colors.blue)
-                    : (isDark ? Colors.white70 : Colors.black87),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showEditElementDialog(FlowElement element, bool isDark) {
-    final textController = TextEditingController(text: element.text);
-
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          backgroundColor: isDark ? const Color(0xFF2C2C2C) : Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          title: Text(
-            'Edit Element',
-            style: TextStyle(
-              color: isDark ? Colors.white : Colors.black,
-              fontSize: 20,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
+        body: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              TextField(
-                controller: textController,
-                style: TextStyle(
-                  color: isDark ? Colors.white : Colors.black,
-                  fontSize: 16,
+              Padding(
+                padding: const EdgeInsets.fromLTRB(22, 18, 22, 12),
+                child: Text(
+                  'A diagram for this note.',
+                  style: c.text(12, muted: true),
                 ),
-                decoration: InputDecoration(
-                  labelText: 'Text',
-                  labelStyle: TextStyle(
-                    color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+              ),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 22),
+                child: Row(
+                  children: [
+                    for (final item in [
+                      ('rectangle', Icons.crop_square_rounded, 'Rectangle'),
+                      ('diamond', Icons.change_history_rounded, 'Diamond'),
+                      ('oval', Icons.circle_outlined, 'Oval'),
+                      ('storage', Icons.storage_rounded, 'Storage'),
+                      (
+                        'parallelogram',
+                        Icons.view_stream_rounded,
+                        'Parallelogram',
+                      ),
+                    ])
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: TextButton.icon(
+                          onPressed: () {
+                            setState(() => selectedElement = item.$1);
+                            _addElement(item.$1);
+                          },
+                          icon: Icon(item.$2, size: 16),
+                          label: Text(
+                            item.$3,
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                          style: TextButton.styleFrom(
+                            backgroundColor: c.soft,
+                            foregroundColor: selectedElement == item.$1
+                                ? c.blue
+                                : c.muted,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(22, 12, 22, 14),
+                child: Text(
+                  'Add a shape, drag to move, tap to edit. Drag between dots to connect shapes.',
+                  style: c.text(10, muted: true).copyWith(height: 1.6),
+                ),
+              ),
+              Expanded(
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 22),
+                  decoration: BoxDecoration(
+                    color: c.soft,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: c.line),
                   ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(
-                      color: isDark ? Colors.grey.shade700 : Colors.grey.shade300,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: FlowChart(
+                      dashboard: dashboard,
+                      onDashboardTapped: (context, position) {},
+                      onDashboardLongTapped: (context, position) {},
+                      onDashboardSecondaryTapped: (context, position) {},
+                      onElementPressed: (context, position, element) =>
+                          _editElement(element),
+                      onElementLongPressed: (context, position, element) {},
+                      onElementSecondaryTapped: (context, position, element) {},
+                      onHandlerPressed:
+                          (context, position, handler, element) {},
+                      onHandlerLongPressed:
+                          (context, position, handler, element) {},
                     ),
                   ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(
-                      color: isDark ? Colors.blueAccent : Colors.blue,
-                      width: 2,
-                    ),
-                  ),
-                  filled: true,
-                  fillColor: isDark ? Colors.grey.shade900 : Colors.grey.shade50,
                 ),
-                maxLines: 3,
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(22, 14, 22, 18),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: NotesButton(
+                        label: 'Clear all',
+                        onPressed: _clearAll,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: NotesButton(
+                        label: 'Save flowchart',
+                        primary: true,
+                        onPressed: _save,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  dashboard.removeElement(element);
-                });
-                Navigator.pop(context);
-              },
-              child: Text(
-                'Delete',
-                style: TextStyle(
-                  color: isDark ? Colors.redAccent : Colors.red,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text(
-                'Cancel',
-                style: TextStyle(
-                  color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
-                ),
-              ),
-            ),
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  element.setText(textController.text);
-                });
-                Navigator.pop(context);
-              },
-              child: Text(
-                'Save',
-                style: TextStyle(
-                  color: isDark ? Colors.greenAccent : Colors.green,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          ],
-        );
-      },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _editElement(FlowElement element) async {
+    final action = await showDialog<String>(
+      context: context,
+      builder: (_) => _FlowNodeDialog(element: element),
+    );
+    if (!mounted) return;
+    if (action == 'delete') {
+      final remove = await showNotesConfirmation(
+        context,
+        title: 'Delete shape?',
+        body: 'Remove this shape and its connections from the flowchart?',
+        confirm: 'Delete',
+        danger: true,
+        icon: Icons.account_tree_outlined,
+      );
+      if (mounted && remove) setState(() => dashboard.removeElement(element));
+    } else if (action == 'saved') {
+      setState(() {});
+    }
+  }
+}
+
+class _FlowNodeDialog extends StatefulWidget {
+  const _FlowNodeDialog({required this.element});
+  final FlowElement element;
+  @override
+  State<_FlowNodeDialog> createState() => _FlowNodeDialogState();
+}
+
+class _FlowNodeDialogState extends State<_FlowNodeDialog> {
+  late final TextEditingController _text = TextEditingController(
+    text: widget.element.text,
+  );
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = NotesColors(context);
+    return NotesDialog(
+      title: 'Edit shape',
+      icon: Icons.account_tree_outlined,
+      body: TextField(
+        controller: _text,
+        maxLines: 3,
+        style: c.text(12),
+        decoration: c.field('Shape text'),
+      ),
+      actions: [
+        NotesButton(
+          label: 'Delete',
+          danger: true,
+          onPressed: () => Navigator.pop(context, 'delete'),
+        ),
+        NotesButton(label: 'Cancel', onPressed: () => Navigator.pop(context)),
+        NotesButton(
+          label: 'Save',
+          primary: true,
+          onPressed: () {
+            widget.element.setText(_text.text);
+            Navigator.pop(context, 'saved');
+          },
+        ),
+      ],
     );
   }
 }
 
 extension StringExtension on String {
-  String capitalize() {
-    if (isEmpty) return this;
-    return '${this[0].toUpperCase()}${substring(1)}';
-  }
+  String capitalize() =>
+      isEmpty ? this : '${this[0].toUpperCase()}${substring(1)}';
 }

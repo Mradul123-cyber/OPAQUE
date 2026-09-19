@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:zarq_messenger/app_config.dart';
 
 class CallLogModel {
   final int id;
@@ -85,7 +86,7 @@ class CallLogModel {
 }
 
 class CallHistoryService {
-  static const String baseUrl = 'https://api.zarqmessenger.com'; // Update with your server URL
+  static const String baseUrl = '${AppConfig.baseUrl}'; // Update with your server URL
 
   static Future<List<CallLogModel>> getCallHistory({int limit = 50}) async {
     try {

@@ -14,6 +14,7 @@ import '../chat_screen.dart';
 import '../home_screen.dart';
 import '../services/websocket_service.dart';
 import '../providers/home_provider.dart';
+import 'package:zarq_messenger/app_config.dart';
 
 class GroupMember {
   final String uid;
@@ -133,7 +134,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
     try {
       final url = Uri.parse(
-          'https://api.zarqmessenger.com/groups/${widget.groupId}/info');
+          '${AppConfig.baseUrl}/groups/${widget.groupId}/info');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -191,7 +192,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
     try {
       final url = Uri.parse(
-          'https://api.zarqmessenger.com/groups/${widget.groupId}/members/remove');
+          '${AppConfig.baseUrl}/groups/${widget.groupId}/members/remove');
       final response = await http.post(
         url,
         headers: {
@@ -279,7 +280,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     final token = await user.getIdToken();
 
     try {
-      final url = Uri.parse('https://api.zarqmessenger.com/friends/list');
+      final url = Uri.parse('${AppConfig.baseUrl}/friends/list');
       final response = await http.get(
         url,
         headers: {'Authorization': 'Bearer $token'},
@@ -344,7 +345,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
     try {
       final url = Uri.parse(
-          'https://api.zarqmessenger.com/groups/${widget.groupId}/members/add');
+          '${AppConfig.baseUrl}/groups/${widget.groupId}/members/add');
       final response = await http.post(
         url,
         headers: {
@@ -394,7 +395,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
     try {
       final url = Uri.parse(
-          'https://api.zarqmessenger.com/groups/${widget.groupId}/members/role');
+          '${AppConfig.baseUrl}/groups/${widget.groupId}/members/role');
       final response = await http.post(
         url,
         headers: {
@@ -534,7 +535,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
     try {
       final token = await user.getIdToken();
-      final url = Uri.parse('https://api.zarqmessenger.com/groups/${widget.groupId}/leave');
+      final url = Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/leave');
       final response = await http.post(
         url,
         headers: {
@@ -611,7 +612,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
     try {
       final token = await user.getIdToken();
-      final url = Uri.parse('https://api.zarqmessenger.com/groups/${widget.groupId}/delete');
+      final url = Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/delete');
       final response = await http.post(
         url,
         headers: {
@@ -713,7 +714,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
     try {
       final token = await user.getIdToken();
-      final url = Uri.parse('https://api.zarqmessenger.com/groups/${widget.groupId}/update');
+      final url = Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/update');
 
       final response = await http.post(
         url,
@@ -815,7 +816,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       // Update group avatar via backend API
       final token = await user.getIdToken();
       final updateUrl = Uri.parse(
-          'https://api.zarqmessenger.com/groups/${widget.groupId}/avatar');
+          '${AppConfig.baseUrl}/groups/${widget.groupId}/avatar');
       final updateResponse = await http.post(
         updateUrl,
         headers: {
@@ -1036,7 +1037,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     if (user == null) return;
 
     final token = await user.getIdToken();
-    final url = Uri.parse('https://api.zarqmessenger.com/friends/request');
+    final url = Uri.parse('${AppConfig.baseUrl}/friends/request');
 
     try {
       final response = await http.post(
@@ -1100,7 +1101,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       // Start or get conversation
       final token = await user.getIdToken();
       final response = await http.post(
-        Uri.parse('https://api.zarqmessenger.com/conversations/start'),
+        Uri.parse('${AppConfig.baseUrl}/conversations/start'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',

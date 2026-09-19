@@ -1,3 +1,7 @@
+import 'widgets/share_contact_page.dart';
+import 'widgets/share_location_page.dart';
+import 'widgets/opaque_navigation.dart';
+import 'widgets/message_bubble_style.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -54,6 +58,14 @@ import 'widgets/voice_message_recorder.dart';
 import 'widgets/voice_message_player.dart';
 import 'screens/group_info_screen.dart';
 import 'services/share_service.dart';
+import 'package:zarq_messenger/app_config.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:flutter_contacts/flutter_contacts.dart';
+import 'models/chat_payloads.dart';
+import 'widgets/chat_location_bubble.dart';
+import 'widgets/chat_contact_bubble.dart';
+import 'widgets/chat_poll_bubble.dart';
+import 'widgets/create_poll_sheet.dart';
 
 class ChatScreen extends StatefulWidget {
   final WebSocketChannel? channel; // Nullable for offline mode
@@ -93,7 +105,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   final Set<int> _selectedMessageIds = {};
   final Set<int> _animatedMessageIds = {}; // Track which messages have been animated
   bool _isMultiSelectionMode = false;
-  final GlobalKey _lastMessageKey = GlobalKey();
   final Set<int> _processedSentMessageIds = {};
 
   bool _sessionEstablished = false;
@@ -105,6 +116,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   // Voice message recording state
   bool _isRecordingVoice = false;
   bool _hasTextInput = false;
+  bool _attachmentsOpen = false;
+  bool _sharingBusy = false;
+  final Set<String> _pendingPollVotes = {};
+  int _lastPayloadId = 0;
 
   // AI mode state
   bool _isAIMode = false;
@@ -148,7 +163,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   final Map<int, String> _documentCache = {};
 
   // Wallpaper state
-  Color _chatBackgroundColor = const Color(0xFFECE5DD);
+  Color _chatBackgroundColor = const Color(0xFFFAFBFE);
+  bool _hasCustomWallpaperColor = false;
   String? _chatBackgroundImage;
 
   // Blocked users
@@ -874,6 +890,377 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     }
   }
 
+  /// Sends an end-to-end encrypted structured payload (Location, Contact, Poll, Poll Vote)
+  /// using the exact same Signal Protocol / Sender Keys pipeline as text messages.
+  Future<void> _sendPayloadMessage(String rawPayload, {bool isPollVote = false}) async {
+    if (widget.channel == null || !_websocketService.isConnected) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('📴 No internet connection. Please connect to send messages.'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (_isUserBlocked) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Cannot send messages to blocked users. Unblock them first.'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (!mounted) return;
+    if (!widget.conversationInfo.isGroup && _recipientUid == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Chat is still connecting. Please try again.')));
+      return;
+    }
+
+    final nowId = DateTime.now().microsecondsSinceEpoch;
+    _lastPayloadId = nowId > _lastPayloadId ? nowId : _lastPayloadId + 1;
+    final tempMessageId = -_lastPayloadId;
+    final optimisticMessage = Message(
+      id: tempMessageId,
+      conversationId: widget.conversationInfo.conversationId,
+      username: _currentUser,
+      content: rawPayload,
+      timestamp: DateTime.now().toUtc(),
+      senderUid: _currentUserUid,
+      status: MessageStatus.sending,
+      isEncrypted: true,
+      isQuickReply: false,
+    );
+
+    _chatProvider.addMessage(optimisticMessage);
+    if (!isPollVote) _scrollToBottom();
+
+    try {
+      String? encryptedMessage;
+      int? myDeviceId;
+      int? recipientDeviceId;
+
+      if (widget.conversationInfo.isGroup) {
+        if (!_groupEncryptionSetup) {
+          throw Exception('Group encryption not setup');
+        }
+        encryptedMessage = await GroupEncryptionService.encryptGroupMessage(
+          groupId: widget.conversationInfo.conversationId.toString(),
+          plaintext: rawPayload,
+        );
+        myDeviceId = await SignalService.getDeviceId();
+      } else {
+        recipientDeviceId = await _getRecipientDeviceId(_recipientUid!);
+        if (recipientDeviceId == null) throw Exception('No recipient device ID');
+
+        myDeviceId = await SignalService.getDeviceId();
+        if (myDeviceId == null) throw Exception('No device ID');
+
+        bool hasValidSendingSession = await SignalService.isSessionValidForSending(
+          recipientUid: _recipientUid!,
+          deviceId: recipientDeviceId,
+        );
+
+        if (!hasValidSendingSession) {
+          final prekeyBundle = await DeviceService.fetchPrekeyBundle(
+            targetUid: _recipientUid!,
+            deviceId: recipientDeviceId,
+          );
+          if (prekeyBundle == null) throw Exception('No prekey bundle');
+
+          encryptedMessage = await SignalService.encryptMessageWithSessionSetup(
+            recipientUid: _recipientUid!,
+            plaintext: rawPayload,
+            prekeyBundle: prekeyBundle,
+            deviceId: recipientDeviceId,
+          );
+        } else {
+          encryptedMessage = await SignalService.encryptMessage(
+            recipientUid: _recipientUid!,
+            plaintext: rawPayload,
+            deviceId: recipientDeviceId,
+          );
+        }
+      }
+
+      if (encryptedMessage == null) throw Exception('Encryption failed');
+
+      final response = await DeviceService.sendMessage(
+        conversationId: widget.conversationInfo.conversationId,
+        contentB64: encryptedMessage,
+      );
+
+      final realMessageId = response['message_id'];
+      if (realMessageId is! int || realMessageId <= 0) throw StateError('Message was not acknowledged');
+      final sentMessage = Message(
+        id: realMessageId,
+        conversationId: widget.conversationInfo.conversationId,
+        username: _currentUser,
+        content: rawPayload,
+        timestamp: DateTime.now().toUtc(),
+        senderUid: _currentUserUid,
+        status: MessageStatus.sent,
+        encryptedContent: encryptedMessage,
+        isEncrypted: true,
+        senderDeviceId: myDeviceId,
+        recipientDeviceId: recipientDeviceId,
+        isQuickReply: false,
+      );
+
+      _chatProvider.updateMessageStatus(tempMessageId, sentMessage);
+    } catch (e) {
+      final failedMessage = optimisticMessage.copyWith(status: MessageStatus.failed);
+      _chatProvider.updateMessageStatus(tempMessageId, failedMessage);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to send: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  /// Handles fetching current GPS location and sending end-to-end encrypted location
+  bool _openingSharedLocation = false;
+  Future<void> _openSharedLocation(LocationPayload location) async {
+    if (_openingSharedLocation) return;
+    _openingSharedLocation = true;
+    try {
+      final uri = Uri.https('www.google.com', '/maps/search/', {
+        'api': '1',
+        'query': '${location.latitude},${location.longitude}',
+      });
+      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!opened && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open Google Maps. Please try again.')));
+      }
+    } catch (_) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open Google Maps. Please try again.')));
+    } finally {
+      _openingSharedLocation = false;
+    }
+  }
+
+  Future<void> _handleShareLocation() async {
+    if (_sharingBusy || !mounted) return;
+    _sharingBusy = true;
+    setState(() => _attachmentsOpen = false);
+
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Location services are disabled. Please enable GPS.')),
+          );
+        }
+        return;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Location permission was denied.')),
+            );
+          }
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Location permission is permanently denied. Please enable in App Settings.')),
+          );
+        }
+        return;
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+                SizedBox(width: 12),
+                Text('Fetching location...'),
+              ],
+            ),
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, timeLimit: Duration(seconds: 20)),
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+      final payload = await Navigator.of(context).push<LocationPayload>(MaterialPageRoute(builder: (_) => ShareLocationPage(latitude: position.latitude, longitude: position.longitude)));
+      if (mounted && payload != null) await _sendPayloadMessage(payload.serialize());
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not get location: $e')),
+        );
+      }
+    } finally {
+      _sharingBusy = false;
+    }
+  }
+
+
+  /// Handles picking and sharing a contact end-to-end encrypted
+  Future<void> _handleShareContact() async {
+    if (_sharingBusy || !mounted) return;
+    _sharingBusy = true;
+    setState(() => _attachmentsOpen = false);
+
+    try {
+      if (!await FlutterContacts.requestPermission(readonly: true)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Contacts permission denied')),
+          );
+        }
+        return;
+      }
+
+      if (!mounted) return;
+      // The native picker reads the device address book, never app friends.
+      final picked = await FlutterContacts.openExternalPick();
+      if (!mounted || picked == null) return;
+      final fullContact = await FlutterContacts.getContact(picked.id, withProperties: true);
+      if (!mounted) return;
+      if (fullContact == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This contact is no longer available. Please choose it again.')));
+        return;
+      }
+      final seenNumbers = <String>{};
+      fullContact.phones = fullContact.phones.where((p) {
+        final digits = p.number.replaceAll(RegExp(r'\D'), '');
+        return digits.isNotEmpty && seenNumbers.add(digits);
+      }).toList();
+      final payload = await Navigator.of(context).push<ContactPayload>(MaterialPageRoute(builder: (_) => ShareContactPage(initialContact: fullContact)));
+      if (mounted && payload != null) await _sendPayloadMessage(payload.serialize());
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not share contact: $e')),
+        );
+      }
+    } finally {
+      _sharingBusy = false;
+    }
+  }
+
+
+  /// Handles opening the Create Poll sheet and sending an encrypted poll
+  Future<void> _handleCreatePoll() async {
+    if (_sharingBusy || !mounted) return;
+    _sharingBusy = true;
+    setState(() => _attachmentsOpen = false);
+    try {
+      final poll = await Navigator.of(context).push<PollPayload>(MaterialPageRoute(builder: (_) => CreatePollSheet(currentUid: _currentUserUid)));
+      if (mounted && poll != null) await _sendPayloadMessage(poll.serialize());
+    } finally { _sharingBusy = false; }
+  }
+  /// Handles voting on an encrypted poll
+  Future<void> _handleVotePoll(PollPayload poll, int optionId) async {
+    if (_pendingPollVotes.contains(poll.pollId) || _currentUserUid == null || !poll.options.any((o) => o.id == optionId)) return;
+    final messages = [..._chatProvider.messages]..sort((a, b) { final time = a.timestamp.compareTo(b.timestamp); return time != 0 ? time : a.id.compareTo(b.id); });
+    List<int> currentSelection = [];
+
+    for (final m in messages) {
+      final vote = PollVotePayload.tryParse(m.content);
+      if (vote != null && vote.pollId == poll.pollId && m.status != MessageStatus.failed && m.senderUid != null) {
+        final voter = m.senderUid!;
+        if (voter == _currentUserUid) {
+          currentSelection = List.from(vote.selectedOptionIds);
+        }
+      }
+    }
+
+    List<int> updatedSelection;
+    if (poll.allowMultiple) {
+      updatedSelection = List.from(currentSelection);
+      if (updatedSelection.contains(optionId)) {
+        updatedSelection.remove(optionId);
+      } else {
+        updatedSelection.add(optionId);
+      }
+    } else {
+      if (currentSelection.contains(optionId)) {
+        updatedSelection = [];
+      } else {
+        updatedSelection = [optionId];
+      }
+    }
+
+    final votePayload = PollVotePayload(
+      pollId: poll.pollId,
+      selectedOptionIds: updatedSelection,
+      voterUid: _currentUserUid,
+    );
+
+    setState(() => _pendingPollVotes.add(poll.pollId));
+    try { await _sendPayloadMessage(votePayload.serialize(), isPollVote: true); }
+    finally { if (mounted) setState(() => _pendingPollVotes.remove(poll.pollId)); }
+  }
+
+  /// Builds a live interactive poll bubble aggregating votes from the conversation
+  Widget _buildPollBubble(PollPayload poll, bool isMe) {
+    final messages = [..._chatProvider.messages]..sort((a, b) { final time = a.timestamp.compareTo(b.timestamp); return time != 0 ? time : a.id.compareTo(b.id); });
+    final Map<int, List<String>> votesByOption = {};
+
+    for (final opt in poll.options) {
+      votesByOption[opt.id] = [];
+    }
+
+    final Map<String, List<int>> latestVoterPicks = {};
+    for (final m in messages) {
+      final vote = PollVotePayload.tryParse(m.content);
+      if (vote != null && vote.pollId == poll.pollId && m.status != MessageStatus.failed && m.senderUid != null) {
+        final voter = m.senderUid!;
+        if (voter.isNotEmpty) {
+          final ids = vote.selectedOptionIds.toSet().where((id) => votesByOption.containsKey(id)).toList();
+          if (!poll.allowMultiple && ids.length > 1) continue;
+          latestVoterPicks[voter] = ids;
+        }
+      }
+    }
+
+    for (final entry in latestVoterPicks.entries) {
+      final voter = entry.key;
+      final selectedOptions = entry.value;
+      for (final optId in selectedOptions) {
+        if (votesByOption.containsKey(optId)) {
+          votesByOption[optId]!.add(voter);
+        }
+      }
+    }
+
+    return ChatPollBubble(
+      payload: poll,
+      votesByOption: votesByOption,
+      currentUid: _currentUserUid,
+      onVote: (optId) => _handleVotePoll(poll, optId),
+      isMe: isMe,
+    );
+  }
+
   // Start voice recording
   void _startVoiceRecording() {
     // 🚀 OFFLINE MODE: Prevent voice messages when no internet connection
@@ -1161,227 +1548,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         );
       }
     }
-  }
-
-  // Show modern attachment picker dialog
-  void _showImagePickerDialog() {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final titleSize = (screenWidth * 0.06).clamp(22.0, 28.0);
-    final iconSize1 = (screenWidth * 0.06).clamp(20.0, 28.0);
-    final padding1 = (screenWidth * 0.04).clamp(12.0, 20.0);
-    final padding2 = (screenWidth * 0.03).clamp(10.0, 16.0);
-    final spacing2 = (screenWidth * 0.04).clamp(12.0, 20.0);
-    final borderRadius1 = (screenWidth * 0.04).clamp(12.0, 18.0);
-    final borderRadius2 = (screenWidth * 0.08).clamp(28.0, 35.0);
-    final handleWidth = (screenWidth * 0.1).clamp(35.0, 45.0);
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (BuildContext context) {
-        return Container(
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Colors.white,
-                Color(0xFFF8F9FA),
-              ],
-            ),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(borderRadius2)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.1),
-                blurRadius: 20,
-                offset: const Offset(0, -5),
-              ),
-            ],
-          ),
-          child: SafeArea(
-            child: Padding(
-              padding: EdgeInsets.symmetric(vertical: padding1 * 1.2, horizontal: padding1),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Drag handle
-                  Container(
-                    width: handleWidth,
-                    height: 4,
-                    margin: EdgeInsets.only(bottom: padding1),
-                    decoration: BoxDecoration(
-                      color: Colors.grey[300],
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  // Header with icon
-                  Row(
-                    children: [
-                      Container(
-                        padding: EdgeInsets.all(padding2),
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                            colors: [Color(0xFF667EEA), Color(0xFF764BA2)],
-                          ),
-                          borderRadius: BorderRadius.circular(borderRadius1),
-                          boxShadow: [
-                            BoxShadow(
-                              color: const Color(0xFF667EEA).withOpacity(0.3),
-                              blurRadius: 8,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
-                        ),
-                        child: Icon(Icons.attach_file, color: Colors.white, size: iconSize1),
-                      ),
-                      SizedBox(width: spacing2),
-                      Text(
-                        'Send Attachment',
-                        style: TextStyle(
-                          fontSize: titleSize,
-                          fontWeight: FontWeight.w700,
-                          color: const Color(0xFF2D3436),
-                          letterSpacing: -0.5,
-                        ),
-                      ),
-                    ],
-                  ),
-                  SizedBox(height: padding1 * 1.2),
-                  // Grid of attachment options
-                  GridView.count(
-                    crossAxisCount: 3,
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    mainAxisSpacing: spacing2,
-                    crossAxisSpacing: spacing2,
-                    childAspectRatio: 0.85,
-                    children: [
-                      _buildAttachmentOption(
-                        icon: Icons.photo_camera_rounded,
-                        label: 'Camera',
-                        gradient: const LinearGradient(
-                          colors: [Color(0xFF667EEA), Color(0xFF764BA2)],
-                        ),
-                        onTap: () {
-                          Navigator.pop(context);
-                          _sendImageMessage(ImageSource.camera);
-                        },
-                      ),
-                      _buildAttachmentOption(
-                        icon: Icons.photo_library_rounded,
-                        label: 'Gallery',
-                        gradient: const LinearGradient(
-                          colors: [Color(0xFFFA709A), Color(0xFFFEE140)],
-                        ),
-                        onTap: () {
-                          Navigator.pop(context);
-                          _sendImageMessage(ImageSource.gallery);
-                        },
-                      ),
-                      _buildAttachmentOption(
-                        icon: Icons.videocam_rounded,
-                        label: 'Video',
-                        gradient: const LinearGradient(
-                          colors: [Color(0xFFFF6B6B), Color(0xFFEE5A6F)],
-                        ),
-                        onTap: () {
-                          Navigator.pop(context);
-                          _sendVideoMessage(ImageSource.camera);
-                        },
-                      ),
-                      _buildAttachmentOption(
-                        icon: Icons.video_library_rounded,
-                        label: 'Videos',
-                        gradient: const LinearGradient(
-                          colors: [Color(0xFFFFA500), Color(0xFFFF6347)],
-                        ),
-                        onTap: () {
-                          Navigator.pop(context);
-                          _sendVideoMessage(ImageSource.gallery);
-                        },
-                      ),
-                      _buildAttachmentOption(
-                        icon: Icons.insert_drive_file_rounded,
-                        label: 'Document',
-                        gradient: const LinearGradient(
-                          colors: [Color(0xFF11998E), Color(0xFF38EF7D)],
-                        ),
-                        onTap: () {
-                          Navigator.pop(context);
-                          _sendDocumentMessage();
-                        },
-                      ),
-                    ],
-                  ),
-                  SizedBox(height: spacing2),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  // Build individual attachment option tile with gradient
-  Widget _buildAttachmentOption({
-    required IconData icon,
-    required String label,
-    required Gradient gradient,
-    required VoidCallback onTap,
-  }) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final iconSize1 = (screenWidth * 0.08).clamp(28.0, 36.0);
-    final smallTextSize = (screenWidth * 0.0325).clamp(12.0, 15.0);
-    final padding2 = (screenWidth * 0.03).clamp(10.0, 16.0);
-    final spacing2 = (screenWidth * 0.03).clamp(10.0, 14.0);
-    final borderRadius3 = (screenWidth * 0.05).clamp(18.0, 24.0);
-
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(borderRadius3),
-        child: Container(
-          decoration: BoxDecoration(
-            gradient: gradient,
-            borderRadius: BorderRadius.circular(borderRadius3),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.15),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                padding: EdgeInsets.all(padding2),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(icon, size: iconSize1, color: Colors.white),
-              ),
-              SizedBox(height: spacing2),
-              Text(
-                label,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: smallTextSize,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white,
-                  letterSpacing: 0.3,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 
   // Send image message
@@ -2669,7 +2835,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
       final token = await user.getIdToken();
       final url = Uri.parse(
-          'https://api.zarqmessenger.com/groups/${widget.conversationInfo.conversationId}/info');
+          '${AppConfig.baseUrl}/groups/${widget.conversationInfo.conversationId}/info');
 
       final response = await http.get(
         url,
@@ -2995,7 +3161,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
     try {
       final token = await user.getIdToken();
-      final url = Uri.parse('https://api.zarqmessenger.com/profiles/me');
+      final url = Uri.parse('${AppConfig.baseUrl}/profiles/me');
       final response = await http.get(url, headers: {'Authorization': 'Bearer $token'});
 
       if (response.statusCode == 200) {
@@ -3066,8 +3232,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
               ),
             ),
           Scaffold(
-            extendBodyBehindAppBar: true,
-            backgroundColor: _chatBackgroundImage == null ? _chatBackgroundColor : Colors.transparent,
+            extendBodyBehindAppBar: false,
+            backgroundColor: _chatBackgroundImage == null ? (_hasCustomWallpaperColor ? _chatBackgroundColor : Theme.of(context).brightness == Brightness.dark ? const Color(0xFF141A23) : const Color(0xFFFAFBFE)) : Colors.transparent,
             appBar: _isMultiSelectionMode
                 ? _buildSelectionAppBar()
                 : _isSearching
@@ -3338,54 +3504,30 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
   PreferredSizeWidget _buildNormalAppBar() {
     final screenWidth = MediaQuery.of(context).size.width;
-    final appBarTitleSize = (screenWidth * 0.045).clamp(16.0, 20.0);
-    final smallTextSize = (screenWidth * 0.0325).clamp(12.0, 15.0);
-    final iconSize2 = (screenWidth * 0.05).clamp(18.0, 24.0);
-    final iconSize3 = (screenWidth * 0.045).clamp(16.0, 20.0);
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final ink = dark ? const Color(0xFFDCE3EF) : const Color(0xFF353943);
+    final appBarTitleSize = 14.0;
+    final smallTextSize = 11.0;
+    final iconSize2 = 20.0;
+    final iconSize3 = 14.0;
     final padding2 = (screenWidth * 0.03).clamp(10.0, 16.0);
     final spacing2 = (screenWidth * 0.04).clamp(12.0, 20.0);
     final borderRadius2 = (screenWidth * 0.03).clamp(10.0, 14.0);
-    final avatarRadius = (screenWidth * 0.045).clamp(16.0, 22.0);
-    final leadingWidth = (screenWidth * 0.25).clamp(90.0, 110.0); // Same for both 1-1 and groups
+    final avatarRadius = 19.0;
     final menuItemHeight = (screenWidth * 0.12).clamp(44.0, 52.0);
     final titleSpacing = (screenWidth * 0.025).clamp(8.0, 12.0);
     final verticalSpacing = (screenWidth * 0.01).clamp(3.0, 5.0);
 
     return AppBar(
-      backgroundColor: Colors.transparent,
+      backgroundColor: dark ? const Color(0xFF19202A) : Colors.white,
+      foregroundColor: ink,
+      surfaceTintColor: Colors.transparent,
       elevation: 0,
-      flexibleSpace: ClipRRect(
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-          child: Container(
-            decoration: BoxDecoration(
-              gradient: _isAIMode
-                ? const LinearGradient(
-                    colors: [
-                      Color(0xFFFF0080), // Pink
-                      Color(0xFFFF8C00), // Orange
-                      Color(0xFFFFD700), // Gold
-                      Color(0xFF00FF00), // Green
-                      Color(0xFF00CED1), // Cyan
-                      Color(0xFF9370DB), // Purple
-                    ],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  )
-                : null,
-              color: _isAIMode ? null : Colors.white.withOpacity(0.7),
-              border: Border(
-                bottom: BorderSide(
-                  color: _isAIMode ? Colors.white.withOpacity(0.3) : Colors.grey.withOpacity(0.2),
-                  width: 1,
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
+      scrolledUnderElevation: 0,
+      toolbarHeight: 64,
+      bottom: PreferredSize(preferredSize: const Size.fromHeight(1), child: Divider(height: 1, thickness: 1, color: dark ? const Color(0xFF303947) : const Color(0xFFEDF0F5))),
       leading: IconButton(
-        icon: Icon(Icons.arrow_back, color: _isAIMode ? Colors.white : Colors.black87, size: iconSize2),
+        icon: OpaqueIcon('back', color: ink, size: 20),
         onPressed: () => Navigator.pop(context),
       ),
       leadingWidth: iconSize2 + padding2,
@@ -3417,10 +3559,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                 padding: EdgeInsets.only(right: padding2 * 0.8),
                 child: CircleAvatar(
                   radius: avatarRadius,
-                  backgroundColor: widget.conversationInfo.isGroup ? Colors.purple[300] : Colors.blue[300],
+                  backgroundColor: dark ? const Color(0xFF28364D) : const Color(0xFFEAF0FC),
                   child: Icon(
                     widget.conversationInfo.isGroup ? Icons.group : Icons.person,
-                    color: Colors.white,
+                    color: const Color(0xFF52668E),
                     size: appBarTitleSize * 0.9,
                   ),
                 ),
@@ -3432,10 +3574,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                 children: [
                   Text(
                     widget.conversationInfo.chatTitle,
+                    maxLines: 1, overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: appBarTitleSize,
                       fontWeight: FontWeight.w600,
-                      color: _isAIMode ? Colors.white : Colors.black87,
+                      color: ink,
                     ),
                   ),
                   SizedBox(height: verticalSpacing),
@@ -3445,13 +3588,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                       _groupMemberCount != null
                           ? '$_groupMemberCount ${_groupMemberCount == 1 ? "member" : "members"}'
                           : 'Tap for info',
-                      style: TextStyle(fontSize: smallTextSize, color: _isAIMode ? Colors.white70 : Colors.grey[600]),
+                      style: TextStyle(fontSize: smallTextSize, color: dark ? Colors.grey[400] : const Color(0xFF858C9C)),
                     )
                   // Show online status for 1-1 chats
                   else if (!widget.conversationInfo.isGroup && _recipientUid != null)
                     Text(
-                      _getStatusText(),
-                      style: TextStyle(fontSize: smallTextSize, color: _isAIMode ? Colors.white70 : Colors.grey[600]),
+                      _getStatusText(), maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: smallTextSize, color: dark ? Colors.grey[400] : const Color(0xFF858C9C)),
                     ),
                 ],
               ),
@@ -3464,26 +3607,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         if (!widget.conversationInfo.isGroup && _recipientUid != null) ...[
           Consumer<GlobalCallManager>(
             builder: (context, callManager, child) => IconButton(
-              icon: Icon(Icons.call, color: _isAIMode ? Colors.white : Colors.black87, size: iconSize2),
-              tooltip: 'Voice Call',
+              icon: OpaqueIcon('calls', color: ink, size: 20),
+              tooltip: 'Voice Call', constraints: const BoxConstraints.tightFor(width: 34, height: 40), padding: EdgeInsets.zero,
               onPressed: callManager.isInCall ? null : _startVoiceCall,
             ),
           ),
           Consumer<GlobalCallManager>(
             builder: (context, callManager, child) => IconButton(
-              icon: Icon(Icons.videocam, color: _isAIMode ? Colors.white : Colors.black87, size: iconSize2),
-              tooltip: 'Video Call',
+              icon: OpaqueIcon('video', color: ink, size: 20),
+              tooltip: 'Video Call', constraints: const BoxConstraints.tightFor(width: 34, height: 40), padding: EdgeInsets.zero,
               onPressed: callManager.isInCall ? null : _startVideoCall,
             ),
           ),
         ],
         PopupMenuButton<String>(
-          icon: Icon(Icons.more_vert, color: _isAIMode ? Colors.white : Colors.black87, size: iconSize2),
+          icon: OpaqueIcon('more', color: ink, size: 20),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(borderRadius2),
           ),
           elevation: 8,
-          color: Colors.white.withOpacity(0.95),
+          color: dark ? const Color(0xFF19202A) : Colors.white,
           onSelected: (value) {
             if (value == 'search') {
               setState(() {
@@ -3507,14 +3650,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
               height: menuItemHeight,
               child: Row(
                 children: [
-                  Icon(Icons.search, size: iconSize3, color: Colors.grey[700]),
+                  Icon(Icons.search, size: iconSize3, color: ink),
                   SizedBox(width: spacing2),
                   Text(
                     'Search',
                     style: TextStyle(
                       fontSize: appBarTitleSize * 0.9,
                       fontWeight: FontWeight.w500,
-                      color: Colors.black87,
+                      color: ink,
                     ),
                   ),
                 ],
@@ -3525,14 +3668,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
               height: menuItemHeight,
               child: Row(
                 children: [
-                  Icon(Icons.notifications_off_outlined, size: iconSize3, color: Colors.grey[700]),
+                  Icon(Icons.notifications_off_outlined, size: iconSize3, color: ink),
                   SizedBox(width: spacing2),
                   Text(
                     'Mute notifications',
                     style: TextStyle(
                       fontSize: appBarTitleSize * 0.9,
                       fontWeight: FontWeight.w500,
-                      color: Colors.black87,
+                      color: ink,
                     ),
                   ),
                 ],
@@ -3543,14 +3686,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
               height: menuItemHeight,
               child: Row(
                 children: [
-                  Icon(Icons.wallpaper_outlined, size: iconSize3, color: Colors.grey[700]),
+                  Icon(Icons.wallpaper_outlined, size: iconSize3, color: ink),
                   SizedBox(width: spacing2),
                   Text(
                     'Change wallpaper',
                     style: TextStyle(
                       fontSize: appBarTitleSize * 0.9,
                       fontWeight: FontWeight.w500,
-                      color: Colors.black87,
+                      color: ink,
                     ),
                   ),
                 ],
@@ -3568,7 +3711,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                     style: TextStyle(
                       fontSize: appBarTitleSize * 0.9,
                       fontWeight: FontWeight.w500,
-                      color: Colors.black87,
+                      color: ink,
                     ),
                   ),
                 ],
@@ -3591,7 +3734,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                       style: TextStyle(
                         fontSize: appBarTitleSize * 0.9,
                         fontWeight: FontWeight.w500,
-                        color: Colors.black87,
+                        color: ink,
                       ),
                     ),
                   ],
@@ -3862,321 +4005,126 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     );
   }
 
-  Widget _buildInputArea() {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final bodyTextSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final iconSize3 = (screenWidth * 0.045).clamp(16.0, 20.0);
-    final padding2 = (screenWidth * 0.03).clamp(10.0, 16.0);
-    final spacing1 = (screenWidth * 0.02).clamp(6.0, 10.0);
-    final spacing2 = (screenWidth * 0.04).clamp(12.0, 20.0);
-    final borderRadius1 = (screenWidth * 0.06).clamp(22.0, 28.0);
+  void _showComingSoon() {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(
+        content: Text('Coming soon', textAlign: TextAlign.center),
+        duration: Duration(seconds: 3),
+        behavior: SnackBarBehavior.floating,
+      ));
+  }
 
-    return GestureDetector(
-      onTap: () {
-        if (_isMultiSelectionMode) {
-          _clearSelection();
-        }
-      },
-      child: Container(
-        padding: EdgeInsets.symmetric(horizontal: spacing1, vertical: spacing1),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              const Color(0xFF667EEA).withOpacity(0.05),
-              const Color(0xFF764BA2).withOpacity(0.05),
-            ],
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 4,
-              offset: const Offset(0, -2),
-            ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Reply preview
-            if (_replyingToMessage != null)
-              Container(
-                padding: EdgeInsets.all(spacing1),
-                decoration: BoxDecoration(
-                  color: Colors.grey[200],
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(spacing1)),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 4,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF667EEA),
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                    SizedBox(width: spacing1),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            _replyingToMessage!.username,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF667EEA),
-                              fontSize: 12,
-                            ),
-                          ),
-                          Text(
-                            _replyingToMessage!.content,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(color: Colors.grey[700], fontSize: 13),
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close, size: 20, color: Colors.black),
-                      onPressed: _cancelReply,
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                    ),
-                  ],
-                ),
-              ),
-            // Input area
-            _isRecordingVoice
-                ? VoiceMessageRecorder(
-                    onRecordingComplete: _sendVoiceMessage,
-                    onCancel: () {
-                      setState(() {
-                        _isRecordingVoice = false;
-                      });
-                    },
-                  )
-                : Row(
-                children: [
-                  Expanded(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.9),
-                        borderRadius: BorderRadius.circular(borderRadius1),
-                        border: Border.all(color: const Color(0xFF667EEA).withOpacity(0.2)),
-                      ),
-                      child: Row(
-                        children: [
-                          IconButton(
-                            icon: Icon(Icons.attach_file, color: Colors.grey[600], size: iconSize3),
-                            onPressed: () {
-                              if (_isMultiSelectionMode) {
-                                _clearSelection();
-                              } else {
-                                _showImagePickerDialog();
-                              }
-                            },
-                          ),
-                          Expanded(
-                            child: TextField(
-                              controller: _controller,
-                              focusNode: _focusNode,
-                              style: TextStyle(color: Colors.black87, fontSize: bodyTextSize),
-                              decoration: InputDecoration(
-                                hintText: 'Message',
-                                hintStyle: TextStyle(color: Colors.grey[400], fontSize: bodyTextSize),
-                                border: InputBorder.none,
-                                contentPadding: EdgeInsets.symmetric(horizontal: spacing1, vertical: padding2),
-                              ),
-                              maxLines: 5,
-                              minLines: 1,
-                              keyboardType: TextInputType.multiline,
-                              textCapitalization: TextCapitalization.sentences,
-                              onSubmitted: (_) => _sendMessage(),
-                              onTap: () {
-                                if (_isMultiSelectionMode) {
-                                  _clearSelection();
-                                }
-                              },
-                            ),
-                          ),
-                          // AI Mode Toggle Button with conditional glowing animation
-                          AnimatedBuilder(
-                            animation: _aiGlowAnimation,
-                            builder: (context, child) {
-                              return Stack(
-                                alignment: Alignment.center,
-                                children: [
-                                  // Glow layers (only when AI mode is ON)
-                                  if (_isAIMode) ...[
-                                    // Outermost yellow glow (largest)
-                                    Icon(
-                                      Icons.star,
-                                      color: Color(0xFFFFD700).withOpacity(_aiGlowAnimation.value * 0.6),
-                                      size: iconSize3 * 2.3,
-                                    ),
-                                    // Outer amber glow
-                                    Icon(
-                                      Icons.star,
-                                      color: Color(0xFFFFC107).withOpacity(_aiGlowAnimation.value * 0.7),
-                                      size: iconSize3 * 2.0,
-                                    ),
-                                    // Middle orange glow
-                                    Icon(
-                                      Icons.star,
-                                      color: Color(0xFFFF9800).withOpacity(_aiGlowAnimation.value * 0.8),
-                                      size: iconSize3 * 1.7,
-                                    ),
-                                    // Inner golden glow
-                                    Icon(
-                                      Icons.star,
-                                      color: Color(0xFFFFEB3B).withOpacity(_aiGlowAnimation.value * 0.9),
-                                      size: iconSize3 * 1.5,
-                                    ),
-                                  ],
-                                  // Star with 3D effect
-                                  IconButton(
-                                    icon: _isAIMode
-                                        ? Stack(
-                                            alignment: Alignment.center,
-                                            children: [
-                                              // Bottom shadow for 3D depth
-                                              Transform.translate(
-                                                offset: const Offset(2, 2),
-                                                child: Icon(
-                                                  Icons.star,
-                                                  color: Colors.black.withOpacity(0.5),
-                                                  size: iconSize3 * 1.3,
-                                                ),
-                                              ),
-                                              // Mid shadow
-                                              Transform.translate(
-                                                offset: const Offset(1, 1),
-                                                child: Icon(
-                                                  Icons.star,
-                                                  color: Colors.black.withOpacity(0.3),
-                                                  size: iconSize3 * 1.3,
-                                                ),
-                                              ),
-                                              // Main star with gradient
-                                              ShaderMask(
-                                                shaderCallback: (bounds) => const LinearGradient(
-                                                  begin: Alignment.topLeft,
-                                                  end: Alignment.bottomRight,
-                                                  colors: [
-                                                    Color(0xFFFFEB3B), // Bright yellow
-                                                    Color(0xFFFFC107), // Amber
-                                                    Color(0xFFFF9800), // Deep orange
-                                                  ],
-                                                ).createShader(bounds),
-                                                child: Icon(
-                                                  Icons.star,
-                                                  color: Colors.white,
-                                                  size: iconSize3 * 1.3,
-                                                ),
-                                              ),
-                                            ],
-                                          )
-                                        : Icon(
-                                            Icons.star,
-                                            color: Colors.grey[600], // Simple grey
-                                            size: iconSize3,
-                                          ),
-                                    onPressed: () {
-                                      setState(() {
-                                        _isAIMode = !_isAIMode;
-                                      });
-                                      // Show tutorial when AI mode is turned ON for the first time
-                                      if (_isAIMode && !_hasShownAITutorial) {
-                                        Future.delayed(const Duration(milliseconds: 300), () {
-                                          _showAITutorial();
-                                        });
-                                      }
-                                    },
-                                  ),
-                                  // Magic particles when processing
-                                  if (_isAIProcessing)
-                                    Positioned.fill(
-                                      child: IgnorePointer(
-                                        child: AIProcessingParticles(
-                                          isProcessing: _isAIProcessing,
-                                          color: const Color(0xFFFFD700),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                );
-                              },
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  SizedBox(width: spacing1),
-                  // Show enhance button when in AI mode with text
-                  if (_isAIMode && _hasTextInput) ...[
-                    Container(
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                          colors: [Color(0xFFFF6F00), Color(0xFFFFA000)],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.orange.withOpacity(0.3),
-                            blurRadius: 8,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: IconButton(
-                        icon: Icon(
-                          Icons.auto_fix_high,
-                          color: Colors.white,
-                          size: iconSize3,
-                        ),
-                        tooltip: 'Enhance message',
-                        onPressed: _showEnhanceOptions,
-                      ),
-                    ),
-                    SizedBox(width: spacing1),
-                  ],
-                  // Send/Mic button
-                  Container(
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF667EEA), Color(0xFF764BA2)],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: const Color(0xFF667EEA).withOpacity(0.3),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: IconButton(
-                      icon: Icon(
-                        _hasTextInput ? Icons.send : Icons.mic,
-                        color: Colors.white,
-                        size: iconSize3,
-                      ),
-                      onPressed: _hasTextInput ? _sendMessage : _startVoiceRecording,
-                    ),
-                  ),
-                ],
-              ),
-          ],
+  Future<void> _chooseChatMedia(ImageSource source) async {
+    setState(() => _attachmentsOpen = false);
+    final video = await showModalBottomSheet<bool>(
+      context: context,
+      builder: (context) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        ListTile(leading: const Icon(Icons.photo_outlined), title: const Text('Photo'), onTap: () => Navigator.pop(context, false)),
+        ListTile(leading: const Icon(Icons.videocam_outlined), title: const Text('Video'), onTap: () => Navigator.pop(context, true)),
+      ])),
+    );
+    if (!mounted || video == null) return;
+    if (video) {
+      _sendVideoMessage(source);
+    } else {
+      _sendImageMessage(source);
+    }
+  }
+
+  Widget _buildInputArea() {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final surface = dark ? const Color(0xFF19202A) : Colors.white;
+    final ink = dark ? const Color(0xFFDCE3EF) : const Color(0xFF596273);
+    Widget action(String icon, String label, VoidCallback onTap) => IconButton(
+      tooltip: label, onPressed: onTap,
+      constraints: const BoxConstraints.tightFor(width: 34, height: 40),
+      padding: EdgeInsets.zero,
+      icon: OpaqueIcon(icon, size: 19, color: ink),
+    );
+    Widget attachment(String label, String icon, Color start, Color end, VoidCallback? onTap) => Expanded(
+      child: Tooltip(message: onTap == null ? '$label — not available yet' : label,
+        child: InkWell(onTap: onTap, borderRadius: BorderRadius.circular(13),
+          child: SizedBox(height: 76, child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Container(width: 46, height: 46,
+              decoration: BoxDecoration(borderRadius: BorderRadius.circular(15), gradient: LinearGradient(colors: [start, end], begin: Alignment.topLeft, end: Alignment.bottomRight)),
+              child: Center(child: OpaqueIcon(icon, size: 23, color: Colors.white))),
+            const SizedBox(height: 7),
+            Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: ink)),
+          ])),
         ),
       ),
     );
+    return Material(color: surface, child: Padding(
+      padding: const EdgeInsets.fromLTRB(11, 7, 11, 5),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        if (_replyingToMessage != null)
+          Container(margin: const EdgeInsets.only(bottom: 7), padding: const EdgeInsets.only(left: 10),
+            decoration: BoxDecoration(border: Border(left: BorderSide(color: const Color(0xFF537BCA), width: 3))),
+            child: Row(children: [Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(_replyingToMessage!.username, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF537BCA))),
+              Text(_replyingToMessage!.content, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, color: ink)),
+            ])), action('close', 'Cancel reply', _cancelReply)])),
+        if (_isRecordingVoice)
+          VoiceMessageRecorder(onRecordingComplete: _sendVoiceMessage, onCancel: () => setState(() => _isRecordingVoice = false))
+        else Row(children: [
+          Expanded(child: Container(
+            decoration: BoxDecoration(color: dark ? const Color(0xFF283241) : const Color(0xFFF2F3F6),
+              borderRadius: BorderRadius.circular(22), border: Border.all(color: dark ? const Color(0xFF354256) : const Color(0xFFE9EBEF))),
+            child: Row(children: [
+              action(_attachmentsOpen ? 'close' : 'attach', 'Attachments', () {
+                if (_isMultiSelectionMode) _clearSelection();
+                _focusNode.unfocus();
+                setState(() => _attachmentsOpen = !_attachmentsOpen);
+              }),
+              Expanded(child: TextField(controller: _controller, focusNode: _focusNode,
+                cursorColor: ink, style: TextStyle(fontSize: 14, color: ink), minLines: 1, maxLines: 5,
+                keyboardType: TextInputType.multiline, textCapitalization: TextCapitalization.sentences,
+                decoration: InputDecoration(hintText: 'Message', hintStyle: TextStyle(fontSize: 13, color: ink.withOpacity(.65)),
+                  isDense: true, filled: false, border: InputBorder.none, enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none, contentPadding: const EdgeInsets.symmetric(vertical: 11)),
+                onSubmitted: (_) => _sendMessage(), onTap: () {
+                  if (_isMultiSelectionMode) _clearSelection();
+                  if (_attachmentsOpen) setState(() => _attachmentsOpen = false);
+                })),
+              action('sparkles', 'AI', _showComingSoon),
+            ]),
+          )),
+          const SizedBox(width: 7),
+          Container(width: 42, height: 42,
+            decoration: BoxDecoration(borderRadius: BorderRadius.circular(15),
+              gradient: const LinearGradient(colors: [Color(0xFF537BCA), Color(0xFF3C62AB)], begin: Alignment.topLeft, end: Alignment.bottomRight)),
+            child: IconButton(tooltip: _hasTextInput ? 'Send message' : 'Record voice message',
+              icon: OpaqueIcon(_hasTextInput ? 'arrow-up' : 'mic', size: 19, color: Colors.white),
+              onPressed: () {
+                if (_attachmentsOpen) setState(() => _attachmentsOpen = false);
+                if (_hasTextInput) { _sendMessage(); } else { _startVoiceRecording(); }
+              })),
+        ]),
+        AnimatedSize(duration: const Duration(milliseconds: 220), alignment: Alignment.topCenter,
+          child: !_attachmentsOpen ? const SizedBox.shrink() : Container(
+            margin: const EdgeInsets.only(top: 8, bottom: 3), padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+            decoration: BoxDecoration(color: surface, borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: dark ? const Color(0xFF354256) : const Color(0xFFE5EAF2))),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Row(children: [Expanded(child: Text('Share something', style: TextStyle(fontSize: 12, color: ink))), action('close', 'Close attachments', () => setState(() => _attachmentsOpen = false))]),
+              Row(children: [
+                attachment('Gallery', 'gallery', const Color(0xFFA77AEF), const Color(0xFF8055D6), () => _chooseChatMedia(ImageSource.gallery)),
+                attachment('Camera', 'camera', const Color(0xFFF27DA5), const Color(0xFFDC527F), () => _chooseChatMedia(ImageSource.camera)),
+                attachment('Documents', 'document', const Color(0xFF699AEF), const Color(0xFF4576D7), () { setState(() => _attachmentsOpen = false); _sendDocumentMessage(); }),
+              ]),
+              const SizedBox(height: 13),
+              Row(children: [
+                attachment('Contact', 'contact', const Color(0xFF51BFC4), const Color(0xFF299CA7), _handleShareContact),
+                attachment('Location', 'location', const Color(0xFF65BF8E), const Color(0xFF359B68), _handleShareLocation),
+                attachment('Poll', 'poll', const Color(0xFFEFAD61), const Color(0xFFDB873D), _handleCreatePoll),
+              ]),
+            ]),
+          )),
+      ]),
+    ));
   }
+
 
   // Helper function to convert HEX string (RRGGBB) to Flutter Color (0xFFRRGGBB)
   Color _colorFromHex(String hexColor) {
@@ -4269,6 +4217,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   }
 
   Widget _buildMessageBubble(Message message, int index, int itemCount) {
+    if (ChatPayloadParser.getPayloadType(message.content) == ChatPayloadParser.typePollVote) {
+      return const SizedBox.shrink();
+    }
     final isMe = message.senderUid == _currentUserUid;
     final isSelected = _selectedMessageIds.contains(message.id);
 
@@ -4289,16 +4240,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     final colorEndHex = userSettings.colorEndHex;     // Get dynamic end color
     final cardBubbleColor = userSettings.cardBubbleColor; // Get card color for modern style
 
-    // Create unique key that changes when attachment metadata arrives
-    final Key itemKey;
-
-    if (index == itemCount - 1) {
-      itemKey = _lastMessageKey;
-    } else {
-      // Include attachment and encryption metadata in key to force rebuild when they change
-      final keyString = 'msg_${message.id}_att_${message.attachmentId}_enc_${message.mediaEncryptionKey?.substring(0, 10) ?? "none"}';
-      itemKey = ValueKey(keyString);
-    }
+    final itemKey = ValueKey('message_${message.id}');
 
     return GestureDetector(
       key: itemKey,
@@ -4313,6 +4255,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
           _showDeletedMessageOptions(message);
         } else if (message.isFailed && isMe) {
           _retryMessage(message);
+        } else {
+          final location = LocationPayload.tryParse(message.content);
+          if (location != null) _openSharedLocation(location);
         }
       },
       child: Container(
@@ -4356,20 +4301,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     double bodyTextSize,
     double tinyTextSize,
   ) {
+    final structured = LocationPayload.tryParse(message.content) != null || ContactPayload.tryParse(message.content) != null || PollPayload.tryParse(message.content) != null;
+    final contactCard = ContactPayload.tryParse(message.content) != null;
+    final dark = Theme.of(context).brightness == Brightness.dark;
     final userSettings = Provider.of<UserSettingsProvider>(context, listen: false);
     final animationStyle = userSettings.encryptionAnimationStyle;
-    final shouldAnimate = animationStyle == 'dynamic' && !_animatedMessageIds.contains(message.id);
+    final shouldAnimate = !structured && animationStyle == 'dynamic' && !_animatedMessageIds.contains(message.id);
 
     final bubbleWidget = Stack(
-      clipBehavior: Clip.none, // Allow overflow to show eye icon outside bubble
+      clipBehavior: Clip.none,
       children: [
         Container(
             constraints: BoxConstraints(
-              maxWidth: MediaQuery.of(context).size.width * 0.75,
+              maxWidth: MediaQuery.of(context).size.width * 0.85,
             ),
-            padding: EdgeInsets.symmetric(horizontal: padding2, vertical: spacing2),
-            decoration: styleKey == 'modern_card'
-              ? _getModernCardDecoration(isMe, isSelected, cardBubbleColor, screenWidth)
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+            decoration: structured ? BoxDecoration(
+              color: isSelected ? (dark ? const Color(0xFF35465E) : const Color(0xFFDCE8F8)) : contactCard ? (dark ? const Color(0xFF253348) : const Color(0xFFF3F7FD)) : (dark ? const Color(0xFF19202A) : Colors.white),
+              border: Border.all(color: dark ? const Color(0xFF35465E) : const Color(0xFFDFE7F1)),
+              borderRadius: messageBubbleRadius(isMe, styleKey, screenWidth),
+            ) : styleKey == 'modern_card'
+              ? messageCardDecoration(isMe, isSelected, cardBubbleColor, screenWidth)
               : BoxDecoration(
                   gradient: isSelected
                       ? LinearGradient(
@@ -4384,17 +4336,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                       _colorFromHex(colorStartHex),
                       _colorFromHex(colorEndHex),
                     ]
-                        : [const Color(0xFFFFFFFF), const Color(0xFFF5F5F5)], // Friend's bubble remains static
+                        : [dark ? const Color(0xFF283241) : const Color(0xFFEFF0F3), dark ? const Color(0xFF283241) : const Color(0xFFEFF0F3)], // Friend's bubble remains static
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
 
                   // 🚨 3. DYNAMIC BORDER RADIUS APPLICATION 🚨
-                  borderRadius: _getDynamicBorderRadius(isMe, styleKey, screenWidth),
+                  borderRadius: messageBubbleRadius(isMe, styleKey, screenWidth),
 
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.1),
+                      color: Colors.black.withOpacity(0.02),
                       blurRadius: 4,
                       offset: const Offset(0, 2),
                     ),
@@ -4403,7 +4355,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (!isMe)
+                if (!isMe && widget.conversationInfo.isGroup)
                   Padding(
                     padding: EdgeInsets.only(bottom: spacing1),
                     child: Text(
@@ -4411,7 +4363,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                       style: TextStyle(
                         fontWeight: FontWeight.w600,
                         fontSize: smallTextSize,
-                        color: styleKey == 'modern_card'
+                        color: structured ? (dark ? const Color(0xFF9CA8BB) : const Color(0xFF8B929F)) : styleKey == 'modern_card'
                           ? Colors.blue[700]
                           : const Color(0xFF667EEA),
                       ),
@@ -4440,7 +4392,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                           message.repliedMessageSenderName ?? 'User',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
-                            fontSize: tinyTextSize,
+                            fontSize: 10,
                             color: isMe ? Colors.white : const Color(0xFF667EEA),
                           ),
                         ),
@@ -4449,7 +4401,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                            fontSize: tinyTextSize,
+                            fontSize: 10,
                             color: isMe ? Colors.white70 : Colors.grey[700],
                           ),
                         ),
@@ -4468,8 +4420,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                 // Display voice message if has audio attachment (hide if message is deleted)
                 if (message.hasAttachment && message.attachmentType == 'audio' && message.content != 'This message was deleted')
                   _buildVoiceMessageAttachment(message),
+                // Display Location payload (hide if message is deleted)
+                if (message.content != 'This message was deleted' && LocationPayload.tryParse(message.content) != null)
+                  ChatLocationBubble(
+                    payload: LocationPayload.tryParse(message.content)!,
+                    isMe: isMe,
+                  ),
+                // Display Contact payload (hide if message is deleted)
+                if (message.content != 'This message was deleted' && ContactPayload.tryParse(message.content) != null)
+                  ChatContactBubble(
+                    payload: ContactPayload.tryParse(message.content)!,
+                    isMe: isMe,
+                  ),
+                // Display Poll payload (hide if message is deleted)
+                if (message.content != 'This message was deleted' && PollPayload.tryParse(message.content) != null)
+                  _buildPollBubble(PollPayload.tryParse(message.content)!, isMe),
                 // Display text content - Show placeholders for pending attachments, hide them only when attachment is actually shown
-                if (message.content != 'This message was deleted' && !(message.hasAttachment && (message.content == '[Image]' || message.content == '[Video]' || message.content == '[Voice message]' || message.content.startsWith('📄'))))
+                if (message.content != 'This message was deleted' &&
+                    !ChatPayloadParser.isStructuredPayload(message.content) &&
+                    !(message.hasAttachment && (message.content == '[Image]' || message.content == '[Video]' || message.content == '[Voice message]' || message.content.startsWith('📄'))))
                   _buildHighlightedText(
                     message.content,
                     isMe,
@@ -4482,7 +4451,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                     style: TextStyle(
                       fontSize: bodyTextSize,
                       fontStyle: FontStyle.italic,
-                      color: styleKey == 'modern_card'
+                      color: structured ? (dark ? const Color(0xFF9CA8BB) : const Color(0xFF8B929F)) : styleKey == 'modern_card'
                         ? Colors.grey[600]
                         : (isMe ? Colors.white70 : Colors.grey[600]),
                     ),
@@ -4492,27 +4461,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      DateFormat('hh:mm a').format(message.timestamp.toLocal()),
+                      DateFormat('HH:mm').format(message.timestamp.toLocal()),
                       style: TextStyle(
-                        fontSize: tinyTextSize,
-                        color: styleKey == 'modern_card'
+                        fontSize: 10,
+                        color: structured ? (dark ? const Color(0xFF9CA8BB) : const Color(0xFF8B929F)) : styleKey == 'modern_card'
                           ? Colors.grey[600]
                           : (isMe ? Colors.white70 : Colors.grey[600]),
                       ),
                     ),
-                    if (isMe && message.status != MessageStatus.read) ...[
+                    if (isMe) ...[
                       SizedBox(width: spacing1),
-                      _buildMessageStatusIcon(message, styleKey),
+                      _buildMessageStatusIcon(message, structured ? 'modern_card' : styleKey),
                     ],
-                    // Static encryption lock icon
-                    SizedBox(width: spacing1),
-                    Icon(
-                      Icons.lock,
-                      size: 12,
-                      color: isMe
-                        ? Colors.white
-                        : Colors.black.withOpacity(0.6),
-                    ),
                   ],
                 ),
                 // Reactions display
@@ -4522,17 +4482,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                   isMe: isMe,
                 ),
               ],
-            ),
-          ),
-        // Eye icon at top-left when message is read (positioned outside with partial overlap)
-        if (isMe && message.status == MessageStatus.read)
-          Positioned(
-            top: -(screenWidth * 0.015).clamp(5.0, 8.0),
-            left: -(screenWidth * 0.015).clamp(5.0, 8.0),
-            child: Icon(
-              Icons.visibility,
-              size: (screenWidth * 0.045).clamp(16.0, 20.0),
-              color: Colors.black,
             ),
           ),
       ],
@@ -4556,96 +4505,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     return bubbleWidget;
   }
 
-  BorderRadius _getDynamicBorderRadius(bool isMe, String styleKey, double screenWidth) {
-    final defaultRadius = Radius.circular((screenWidth * 0.045).clamp(16.0, 22.0));
-    final smallRadius = Radius.circular((screenWidth * 0.01).clamp(3.0, 6.0));
-
-    // Map the style key (resource_key from backend) to specific radii
-    switch (styleKey) {
-      case 'square_corners':
-      // Style 1: Minimal radius on all corners
-        final squareRadius = Radius.circular((screenWidth * 0.02).clamp(7.0, 10.0));
-        return BorderRadius.only(
-          topLeft: squareRadius,
-          topRight: squareRadius,
-          bottomLeft: isMe ? squareRadius : smallRadius,
-          bottomRight: isMe ? smallRadius : squareRadius,
-        );
-
-      case 'soft_edges':
-      // Style 2: Very soft, large radius for a pill-like look
-        final softRadius = Radius.circular((screenWidth * 0.06).clamp(22.0, 28.0));
-        return BorderRadius.only(
-          topLeft: softRadius,
-          topRight: softRadius,
-          bottomLeft: isMe ? softRadius : smallRadius,
-          bottomRight: isMe ? smallRadius : softRadius,
-        );
-
-      case 'minimalist':
-      // Use Radius.zero or a very small radius (like 1.0) for truly sharp edges
-        const sharpRadius = Radius.circular(1.0);
-        final standardRadius = Radius.circular((screenWidth * 0.045).clamp(16.0, 22.0));
-
-        return BorderRadius.only(
-          // Sharp top corners
-          topLeft: sharpRadius,
-          topRight: sharpRadius,
-
-          // Rounded bottom corner opposite the tail, sharp tail corner
-          bottomLeft: isMe ? standardRadius : sharpRadius,
-          bottomRight: isMe ? sharpRadius : standardRadius,
-        );
-
-      case 'default_rounded':
-      default:
-      // Original style (Rounded everywhere except the bottom corner near the speaker)
-        return BorderRadius.only(
-          topLeft: defaultRadius,
-          topRight: defaultRadius,
-          bottomLeft: isMe ? defaultRadius : smallRadius,
-          bottomRight: isMe ? smallRadius : defaultRadius,
-        );
-    }
-  }
-
-  BoxDecoration _getModernCardDecoration(bool isMe, bool isSelected, String cardColorKey, double screenWidth) {
-    // Define card color map matching customization screen
-    final Map<String, Map<String, dynamic>> cardColors = {
-      'blue': {'color': const Color(0xFFE3F2FD), 'border': const Color(0xFF90CAF9)},
-      'green': {'color': const Color(0xFFE8F5E9), 'border': const Color(0xFF81C784)},
-      'red': {'color': const Color(0xFFFFEBEE), 'border': const Color(0xFFEF5350)},
-      'purple': {'color': const Color(0xFFF3E5F5), 'border': const Color(0xFFBA68C8)},
-      'orange': {'color': const Color(0xFFFFF3E0), 'border': const Color(0xFFFFB74D)},
-      'yellow': {'color': const Color(0xFFFFFDE7), 'border': const Color(0xFFFFF176)},
-    };
-
-    final colorData = cardColors[cardColorKey] ?? cardColors['blue']!;
-    final cardColor = colorData['color'] as Color;
-    final borderColor = colorData['border'] as Color;
-    final borderRadius = (screenWidth * 0.03).clamp(10.0, 14.0);
-
-    return BoxDecoration(
-      color: isSelected
-          ? (isMe ? const Color(0xFFE1BEE7) : const Color(0xFFB0BEC5))
-          : (isMe ? cardColor : Colors.white),
-      borderRadius: BorderRadius.circular(borderRadius),
-      border: Border.all(
-        color: isSelected
-            ? (isMe ? const Color(0xFFCE93D8) : const Color(0xFF90A4AE))
-            : (isMe ? borderColor : Colors.grey[300]!),
-        width: 2,
-      ),
-      boxShadow: [
-        BoxShadow(
-          color: (isMe ? borderColor : Colors.grey).withOpacity(0.2),
-          blurRadius: 4,
-          offset: const Offset(0, 2),
-        ),
-      ],
-    );
-  }
-
   Widget _buildMessageStatusIcon(Message message, String styleKey) {
     final iconColor = styleKey == 'modern_card' ? Colors.grey[600] : Colors.white70;
     final readIconColor = styleKey == 'modern_card' ? Colors.grey[800] : Colors.white;
@@ -4658,13 +4517,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
           child: CircularProgressIndicator(strokeWidth: 1.5, color: iconColor),
         );
       case MessageStatus.sent:
-        return Icon(Icons.check, size: 16, color: iconColor);
+        return Icon(Icons.check, size: 13, color: iconColor);
       case MessageStatus.delivered:
-        return Icon(Icons.done_all, size: 16, color: iconColor);
+        return Icon(Icons.done_all, size: 13, color: iconColor);
       case MessageStatus.read:
-        return Icon(Icons.visibility, size: 16, color: readIconColor); // Eye icon
+        return Icon(Icons.visibility_outlined, size: 13, color: readIconColor); // Eye icon
       case MessageStatus.failed:
-        return Icon(Icons.error_outline, size: 16, color: iconColor);
+        return Icon(Icons.error_outline, size: 13, color: iconColor);
       case MessageStatus.decrypting:
         return const SizedBox(
           width: 12,
@@ -4672,7 +4531,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
           child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.orange),
         );
       case MessageStatus.decryptFailed:
-        return const Icon(Icons.lock_outline, size: 16, color: Colors.red);
+        return const Icon(Icons.lock_outline, size: 13, color: Colors.red);
     }
   }
 
@@ -5598,8 +5457,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                   height: 20,
                   child: CircularProgressIndicator(
                     strokeWidth: 2,
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                      isMe ? Colors.white : Color(0xFF667EEA),
+                    valueColor: const AlwaysStoppedAnimation<Color>(
+                      Colors.white,
                     ),
                   ),
                 ),
@@ -7538,7 +7397,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     // Determine text color based on style
     final textColor = styleKey == 'modern_card'
         ? Colors.black87
-        : (isMe ? Colors.white : Colors.black87);
+        : (isMe ? Colors.white : Theme.of(context).brightness == Brightness.dark ? const Color(0xFFDCE3EF) : const Color(0xFF353943));
 
     // If not searching or no query, show text with clickable links
     if (!_isSearching || _searchQuery.isEmpty) {
@@ -7551,11 +7410,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         },
         text: text,
         style: TextStyle(
-          fontSize: 16,
+          fontSize: 13, height: 1.6,
           color: textColor,
         ),
         linkStyle: TextStyle(
-          fontSize: 16,
+          fontSize: 13, height: 1.6,
           color: isMe ? Colors.blue[100] : Colors.blue[700],
           decoration: TextDecoration.underline,
         ),
@@ -7577,7 +7436,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         spans.add(TextSpan(
           text: text.substring(start),
           style: TextStyle(
-            fontSize: 16,
+            fontSize: 13, height: 1.6,
             color: textColor,
           ),
         ));
@@ -7589,7 +7448,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         spans.add(TextSpan(
           text: text.substring(start, index),
           style: TextStyle(
-            fontSize: 16,
+            fontSize: 13, height: 1.6,
             color: textColor,
           ),
         ));
@@ -7599,7 +7458,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       spans.add(TextSpan(
         text: text.substring(index, index + _searchQuery.length),
         style: TextStyle(
-          fontSize: 16,
+          fontSize: 13, height: 1.6,
           color: textColor,
           backgroundColor: Colors.yellow.withOpacity(0.7),
           fontWeight: FontWeight.bold,
@@ -7686,7 +7545,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       final colorValue = prefs.getInt('wallpaper_$conversationId');
       if (colorValue != null) {
         setState(() {
-          _chatBackgroundColor = Color(colorValue);
+          _chatBackgroundColor = Color(colorValue); _hasCustomWallpaperColor = true;
         });
       }
     } catch (e) {
@@ -8174,7 +8033,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
         if (mounted) {
           setState(() {
-            _chatBackgroundColor = color;
+            _chatBackgroundColor = color; _hasCustomWallpaperColor = true;
             _chatBackgroundImage = null;
           });
           Navigator.pop(context);

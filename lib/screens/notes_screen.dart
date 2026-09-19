@@ -1,3 +1,6 @@
+import '../widgets/notes_design.dart';
+import '../widgets/notes_password_sheet.dart';
+import '../widgets/opaque_navigation.dart';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -9,7 +12,8 @@ import '../models/note_model.dart';
 import 'create_note_screen.dart';
 
 class NotesScreen extends StatefulWidget {
-  const NotesScreen({super.key});
+  const NotesScreen({super.key, this.embedded = false});
+  final bool embedded;
 
   @override
   State<NotesScreen> createState() => _NotesScreenState();
@@ -24,6 +28,7 @@ class _NotesScreenState extends State<NotesScreen> {
   bool _isSearching = false;
   String? _selectedCategory;
   bool _isUnlocked = false;
+  bool _isPasswordEnabled = false;
 
   @override
   void initState() {
@@ -32,138 +37,44 @@ class _NotesScreenState extends State<NotesScreen> {
     _searchController.addListener(_filterNotes);
   }
 
-  Future<void> _checkPasswordProtection() async {
-    final isEnabled = await NotesPasswordService.instance.isPasswordEnabled();
-
-    if (isEnabled && mounted) {
-      // Show password verification dialog
-      final unlocked = await _showUnlockDialog();
-
-      if (unlocked) {
-        setState(() {
-          _isUnlocked = true;
-        });
-        _loadNotes();
-      } else {
-        // User cancelled or entered wrong password, go back
-        if (mounted) {
-          Navigator.of(context).pop();
-        }
-      }
-    } else {
-      // No password protection, load notes directly
+  Future<void> _updatePasswordStatus() async {
+    final enabled = await NotesPasswordService.instance.isPasswordEnabled();
+    if (mounted) {
       setState(() {
-        _isUnlocked = true;
+        _isPasswordEnabled = enabled;
       });
-      _loadNotes();
     }
   }
 
-  Future<bool> _showUnlockDialog() async {
-    final passwordController = TextEditingController();
-    bool obscurePassword = true;
-
-    final result = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => WillPopScope(
-          onWillPop: () async => false,
-          child: AlertDialog(
-            backgroundColor: const Color(0xFF1E1E1E),
-            title: Row(
-              children: const [
-                Icon(Icons.lock, color: Colors.cyanAccent),
-                SizedBox(width: 12),
-                Text('Enter Password', style: TextStyle(color: Colors.white)),
-              ],
+  Future<void> _checkPasswordProtection({bool requestUnlock = false}) async {
+    try {
+      final enabled = await NotesPasswordService.instance.isPasswordEnabled();
+      if (!mounted) return;
+      setState(() {
+        _isPasswordEnabled = enabled;
+        _isUnlocked = !enabled;
+      });
+      if (enabled) {
+        // IndexedStack constructs Notes before it is visible. Show its locked
+        // surface first, and ask for the password only when Unlock is tapped.
+        if (!requestUnlock) return;
+        final unlocked = await _showPasswordSheet(NotesPasswordAction.unlock);
+        if (!mounted || !unlocked) return;
+        setState(() => _isUnlocked = true);
+      }
+      await _loadNotes();
+    } catch (_) {
+      if (mounted) {
+        setState(() => _isUnlocked = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Could not access Notes protection. Please try again.',
             ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  'Enter your password to access Notes',
-                  style: TextStyle(color: Colors.white70),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: passwordController,
-                  obscureText: obscurePassword,
-                  autofocus: true,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: InputDecoration(
-                    hintText: 'Password',
-                    hintStyle: TextStyle(color: Colors.grey.shade400),
-                    filled: true,
-                    fillColor: Colors.grey.shade900,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide.none,
-                    ),
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        obscurePassword ? Icons.visibility_off : Icons.visibility,
-                        color: Colors.grey.shade400,
-                      ),
-                      onPressed: () => setState(() => obscurePassword = !obscurePassword),
-                    ),
-                  ),
-                  onSubmitted: (_) async {
-                    final password = passwordController.text;
-                    final isValid = await NotesPasswordService.instance.verifyPassword(password);
-
-                    if (isValid && context.mounted) {
-                      Navigator.of(context).pop(true);
-                    } else if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Incorrect password'),
-                          backgroundColor: Colors.red,
-                          duration: Duration(seconds: 2),
-                        ),
-                      );
-                      passwordController.clear();
-                    }
-                  },
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  final password = passwordController.text;
-                  final isValid = await NotesPasswordService.instance.verifyPassword(password);
-
-                  if (isValid && context.mounted) {
-                    Navigator.of(context).pop(true);
-                  } else if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Incorrect password'),
-                        backgroundColor: Colors.red,
-                        duration: Duration(seconds: 2),
-                      ),
-                    );
-                    passwordController.clear();
-                  }
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.cyanAccent,
-                  foregroundColor: Colors.black,
-                ),
-                child: const Text('Unlock'),
-              ),
-            ],
           ),
-        ),
-      ),
-    );
-
-    return result ?? false;
+        );
+      }
+    }
   }
 
   @override
@@ -173,1349 +84,1069 @@ class _NotesScreenState extends State<NotesScreen> {
   }
 
   Future<void> _loadNotes() async {
-    setState(() {
-      _isLoading = true;
-    });
+    if (!mounted) return;
+    setState(() => _isLoading = true);
 
     try {
       final dbService = DatabaseService.instance;
-      final notes = _selectedCategory == null
-          ? await dbService.getAllNotes()
-          : await dbService.getNotesByCategory(_selectedCategory);
+      final notes = await dbService.getAllNotes();
       final categories = await dbService.getAllCategories();
 
-      setState(() {
-        _notes = notes;
-        _filteredNotes = notes;
-        _categories = categories;
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _notes = notes;
+          _filteredNotes = notes;
+          _categories = categories;
+          _isLoading = false;
+        });
+        _filterNotes();
+      }
     } catch (e) {
-      debugPrint('[NotesScreen] Error loading notes: $e');
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   void _filterNotes() {
     final query = _searchController.text.toLowerCase();
-
     setState(() {
-      if (query.isEmpty) {
-        _filteredNotes = _notes;
-        _isSearching = false;
-      } else {
-        _filteredNotes = _notes
-            .where((note) {
-              final plainText = _extractPlainText(note.content);
-              return note.title.toLowerCase().contains(query) ||
-                  plainText.toLowerCase().contains(query);
-            })
-            .toList();
-        _isSearching = true;
-      }
+      _isSearching = query.isNotEmpty;
+      _filteredNotes = _notes.where((note) {
+        if (_selectedCategory != null && note.category != _selectedCategory)
+          return false;
+        return note.title.toLowerCase().contains(query) ||
+            _extractPlainText(note.content).toLowerCase().contains(query);
+      }).toList();
     });
   }
 
-  /// Extract plain text from Quill JSON or return as-is if plain text
   String _extractPlainText(String content) {
     try {
       final doc = quill.Document.fromJson(jsonDecode(content));
       return doc.toPlainText();
     } catch (e) {
-      // If not JSON, return as plain text
       return content;
     }
   }
 
-  Future<void> _createNewNote() async {
-    final result = await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => const CreateNoteScreen(),
-      ),
-    );
-
-    if (result == true) {
-      _loadNotes(); // Reload notes after creating
-    }
-  }
-
   Future<void> _editNote(Note note) async {
-    // If note is locked, require password verification
-    if (note.isLocked) {
-      final unlocked = await _verifyPasswordForLockedNote();
-      if (!unlocked) return;
-    }
-
     final result = await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => CreateNoteScreen(note: note),
-      ),
+      MaterialPageRoute(builder: (context) => CreateNoteScreen(note: note)),
     );
-
-    if (result == true) {
-      _loadNotes(); // Reload notes after editing
-    }
-  }
-
-  Future<bool> _verifyPasswordForLockedNote() async {
-    final passwordController = TextEditingController();
-    bool obscurePassword = true;
-
-    final result = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
-          title: Row(
-            children: const [
-              Icon(Icons.lock, color: Colors.orange),
-              SizedBox(width: 12),
-              Text('Locked Note', style: TextStyle(color: Colors.white)),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'This note is locked. Enter your password to view it.',
-                style: TextStyle(color: Colors.white70),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: passwordController,
-                obscureText: obscurePassword,
-                autofocus: true,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  hintText: 'Password',
-                  hintStyle: TextStyle(color: Colors.grey.shade400),
-                  filled: true,
-                  fillColor: Colors.grey.shade900,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide.none,
-                  ),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      obscurePassword ? Icons.visibility_off : Icons.visibility,
-                      color: Colors.grey.shade400,
-                    ),
-                    onPressed: () => setState(() => obscurePassword = !obscurePassword),
-                  ),
-                ),
-                onSubmitted: (_) async {
-                  final password = passwordController.text;
-                  final isValid = await NotesPasswordService.instance.verifyPassword(password);
-
-                  if (isValid && context.mounted) {
-                    Navigator.of(context).pop(true);
-                  } else if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Incorrect password'),
-                        backgroundColor: Colors.red,
-                        duration: Duration(seconds: 2),
-                      ),
-                    );
-                    passwordController.clear();
-                  }
-                },
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                final password = passwordController.text;
-                final isValid = await NotesPasswordService.instance.verifyPassword(password);
-
-                if (isValid && context.mounted) {
-                  Navigator.of(context).pop(true);
-                } else if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Incorrect password'),
-                      backgroundColor: Colors.red,
-                      duration: Duration(seconds: 2),
-                    ),
-                  );
-                  passwordController.clear();
-                }
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.cyanAccent,
-                foregroundColor: Colors.black,
-              ),
-              child: const Text('Unlock'),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    return result ?? false;
+    if (mounted) _loadNotes();
   }
 
   Future<void> _deleteNote(Note note) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Note'),
-        content: Text('Are you sure you want to delete "${note.title}"?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
+    final confirmed = await showNotesConfirmation(
+      context,
+      title: 'Delete note?',
+      body:
+          'This note will be permanently deleted. This action cannot be undone.',
+      confirm: 'Delete note',
+      danger: true,
+      icon: Icons.delete_outline,
     );
 
     if (confirmed == true) {
       try {
         await DatabaseService.instance.deleteNote(note.id!);
-        _loadNotes();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Note deleted')),
+        if (mounted) await _loadNotes();
+      } catch (_) {
+        if (mounted)
+          await showNotesConfirmation(
+            context,
+            title: 'Couldn’t delete note',
+            body: 'Your note is still here. Please try again.',
+            confirm: 'Close',
+            icon: Icons.delete_outline,
           );
-        }
-      } catch (e) {
-        debugPrint('[NotesScreen] Error deleting note: $e');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Failed to delete note')),
-          );
-        }
       }
     }
   }
 
   Future<void> _togglePin(Note note) async {
-    try {
-      await DatabaseService.instance.toggleNotePin(note.id!, !note.isPinned);
-      _loadNotes();
-    } catch (e) {
-      debugPrint('[NotesScreen] Error toggling pin: $e');
-    }
-  }
-
-  Future<void> _toggleNoteLock(Note note) async {
-    // Check if screen-level password is enabled first
-    final isPasswordEnabled = await NotesPasswordService.instance.isPasswordEnabled();
-
-    if (!isPasswordEnabled) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Please enable Screen Lock first in password settings'),
-            backgroundColor: Colors.orange,
-            duration: Duration(seconds: 3),
-          ),
-        );
-      }
-      return;
-    }
-
-    // If locking the note, verify password first
-    if (!note.isLocked) {
-      final verified = await _verifyPasswordForNoteLock();
-      if (!verified) return;
-    }
-
-    try {
-      await DatabaseService.instance.toggleNoteLock(note.id!, !note.isLocked);
-      _loadNotes();
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(note.isLocked ? 'Note unlocked' : 'Note locked'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-    } catch (e) {
-      debugPrint('[NotesScreen] Error toggling note lock: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to toggle lock')),
-        );
-      }
-    }
-  }
-
-  Future<bool> _verifyPasswordForNoteLock() async {
-    final passwordController = TextEditingController();
-    bool obscurePassword = true;
-
-    final result = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
-          title: Row(
-            children: const [
-              Icon(Icons.lock, color: Colors.cyanAccent),
-              SizedBox(width: 12),
-              Text('Verify Password', style: TextStyle(color: Colors.white)),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Enter your password to lock this note',
-                style: TextStyle(color: Colors.white70),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: passwordController,
-                obscureText: obscurePassword,
-                autofocus: true,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  hintText: 'Password',
-                  hintStyle: TextStyle(color: Colors.grey.shade400),
-                  filled: true,
-                  fillColor: Colors.grey.shade900,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide.none,
-                  ),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      obscurePassword ? Icons.visibility_off : Icons.visibility,
-                      color: Colors.grey.shade400,
-                    ),
-                    onPressed: () => setState(() => obscurePassword = !obscurePassword),
-                  ),
-                ),
-                onSubmitted: (_) async {
-                  final password = passwordController.text;
-                  final isValid = await NotesPasswordService.instance.verifyPassword(password);
-
-                  if (isValid && context.mounted) {
-                    Navigator.of(context).pop(true);
-                  } else if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Incorrect password'),
-                        backgroundColor: Colors.red,
-                        duration: Duration(seconds: 2),
-                      ),
-                    );
-                    passwordController.clear();
-                  }
-                },
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                final password = passwordController.text;
-                final isValid = await NotesPasswordService.instance.verifyPassword(password);
-
-                if (isValid && context.mounted) {
-                  Navigator.of(context).pop(true);
-                } else if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Incorrect password'),
-                      backgroundColor: Colors.red,
-                      duration: Duration(seconds: 2),
-                    ),
-                  );
-                  passwordController.clear();
-                }
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.cyanAccent,
-                foregroundColor: Colors.black,
-              ),
-              child: const Text('Verify'),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    return result ?? false;
-  }
-
-  void _showCategoryFilter(bool isDarkTheme) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: isDarkTheme ? const Color(0xFF1E1E1E) : Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      isScrollControlled: true,
-      builder: (context) {
-        return Padding(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.of(context).viewInsets.bottom + MediaQuery.of(context).padding.bottom,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: EdgeInsets.all(MediaQuery.of(context).size.width * 0.04),
-                child: Text(
-                  'Filter by Category',
-                  style: TextStyle(
-                    fontSize: (MediaQuery.of(context).size.width * 0.045).clamp(16.0, 20.0),
-                    fontWeight: FontWeight.bold,
-                    color: isDarkTheme ? Colors.white : Colors.black,
-                  ),
-                ),
-              ),
-            ListTile(
-              leading: Icon(
-                Icons.all_inclusive,
-                color: isDarkTheme ? Colors.cyanAccent : Colors.blue,
-              ),
-              title: Text(
-                'All Notes',
-                style: TextStyle(
-                  color: isDarkTheme ? Colors.white : Colors.black,
-                ),
-              ),
-              selected: _selectedCategory == null,
-              onTap: () {
-                setState(() {
-                  _selectedCategory = null;
-                });
-                Navigator.pop(context);
-                _loadNotes();
-              },
-            ),
-            ..._categories.map((category) {
-              return ListTile(
-                leading: Icon(
-                  Icons.folder,
-                  color: category.colorCode != null
-                      ? Color(int.parse(category.colorCode!.replaceFirst('#', '0xFF')))
-                      : (isDarkTheme ? Colors.cyanAccent : Colors.blue),
-                ),
-                title: Text(
-                  category.name,
-                  style: TextStyle(
-                    color: isDarkTheme ? Colors.white : Colors.black,
-                  ),
-                ),
-                selected: _selectedCategory == category.name,
-                onTap: () {
-                  setState(() {
-                    _selectedCategory = category.name;
-                  });
-                  Navigator.pop(context);
-                  _loadNotes();
-                },
-              );
-            }),
-            const SizedBox(height: 16),
-          ],
-        ),
-        );
-      },
-    );
-  }
-
-  void _showPasswordSettings(bool isDarkTheme) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: isDarkTheme ? const Color(0xFF1E1E1E) : Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      isScrollControlled: true,
-      builder: (context) {
-        return Padding(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.of(context).viewInsets.bottom + MediaQuery.of(context).padding.bottom,
-          ),
-          child: FutureBuilder<bool>(
-            future: NotesPasswordService.instance.isPasswordEnabled(),
-            builder: (context, snapshot) {
-              final isEnabled = snapshot.data ?? false;
-
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    child: Row(
-                      children: [
-                        Icon(Icons.lock, color: isDarkTheme ? Colors.cyanAccent : Colors.blue),
-                        const SizedBox(width: 12),
-                        Text(
-                          'Password Protection',
-                          style: TextStyle(
-                            fontSize: (MediaQuery.of(context).size.width * 0.045).clamp(16.0, 20.0),
-                            fontWeight: FontWeight.bold,
-                            color: isDarkTheme ? Colors.white : Colors.black,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Divider(height: 1),
-
-                  // App Lock Toggle
-                  ListTile(
-                    leading: Icon(
-                      isEnabled ? Icons.lock : Icons.lock_open,
-                      color: isEnabled ? Colors.green : (isDarkTheme ? Colors.cyanAccent : Colors.blue),
-                    ),
-                    title: Text(
-                      isEnabled ? 'Notes Lock Enabled' : 'Notes Lock Disabled',
-                      style: TextStyle(
-                        color: isDarkTheme ? Colors.white : Colors.black,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    subtitle: Text(
-                      isEnabled ? 'Password required to access Notes screen' : 'Tap to enable screen protection',
-                      style: TextStyle(
-                        color: isDarkTheme ? Colors.white70 : Colors.black54,
-                      ),
-                    ),
-                    trailing: Icon(
-                      Icons.arrow_forward_ios,
-                      size: 16,
-                      color: isDarkTheme ? Colors.white54 : Colors.black54,
-                    ),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _handleAppLockToggle(isEnabled, isDarkTheme);
-                    },
-                  ),
-
-                  const Divider(height: 1),
-
-                  // Info section
-                  Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Protection Levels:',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: isDarkTheme ? Colors.white : Colors.black,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          '• Screen Lock: Password required to access Notes screen',
-                          style: TextStyle(
-                            color: isDarkTheme ? Colors.white70 : Colors.black54,
-                            fontSize: 13,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '• Individual Lock: Lock specific notes separately',
-                          style: TextStyle(
-                            color: isDarkTheme ? Colors.white70 : Colors.black54,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  const SizedBox(height: 16),
-                ],
-              );
-            },
-          ),
-        );
-      },
-    );
-  }
-
-  void _handleAppLockToggle(bool isCurrentlyEnabled, bool isDarkTheme) async {
-    if (isCurrentlyEnabled) {
-      // Show options: Change Password or Disable
-      await _showPasswordManagementDialog(isDarkTheme);
-    } else {
-      // Setup new password
-      await _showPasswordSetupDialog(isDarkTheme);
-    }
-  }
-
-  Future<void> _showPasswordSetupDialog(bool isDarkTheme) async {
-    final passwordController = TextEditingController();
-    final confirmController = TextEditingController();
-    bool obscurePassword = true;
-    bool obscureConfirm = true;
-
-    await showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          backgroundColor: isDarkTheme ? const Color(0xFF1E1E1E) : Colors.white,
-          title: Text(
-            'Setup Notes Password',
-            style: TextStyle(color: isDarkTheme ? Colors.white : Colors.black),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: passwordController,
-                obscureText: obscurePassword,
-                style: TextStyle(color: isDarkTheme ? Colors.white : Colors.black),
-                decoration: InputDecoration(
-                  hintText: 'Enter password (min 4 characters)',
-                  hintStyle: TextStyle(color: isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      obscurePassword ? Icons.visibility_off : Icons.visibility,
-                      color: isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600,
-                    ),
-                    onPressed: () => setState(() => obscurePassword = !obscurePassword),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: confirmController,
-                obscureText: obscureConfirm,
-                style: TextStyle(color: isDarkTheme ? Colors.white : Colors.black),
-                decoration: InputDecoration(
-                  hintText: 'Confirm password',
-                  hintStyle: TextStyle(color: isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      obscureConfirm ? Icons.visibility_off : Icons.visibility,
-                      color: isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600,
-                    ),
-                    onPressed: () => setState(() => obscureConfirm = !obscureConfirm),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                final password = passwordController.text;
-                final confirm = confirmController.text;
-
-                if (password.length < 4) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Password must be at least 4 characters'),
-                      backgroundColor: Colors.red,
-                    ),
-                  );
-                  return;
-                }
-
-                if (password != confirm) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Passwords do not match'),
-                      backgroundColor: Colors.red,
-                    ),
-                  );
-                  return;
-                }
-
-                final success = await NotesPasswordService.instance.setPassword(password);
-
-                if (mounted) {
-                  Navigator.pop(context);
-
-                  if (success) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Notes password enabled successfully!'),
-                        backgroundColor: Colors.green,
-                      ),
-                    );
-                    setState(() {}); // Refresh
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Failed to set password'),
-                        backgroundColor: Colors.red,
-                      ),
-                    );
-                  }
-                }
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.cyanAccent,
-                foregroundColor: Colors.black,
-              ),
-              child: const Text('Set Password'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _showPasswordManagementDialog(bool isDarkTheme) async {
-    await showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: isDarkTheme ? const Color(0xFF1E1E1E) : Colors.white,
-        title: Text(
-          'Manage Password',
-          style: TextStyle(color: isDarkTheme ? Colors.white : Colors.black),
-        ),
-        content: Text(
-          'What would you like to do?',
-          style: TextStyle(color: isDarkTheme ? Colors.white70 : Colors.black54),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _showChangePasswordDialog(isDarkTheme);
-            },
-            child: const Text('Change Password', style: TextStyle(color: Colors.cyanAccent)),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _showDisablePasswordDialog(isDarkTheme);
-            },
-            child: const Text('Disable', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _showChangePasswordDialog(bool isDarkTheme) async {
-    final oldPasswordController = TextEditingController();
-    final newPasswordController = TextEditingController();
-    final confirmController = TextEditingController();
-
-    await showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: isDarkTheme ? const Color(0xFF1E1E1E) : Colors.white,
-        title: Text('Change Password', style: TextStyle(color: isDarkTheme ? Colors.white : Colors.black)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: oldPasswordController,
-              obscureText: true,
-              style: TextStyle(color: isDarkTheme ? Colors.white : Colors.black),
-              decoration: InputDecoration(
-                hintText: 'Current password',
-                hintStyle: TextStyle(color: isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: newPasswordController,
-              obscureText: true,
-              style: TextStyle(color: isDarkTheme ? Colors.white : Colors.black),
-              decoration: InputDecoration(
-                hintText: 'New password (min 4 characters)',
-                hintStyle: TextStyle(color: isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: confirmController,
-              obscureText: true,
-              style: TextStyle(color: isDarkTheme ? Colors.white : Colors.black),
-              decoration: InputDecoration(
-                hintText: 'Confirm new password',
-                hintStyle: TextStyle(color: isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final oldPassword = oldPasswordController.text;
-              final newPassword = newPasswordController.text;
-              final confirm = confirmController.text;
-
-              if (newPassword.length < 4) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('New password must be at least 4 characters'), backgroundColor: Colors.red),
-                );
-                return;
-              }
-
-              if (newPassword != confirm) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Passwords do not match'), backgroundColor: Colors.red),
-                );
-                return;
-              }
-
-              final success = await NotesPasswordService.instance.changePassword(oldPassword, newPassword);
-
-              if (mounted) {
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(success ? 'Password changed successfully!' : 'Incorrect current password'),
-                    backgroundColor: success ? Colors.green : Colors.red,
-                  ),
-                );
-                if (success) setState(() {});
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.cyanAccent,
-              foregroundColor: Colors.black,
-            ),
-            child: const Text('Change'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _showDisablePasswordDialog(bool isDarkTheme) async {
-    final passwordController = TextEditingController();
-
-    await showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: isDarkTheme ? const Color(0xFF1E1E1E) : Colors.white,
-        title: Text('Disable Password', style: TextStyle(color: isDarkTheme ? Colors.white : Colors.black)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              'Enter your password to disable protection',
-              style: TextStyle(color: isDarkTheme ? Colors.white70 : Colors.black54),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: passwordController,
-              obscureText: true,
-              style: TextStyle(color: isDarkTheme ? Colors.white : Colors.black),
-              decoration: InputDecoration(
-                hintText: 'Current password',
-                hintStyle: TextStyle(color: isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final password = passwordController.text;
-              final isValid = await NotesPasswordService.instance.verifyPassword(password);
-
-              if (isValid) {
-                await NotesPasswordService.instance.disablePassword();
-
-                if (mounted) {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Password protection disabled'), backgroundColor: Colors.orange),
-                  );
-                  setState(() {});
-                }
-              } else {
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Incorrect password'), backgroundColor: Colors.red),
-                  );
-                }
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Disable'),
-          ),
-        ],
-      ),
-    );
+    await DatabaseService.instance.toggleNotePin(note.id!, !note.isPinned);
+    _loadNotes();
   }
 
   @override
   Widget build(BuildContext context) {
-    // Use Notes screen theme setting from user preferences
-    final userSettings = Provider.of<UserSettingsProvider>(context);
-    final isDarkTheme = userSettings.notesScreenStyle == 'dark';
-
-    // Responsive sizing (exact same as HomeScreen)
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-    final searchPadding = EdgeInsets.fromLTRB(
-      screenWidth * 0.04,
-      screenHeight * 0.01,
-      screenWidth * 0.04,
-      screenHeight * 0.01,
-    );
-    final searchFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final searchIconSize = (screenWidth * 0.06).clamp(20.0, 26.0);
-    final titleFontSize = (screenWidth * 0.05).clamp(18.0, 24.0);
-
-    // Theme colors (exact same as HomeScreen)
-    final Color searchBgColor = isDarkTheme ? const Color(0xFF1E1E1E) : const Color(0xFFF0F2F5);
-    final Color searchTextColor = isDarkTheme ? Colors.white : Colors.black87;
-    final Color searchHintColor = isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade500;
-    final Color searchIconColor = isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600;
-    final Color noResultsColor = isDarkTheme ? Colors.grey.shade400 : Colors.grey.shade600;
-    final Color textColor = isDarkTheme ? Colors.white : Colors.black87;
-    final Color iconColor = isDarkTheme ? Colors.white : Colors.black87;
-    final Color appBarBgColor = isDarkTheme ? const Color(0xFF0a1128) : Colors.white;
-
+    final dark = context.watch<UserSettingsProvider>().isDarkMode;
+    final surface = dark ? const Color(0xFF19202A) : Colors.white;
+    final ink = dark ? const Color(0xFFE0E6EF) : const Color(0xFF202127);
+    final muted = dark ? const Color(0xFF9CA8BB) : const Color(0xFF8B929F);
+    final soft = dark ? const Color(0xFF283241) : const Color(0xFFF3F4F7);
+    final line = dark ? const Color(0xFF303947) : const Color(0xFFEDEDF1);
+    final blue = dark ? const Color(0xFF8AAFE4) : const Color(0xFF507FC3);
+    final rows = [..._filteredNotes]
+      ..sort((a, b) {
+        if (a.isPinned != b.isPinned) return a.isPinned ? -1 : 1;
+        return b.updatedAt.compareTo(a.updatedAt);
+      });
     return Scaffold(
-      backgroundColor: isDarkTheme ? const Color(0xFF121212) : Colors.white,
-      appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(kToolbarHeight),
-        child: Container(
-          decoration: BoxDecoration(
-            color: appBarBgColor,
-          ),
-          child: AppBar(
-            backgroundColor: Colors.transparent,
-            elevation: 0,
-            centerTitle: true,
-            titleTextStyle: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  color: textColor,
-                  fontWeight: FontWeight.bold,
-                  fontSize: titleFontSize,
-                ),
-            iconTheme: IconThemeData(color: iconColor),
-            title: Text(
-              'Zarq Notes',
-              style: TextStyle(
-                color: textColor,
-                fontWeight: FontWeight.bold,
-                fontSize: titleFontSize,
-              ),
+      backgroundColor: surface,
+      appBar: widget.embedded
+          ? null
+          : AppBar(
+              title: const Text('Notes'),
+              backgroundColor: surface,
+              foregroundColor: ink,
+              elevation: 0,
+              scrolledUnderElevation: 0,
             ),
-            actions: [
-              // Password lock settings button
-              IconButton(
-                icon: Icon(Icons.lock_outline, color: iconColor),
-                onPressed: () => _showPasswordSettings(isDarkTheme),
-                tooltip: 'Password Lock',
-              ),
-              // Category filter button
-              IconButton(
-                icon: Icon(Icons.filter_list, color: iconColor),
-                onPressed: () => _showCategoryFilter(isDarkTheme),
-                tooltip: 'Filter by Category',
-              ),
-            ],
-          ),
-        ),
-      ),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Search bar (exact same styling as HomeScreen)
-          Padding(
-            padding: searchPadding,
-            child: Container(
-              decoration: BoxDecoration(
-                color: searchBgColor,
-                borderRadius: BorderRadius.circular(10.0),
-                border: Border.all(color: Colors.transparent),
-              ),
-              child: TextField(
-                controller: _searchController,
-                style: TextStyle(
-                  color: searchTextColor,
-                  fontSize: searchFontSize,
+      floatingActionButton: !_isUnlocked
+          ? null
+          : SizedBox(
+              width: 44,
+              height: 44,
+              child: FloatingActionButton(
+                tooltip: 'New note',
+                elevation: 0,
+                backgroundColor: dark
+                    ? const Color(0xFFDCE6F4)
+                    : const Color(0xFF303B4C),
+                foregroundColor: dark ? const Color(0xFF243041) : Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(15),
                 ),
-                decoration: InputDecoration(
-                  hintText: 'Search notes...',
-                  hintStyle: TextStyle(
-                    color: searchHintColor,
-                    fontSize: searchFontSize,
-                  ),
-                  prefixIcon: Icon(
-                    Icons.search,
-                    color: searchIconColor,
-                    size: searchIconSize,
-                  ),
-                  suffixIcon: _isSearching
-                      ? IconButton(
-                          icon: Icon(
-                            Icons.clear,
-                            color: searchIconColor,
-                            size: searchIconSize,
-                          ),
-                          onPressed: () {
-                            _searchController.clear();
-                            FocusScope.of(context).unfocus();
-                          },
-                        )
-                      : null,
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: screenWidth * 0.05,
-                    vertical: screenHeight * 0.017,
-                  ),
-                ),
-              ),
-            ),
-          ),
-
-          // Category indicator
-          if (_selectedCategory != null)
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: screenWidth * 0.04),
-              child: Chip(
-                label: Text(_selectedCategory!),
-                deleteIcon: Icon(Icons.close, size: (screenWidth * 0.04).clamp(14.0, 18.0)),
-                onDeleted: () {
-                  setState(() {
-                    _selectedCategory = null;
-                  });
-                  _loadNotes();
+                onPressed: () async {
+                  final result = await Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const CreateNoteScreen()),
+                  );
+                  if (mounted) _loadNotes();
                 },
+                child: const Icon(Icons.add, size: 23),
               ),
             ),
-
-          // Notes list
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _filteredNotes.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
+      body: !_isUnlocked
+          ? _buildLockedNotes(dark)
+          : Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+                  child: SizedBox(
+                    height: 36,
+                    child: TextField(
+                      controller: _searchController,
+                      cursorColor: muted,
+                      style: TextStyle(fontSize: 13, color: ink),
+                      decoration: InputDecoration(
+                        hintText: 'Search notes',
+                        hintStyle: TextStyle(fontSize: 12, color: muted),
+                        prefixIcon: Padding(
+                          padding: const EdgeInsets.all(10),
+                          child: OpaqueIcon('search', size: 16, color: muted),
+                        ),
+                        filled: true,
+                        fillColor: soft,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(19),
+                          borderSide: BorderSide.none,
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(19),
+                          borderSide: BorderSide.none,
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(19),
+                          borderSide: BorderSide(color: muted),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Container(
+                        padding: const EdgeInsets.all(3),
+                        decoration: BoxDecoration(
+                          color: soft,
+                          borderRadius: BorderRadius.circular(17),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(
-                              _isSearching ? Icons.search_off : Icons.note_add,
-                              size: (screenWidth * 0.16).clamp(48.0, 80.0),
-                              color: noResultsColor,
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              _isSearching
-                                  ? "No results found for '${_searchController.text}'"
-                                  : "No notes yet.\nTap + to create your first note",
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                color: noResultsColor,
-                                fontSize: searchFontSize,
+                            for (final category in <String?>[
+                              null,
+                              ..._categories.map((c) => c.name),
+                            ])
+                              Padding(
+                                padding: const EdgeInsets.only(right: 2),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(14),
+                                  onTap: () {
+                                    setState(
+                                      () => _selectedCategory = category,
+                                    );
+                                    _filterNotes();
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: _selectedCategory == category
+                                          ? surface
+                                          : Colors.transparent,
+                                      borderRadius: BorderRadius.circular(14),
+                                    ),
+                                    child: Text(
+                                      category ?? 'All',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight:
+                                            _selectedCategory == category
+                                            ? FontWeight.w600
+                                            : FontWeight.w400,
+                                        color: _selectedCategory == category
+                                            ? ink
+                                            : muted,
+                                      ),
+                                    ),
+                                  ),
+                                ),
                               ),
+                            IconButton(
+                              tooltip: 'Add category',
+                              visualDensity: VisualDensity.compact,
+                              constraints: const BoxConstraints(
+                                minWidth: 30,
+                                minHeight: 27,
+                              ),
+                              padding: EdgeInsets.zero,
+                              icon: Icon(Icons.add, size: 16, color: blue),
+                              onPressed: () async {
+                                await showNotesCategoryCreation(context);
+                                if (mounted) await _loadNotes();
+                              },
                             ),
                           ],
                         ),
-                      )
-                    : ListView.builder(
-                        itemCount: _filteredNotes.length,
-                        itemBuilder: (context, index) {
-                          final note = _filteredNotes[index];
-                          return _buildNoteCard(
-                            note,
-                            isDarkTheme,
-                            screenWidth,
-                            screenHeight,
-                          );
-                        },
                       ),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(22, 5, 16, 0),
+                  child: Row(
+                    children: [
+                      Text(
+                        '${rows.length} ${rows.length == 1 ? 'note' : 'notes'}',
+                        style: TextStyle(fontSize: 10, color: muted),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        tooltip: 'Notes protection',
+                        iconSize: 16,
+                        constraints: const BoxConstraints.tightFor(
+                          width: 30,
+                          height: 30,
+                        ),
+                        padding: EdgeInsets.zero,
+                        onPressed: _showPasswordSettings,
+                        icon: Icon(
+                          _isPasswordEnabled
+                              ? Icons.lock_outline
+                              : Icons.lock_open_outlined,
+                          color: muted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: _isLoading
+                      ? Center(
+                          child: SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              color: blue,
+                              strokeWidth: 2,
+                            ),
+                          ),
+                        )
+                      : rows.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              OpaqueIcon('notes', size: 32, color: muted),
+                              const SizedBox(height: 16),
+                              Text(
+                                _isSearching
+                                    ? 'No matching notes'
+                                    : 'Room for your next thought',
+                                style: TextStyle(fontSize: 14, color: ink),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                _isSearching
+                                    ? 'Try another word or category.'
+                                    : 'Tap + to write something down.',
+                                style: TextStyle(fontSize: 12, color: muted),
+                              ),
+                            ],
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.fromLTRB(20, 0, 20, 80),
+                          itemCount: rows.length,
+                          itemBuilder: (context, index) {
+                            final note = rows[index];
+                            final heading =
+                                index == 0 ||
+                                rows[index - 1].isPinned != note.isPinned;
+                            final menuKey =
+                                GlobalKey<PopupMenuButtonState<String>>();
+
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (heading)
+                                  Padding(
+                                    padding: const EdgeInsets.only(
+                                      top: 15,
+                                      bottom: 4,
+                                    ),
+                                    child: Text(
+                                      note.isPinned ? 'PINNED' : 'NOTES',
+                                      style: TextStyle(
+                                        fontSize: 9,
+                                        letterSpacing: 1.3,
+                                        color: muted,
+                                      ),
+                                    ),
+                                  ),
+                                InkWell(
+                                  onTap: () => _editNote(note),
+                                  onLongPress: () =>
+                                      menuKey.currentState?.showButtonMenu(),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 15,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      border: Border(
+                                        bottom: BorderSide(color: line),
+                                      ),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                note.title,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: TextStyle(
+                                                  fontSize: 14,
+                                                  fontWeight: FontWeight.w600,
+                                                  letterSpacing: -.15,
+                                                  color: ink,
+                                                ),
+                                              ),
+                                            ),
+                                            SizedBox(
+                                              width: 28,
+                                              height: 24,
+                                              child: PopupMenuButton<String>(
+                                                key: menuKey,
+                                                tooltip: 'Note actions',
+                                                padding: EdgeInsets.zero,
+                                                color: surface,
+                                                elevation: 6,
+                                                shape: RoundedRectangleBorder(
+                                                  borderRadius:
+                                                      BorderRadius.circular(16),
+                                                  side: BorderSide(
+                                                    color: dark
+                                                        ? const Color(
+                                                            0xFF2E384D,
+                                                          )
+                                                        : const Color(
+                                                            0xFFE5EAF2,
+                                                          ),
+                                                  ),
+                                                ),
+                                                icon: OpaqueIcon(
+                                                  'more',
+                                                  size: 17,
+                                                  color: muted,
+                                                ),
+                                                onSelected: (action) {
+                                                  if (action == 'pin')
+                                                    _togglePin(note);
+                                                  if (action == 'edit')
+                                                    _editNote(note);
+                                                  if (action == 'delete')
+                                                    _deleteNote(note);
+                                                },
+                                                itemBuilder: (_) => [
+                                                  PopupMenuItem<String>(
+                                                    value: 'pin',
+                                                    height: 40,
+                                                    child: Row(
+                                                      children: [
+                                                        Icon(
+                                                          note.isPinned
+                                                              ? Icons
+                                                                    .push_pin_outlined
+                                                              : Icons.push_pin,
+                                                          size: 15,
+                                                          color: blue,
+                                                        ),
+                                                        const SizedBox(
+                                                          width: 10,
+                                                        ),
+                                                        Text(
+                                                          note.isPinned
+                                                              ? 'Unpin note'
+                                                              : 'Pin note',
+                                                          style: TextStyle(
+                                                            fontSize: 13,
+                                                            color: ink,
+                                                            fontWeight:
+                                                                FontWeight.w500,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                  PopupMenuItem<String>(
+                                                    value: 'edit',
+                                                    height: 40,
+                                                    child: Row(
+                                                      children: [
+                                                        Icon(
+                                                          Icons.edit_outlined,
+                                                          size: 15,
+                                                          color: muted,
+                                                        ),
+                                                        const SizedBox(
+                                                          width: 10,
+                                                        ),
+                                                        Text(
+                                                          'Edit note',
+                                                          style: TextStyle(
+                                                            fontSize: 13,
+                                                            color: ink,
+                                                            fontWeight:
+                                                                FontWeight.w500,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                  const PopupMenuDivider(
+                                                    height: 1,
+                                                  ),
+                                                  const PopupMenuItem<String>(
+                                                    value: 'delete',
+                                                    height: 40,
+                                                    child: Row(
+                                                      children: [
+                                                        Icon(
+                                                          Icons.delete_outline,
+                                                          size: 15,
+                                                          color: Color(
+                                                            0xFFE53935,
+                                                          ),
+                                                        ),
+                                                        SizedBox(width: 10),
+                                                        Text(
+                                                          'Delete note',
+                                                          style: TextStyle(
+                                                            fontSize: 13,
+                                                            color: Color(
+                                                              0xFFE53935,
+                                                            ),
+                                                            fontWeight:
+                                                                FontWeight.w500,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 5),
+                                        Text(
+                                          _extractPlainText(
+                                            note.content,
+                                          ).trim(),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            height: 1.7,
+                                            color: muted,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 10),
+                                        Row(
+                                          children: [
+                                            if (note.category != null) ...[
+                                              Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 7,
+                                                      vertical: 2,
+                                                    ),
+                                                decoration: BoxDecoration(
+                                                  color: soft,
+                                                  borderRadius:
+                                                      BorderRadius.circular(5),
+                                                ),
+                                                child: Text(
+                                                  note.category!,
+                                                  style: TextStyle(
+                                                    fontSize: 10,
+                                                    color: blue,
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 7),
+                                            ],
+                                            Text(
+                                              _formatDate(note.updatedAt),
+                                              style: TextStyle(
+                                                fontSize: 10,
+                                                color: muted,
+                                              ),
+                                            ),
+                                            if (note.isPinned) ...[
+                                              const SizedBox(width: 7),
+                                              Icon(
+                                                Icons.push_pin_outlined,
+                                                size: 11,
+                                                color: muted,
+                                              ),
+                                            ],
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildAppBarAction({
+    required IconData icon,
+    required VoidCallback onPressed,
+    required bool isDark,
+    required Color color,
+  }) {
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 10),
+      decoration: BoxDecoration(
+        color: isDark
+            ? Colors.white.withOpacity(0.05)
+            : Colors.black.withOpacity(0.03),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: IconButton(
+        icon: Icon(icon, color: color, size: 22),
+        onPressed: onPressed,
+      ),
+    );
+  }
+
+  Widget _buildCategoryFilter(
+    bool isDark,
+    Color subtitleColor,
+    Color accentColor,
+  ) {
+    return Container(
+      height: 45,
+      margin: const EdgeInsets.only(bottom: 10),
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: _categories.length + 1,
+        itemBuilder: (context, index) {
+          final isAllSelected = index == 0 && _selectedCategory == null;
+          final String? categoryName = index == 0
+              ? null
+              : _categories[index - 1].name;
+          final isSelected = _selectedCategory == categoryName;
+
+          return Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ChoiceChip(
+              label: Text(categoryName ?? 'All'),
+              selected: isSelected || isAllSelected,
+              onSelected: (_) {
+                setState(() => _selectedCategory = categoryName);
+                _loadNotes();
+              },
+              backgroundColor: isDark ? const Color(0xFF1C1C1E) : Colors.white,
+              selectedColor: accentColor.withOpacity(0.2),
+              labelStyle: TextStyle(
+                color: (isSelected || isAllSelected)
+                    ? accentColor
+                    : subtitleColor,
+                fontWeight: (isSelected || isAllSelected)
+                    ? FontWeight.bold
+                    : FontWeight.w500,
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: BorderSide(
+                  color: (isSelected || isAllSelected)
+                      ? accentColor.withOpacity(0.5)
+                      : (isDark
+                            ? Colors.white10
+                            : Colors.black.withOpacity(0.05)),
+                ),
+              ),
+              elevation: 0,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildEmptyState(bool isDark, Color subtitleColor) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            _isSearching ? Icons.search_off_rounded : Icons.note_add_rounded,
+            size: 80,
+            color: subtitleColor.withOpacity(0.2),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            _isSearching ? "No matching notes" : "No notes yet",
+            style: TextStyle(
+              color: subtitleColor,
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ],
       ),
-      floatingActionButton: Container(
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: LinearGradient(
-            colors: isDarkTheme
-                ? [Colors.cyanAccent, Colors.blue]
-                : [Colors.blue, Colors.lightBlue],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: (isDarkTheme ? Colors.cyanAccent : Colors.blue).withOpacity(0.5),
-              blurRadius: 12,
-              spreadRadius: 2,
-              offset: const Offset(0, 4),
-            ),
-          ],
+    );
+  }
+
+  Widget _buildNoteCard(Note note, bool isDarkTheme, double screenWidth) {
+    final textColor = isDarkTheme ? Colors.white : const Color(0xFF1D1D1F);
+    final subtitleColor = isDarkTheme
+        ? const Color(0xFF8E8E93)
+        : const Color(0xFF6E6E73);
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      decoration: BoxDecoration(
+        color: isDarkTheme ? const Color(0xFF1C1C1E) : Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: note.isPinned
+              ? (isDarkTheme
+                    ? Colors.greenAccent.withOpacity(0.3)
+                    : Colors.green.withOpacity(0.3))
+              : (isDarkTheme
+                    ? Colors.white.withOpacity(0.05)
+                    : Colors.black.withOpacity(0.03)),
+          width: 1.5,
         ),
-        child: FloatingActionButton(
-          onPressed: _createNewNote,
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          child: Icon(
-            Icons.add,
-            color: Colors.white,
-            size: (screenWidth * 0.08).clamp(28.0, 36.0),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(isDarkTheme ? 0.4 : 0.05),
+            blurRadius: 15,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () => _editNote(note),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      if (note.isPinned)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: Icon(
+                            Icons.push_pin_rounded,
+                            color: Colors.greenAccent,
+                            size: 16,
+                          ),
+                        ),
+                      Expanded(
+                        child: Text(
+                          note.title,
+                          style: TextStyle(
+                            color: textColor,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 18,
+                            letterSpacing: -0.2,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          Icons.more_horiz_rounded,
+                          color: subtitleColor.withOpacity(0.5),
+                        ),
+                        onPressed: () =>
+                            _showNoteOptions(context, note, isDarkTheme),
+                        constraints: const BoxConstraints(),
+                        padding: EdgeInsets.zero,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _extractPlainText(note.content),
+                    style: TextStyle(
+                      fontSize: 15,
+                      color: subtitleColor.withOpacity(0.7),
+                      height: 1.5,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      if (note.category != null)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            note.category!,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Colors.blue,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      const Spacer(),
+                      Text(
+                        _formatDate(note.updatedAt),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: subtitleColor.withOpacity(0.4),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildNoteCard(
-    Note note,
-    bool isDarkTheme,
-    double screenWidth,
-    double screenHeight,
-  ) {
-    // Responsive sizing (exact same as HomeScreen)
-    final listItemMargin = EdgeInsets.symmetric(
-      horizontal: screenWidth * 0.03,
-      vertical: screenHeight * 0.008,
-    );
-    final listItemTitleSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-
-    // Theme colors - Green for pinned notes with black borders
-    final Color cardBgColor = note.isPinned
-        ? (isDarkTheme ? const Color(0xFF1B5E20) : Colors.green[100]!) // Green for pinned
-        : (isDarkTheme ? const Color(0xFF2B2B2B) : Colors.lightBlue[50]!); // Dark grey in dark theme, Blue in light theme for normal
-    final Color cardBorderColor = isDarkTheme ? Colors.cyanAccent.withOpacity(0.3) : Colors.black;
-    final Color titleColor = isDarkTheme ? Colors.white : Colors.black;
-    final Color subtitleColor = isDarkTheme ? Colors.grey[400]! : Colors.grey[600]!;
-
-    // Get category color and icon if exists
-    Color? categoryColor;
-    IconData categoryIcon = Icons.note; // Default icon
-
-    // Map of predefined category names to icons
-    final Map<String, IconData> categoryIcons = {
-      'Personal': Icons.person,
-      'Work': Icons.work,
-      'Ideas': Icons.lightbulb,
-      'Todo': Icons.check_circle,
-      'Important': Icons.priority_high,
-      'Study': Icons.school,
-      'Shopping': Icons.shopping_cart,
-      'Health': Icons.health_and_safety,
-    };
-
-    if (note.category != null) {
-      final category = _categories.firstWhere(
-        (cat) => cat.name == note.category,
-        orElse: () => NoteCategory(
-          name: note.category!,
-          createdAt: DateTime.now(),
-        ),
-      );
-      if (category.colorCode != null) {
-        try {
-          categoryColor = Color(int.parse(category.colorCode!.replaceFirst('#', '0xFF')));
-        } catch (e) {
-          categoryColor = null;
-        }
-      }
-      // Get icon for category (use default if not found)
-      categoryIcon = categoryIcons[note.category] ?? Icons.folder;
-    }
-
-    return Container(
-      margin: listItemMargin,
-      decoration: BoxDecoration(
-        color: cardBgColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: cardBorderColor,
-          width: 2.0,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 5,
-            spreadRadius: 1,
-          ),
-        ],
-      ),
-      child: ListTile(
-        leading: Stack(
-          clipBehavior: Clip.none,
+  void _showNoteOptions(BuildContext context, Note note, bool isDark) {
+    final c = NotesColors(context);
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) => NotesSheet(
+        title: 'Note actions',
+        description: note.title,
+        child: Column(
           children: [
-            Container(
-              padding: EdgeInsets.all(screenWidth * 0.02),
-              decoration: BoxDecoration(
-                color: note.isPinned
-                    ? Colors.green.withOpacity(0.2)
-                    : (isDarkTheme ? Colors.cyanAccent.withOpacity(0.1) : Colors.blue.withOpacity(0.1)),
-                shape: BoxShape.circle,
+            for (final item in [
+              (
+                Icons.push_pin_outlined,
+                note.isPinned ? 'Unpin' : 'Pin note',
+                'pin',
               ),
-              child: Icon(
-                note.isPinned ? Icons.push_pin : categoryIcon,
-                color: note.isPinned
-                    ? Colors.green
-                    : (categoryColor ?? (isDarkTheme ? Colors.cyanAccent : Colors.blue)),
-                size: (screenWidth * 0.05).clamp(18.0, 24.0),
-              ),
-            ),
-            // Lock badge for locked notes
-            if (note.isLocked)
-              Positioned(
-                right: -4,
-                top: -4,
-                child: Container(
-                  padding: const EdgeInsets.all(2),
-                  decoration: BoxDecoration(
-                    color: Colors.orange,
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: isDarkTheme ? const Color(0xFF121212) : Colors.white,
-                      width: 1.5,
-                    ),
-                  ),
-                  child: Icon(
-                    Icons.lock,
-                    color: Colors.white,
-                    size: (screenWidth * 0.03).clamp(10.0, 14.0),
-                  ),
+              (Icons.edit_outlined, 'Edit', 'edit'),
+              (Icons.delete_outline, 'Delete', 'delete'),
+            ])
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  item.$1,
+                  size: 19,
+                  color: item.$3 == 'delete' ? const Color(0xFFBF6974) : c.blue,
                 ),
+                title: Text(item.$2, style: c.text(12)),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  if (item.$3 == 'pin') _togglePin(note);
+                  if (item.$3 == 'edit') _editNote(note);
+                  if (item.$3 == 'delete') _deleteNote(note);
+                },
               ),
           ],
         ),
-        title: Text(
-          note.title,
-          style: TextStyle(
-            color: titleColor,
-            fontWeight: FontWeight.bold,
-            fontSize: listItemTitleSize,
-          ),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              _extractPlainText(note.content),
-              style: TextStyle(
-                fontSize: listItemTitleSize * 0.875,
-                color: subtitleColor,
-              ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+      ),
+    );
+  }
+
+  Future<bool> _showPasswordSheet(NotesPasswordAction action) async {
+    final dark = context.read<UserSettingsProvider>().isDarkMode;
+    final result = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      isDismissible: false,
+      enableDrag: false,
+      backgroundColor: dark ? const Color(0xFF19202A) : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(23)),
+      ),
+      builder: (_) => NotesPasswordSheet(action: action, isDark: dark),
+    );
+    if (mounted && result == true) await _updatePasswordStatus();
+    return result ?? false;
+  }
+
+  Future<void> _showPasswordSettings() async {
+    final dark = context.read<UserSettingsProvider>().isDarkMode;
+    final ink = dark ? const Color(0xFFE0E6EF) : const Color(0xFF202127);
+    final muted = dark ? const Color(0xFF9CA8BB) : const Color(0xFF8B929F);
+    final soft = dark ? const Color(0xFF283241) : const Color(0xFFF3F4F7);
+    final line = dark ? const Color(0xFF303947) : const Color(0xFFEDEDF1);
+    final blue = dark ? const Color(0xFF8AAFE4) : const Color(0xFF507FC3);
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: dark ? const Color(0xFF19202A) : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(23)),
+      ),
+      builder: (sheetContext) {
+        Widget action(String value, String label, IconData icon) => InkWell(
+          onTap: () => Navigator.pop(sheetContext, value),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 15),
+            decoration: BoxDecoration(
+              border: Border(top: BorderSide(color: line)),
             ),
-            const SizedBox(height: 4),
-            Row(
+            child: Row(
               children: [
-                if (note.category != null) ...[
-                  Icon(Icons.folder, size: (screenWidth * 0.03).clamp(10.0, 14.0), color: categoryColor ?? subtitleColor),
-                  SizedBox(width: screenWidth * 0.01),
-                  Text(
-                    note.category!,
-                    style: TextStyle(fontSize: (screenWidth * 0.028).clamp(10.0, 12.0), color: subtitleColor),
+                Icon(icon, size: 18, color: muted),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: TextStyle(fontSize: 12, color: ink),
                   ),
-                  SizedBox(width: screenWidth * 0.02),
-                ],
-                Icon(Icons.access_time, size: (screenWidth * 0.03).clamp(10.0, 14.0), color: subtitleColor),
-                SizedBox(width: screenWidth * 0.01),
-                Text(
-                  _formatDate(note.updatedAt),
-                  style: TextStyle(fontSize: (screenWidth * 0.028).clamp(10.0, 12.0), color: subtitleColor),
                 ),
+                Icon(Icons.chevron_right, size: 18, color: muted),
               ],
             ),
-          ],
-        ),
-        trailing: PopupMenuButton<String>(
-          icon: Icon(Icons.more_vert, color: titleColor),
-          onSelected: (value) {
-            if (value == 'edit') {
-              _editNote(note);
-            } else if (value == 'delete') {
-              _deleteNote(note);
-            } else if (value == 'pin') {
-              _togglePin(note);
-            } else if (value == 'lock') {
-              _toggleNoteLock(note);
-            }
-          },
-          itemBuilder: (context) => [
-            PopupMenuItem(
-              value: 'pin',
-              child: Row(
-                children: [
-                  Icon(note.isPinned ? Icons.push_pin_outlined : Icons.push_pin),
-                  const SizedBox(width: 8),
-                  Text(note.isPinned ? 'Unpin' : 'Pin'),
-                ],
-              ),
-            ),
-            PopupMenuItem(
-              value: 'lock',
-              child: Row(
-                children: [
-                  Icon(
-                    note.isLocked ? Icons.lock_open : Icons.lock,
-                    color: note.isLocked ? Colors.orange : null,
+          ),
+        );
+        return SafeArea(
+          top: false,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 10, 24, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 32,
+                    height: 3,
+                    decoration: BoxDecoration(
+                      color: line,
+                      borderRadius: BorderRadius.circular(3),
+                    ),
                   ),
-                  const SizedBox(width: 8),
-                  Text(note.isLocked ? 'Unlock Note' : 'Lock Note'),
-                ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: soft,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Icon(Icons.lock_outline, size: 21, color: blue),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      tooltip: 'Close protection settings',
+                      onPressed: () => Navigator.pop(sheetContext),
+                      icon: Icon(Icons.close, color: muted, size: 20),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Notes protection',
+                  style: TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: -.4,
+                    color: ink,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Choose who can open your notes.',
+                  style: TextStyle(fontSize: 12, color: muted),
+                ),
+                const SizedBox(height: 20),
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                  decoration: BoxDecoration(
+                    border: Border(top: BorderSide(color: line)),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Password protection',
+                          style: TextStyle(fontSize: 12, color: ink),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: soft,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          _isPasswordEnabled ? 'On' : 'Off',
+                          style: TextStyle(fontSize: 10, color: blue),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (_isPasswordEnabled) ...[
+                  action('change', 'Change password', Icons.key_outlined),
+                  action(
+                    'disable',
+                    'Turn off protection',
+                    Icons.lock_open_outlined,
+                  ),
+                  action('lock', 'Lock notes', Icons.lock_outline),
+                ] else
+                  action('setup', 'Enable protection', Icons.lock_outline),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (!mounted || choice == null) return;
+    if (choice == 'lock') {
+      setState(() => _isUnlocked = false);
+      return;
+    }
+    final mode = choice == 'setup'
+        ? NotesPasswordAction.setup
+        : choice == 'change'
+        ? NotesPasswordAction.change
+        : NotesPasswordAction.disable;
+    await _showPasswordSheet(mode);
+  }
+
+  Widget _buildLockedNotes(bool dark) {
+    final muted = dark ? const Color(0xFF9CA8BB) : const Color(0xFF8B929F);
+    final ink = dark ? const Color(0xFFE0E6EF) : const Color(0xFF202127);
+    final soft = dark ? const Color(0xFF283241) : const Color(0xFFF3F4F7);
+    final blue = dark ? const Color(0xFF8AAFE4) : const Color(0xFF507FC3);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                color: soft,
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Icon(Icons.lock_outline, size: 24, color: blue),
+            ),
+            const SizedBox(height: 19),
+            Text(
+              'Your notes, kept private',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w500,
+                letterSpacing: -.3,
+                color: ink,
               ),
             ),
-            const PopupMenuItem(
-              value: 'edit',
-              child: Row(
-                children: [
-                  Icon(Icons.edit),
-                  SizedBox(width: 8),
-                  Text('Edit'),
-                ],
-              ),
+            const SizedBox(height: 8),
+            Text(
+              'Enter your password to open Notes.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12, height: 1.8, color: muted),
             ),
-            const PopupMenuItem(
-              value: 'delete',
-              child: Row(
-                children: [
-                  Icon(Icons.delete, color: Colors.red),
-                  SizedBox(width: 8),
-                  Text('Delete', style: TextStyle(color: Colors.red)),
-                ],
+            const SizedBox(height: 22),
+            TextButton(
+              style: TextButton.styleFrom(
+                backgroundColor: soft,
+                foregroundColor: blue,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 26,
+                  vertical: 10,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
+              onPressed: () => _checkPasswordProtection(requestUnlock: true),
+              child: const Text('Unlock notes', style: TextStyle(fontSize: 12)),
             ),
           ],
         ),
-        onTap: () => _editNote(note),
       ),
     );
   }
@@ -1523,15 +1154,10 @@ class _NotesScreenState extends State<NotesScreen> {
   String _formatDate(DateTime date) {
     final now = DateTime.now();
     final difference = now.difference(date);
-
-    if (difference.inDays == 0) {
+    if (difference.inDays == 0)
       return 'Today ${date.hour}:${date.minute.toString().padLeft(2, '0')}';
-    } else if (difference.inDays == 1) {
-      return 'Yesterday';
-    } else if (difference.inDays < 7) {
-      return '${difference.inDays} days ago';
-    } else {
-      return '${date.day}/${date.month}/${date.year}';
-    }
+    if (difference.inDays == 1) return 'Yesterday';
+    if (difference.inDays < 7) return '${difference.inDays} days ago';
+    return '${date.day}/${date.month}/${date.year}';
   }
 }

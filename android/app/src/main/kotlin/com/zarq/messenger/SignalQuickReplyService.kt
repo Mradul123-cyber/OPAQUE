@@ -20,7 +20,7 @@ class SignalQuickReplyService : IntentService("SignalQuickReplyService") {
 
     companion object {
         private const val TAG = "QuickReplyService"
-        private const val BASE_URL = "https://api.zarqmessenger.com"
+        private val BASE_URL = AppConfig.BASE_URL
     }
 
 

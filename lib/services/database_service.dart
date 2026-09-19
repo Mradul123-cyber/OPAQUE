@@ -1,4 +1,3 @@
-
 import 'dart:math' as math;
 import 'dart:convert';
 
@@ -54,7 +53,7 @@ class DatabaseService {
       if (identityKeyB64 == null) {
         throw Exception(
           'Identity key not available for database encryption. '
-          'Signal Protocol keys must be generated before database initialization.'
+          'Signal Protocol keys must be generated before database initialization.',
         );
       }
 
@@ -64,7 +63,10 @@ class DatabaseService {
 
       // Derive key using SHA-256(identity_key + salt)
       final salt = 'zarq_database_encryption_v1';
-      final input = Uint8List.fromList([...identityKeyBytes, ...utf8.encode(salt)]);
+      final input = Uint8List.fromList([
+        ...identityKeyBytes,
+        ...utf8.encode(salt),
+      ]);
       final hash = sha256.convert(input);
 
       // Convert hash to hex string for SQLCipher
@@ -72,7 +74,6 @@ class DatabaseService {
 
       // print("[DatabaseService] ✅ Database encryption key derived successfully");
       return dbKey;
-
     } catch (e) {
       // print("[DatabaseService] ❌ Failed to derive database key: $e");
       rethrow;
@@ -276,10 +277,18 @@ class DatabaseService {
       // print("[DatabaseService] Adding encryption columns to messages table...");
 
       // Add new columns for encryption
-      await db.execute('ALTER TABLE messages ADD COLUMN encrypted_content TEXT');
-      await db.execute('ALTER TABLE messages ADD COLUMN is_encrypted INTEGER DEFAULT 0');
-      await db.execute('ALTER TABLE messages ADD COLUMN sender_device_id INTEGER');
-      await db.execute('ALTER TABLE messages ADD COLUMN recipient_device_id INTEGER');
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN encrypted_content TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN is_encrypted INTEGER DEFAULT 0',
+      );
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN sender_device_id INTEGER',
+      );
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN recipient_device_id INTEGER',
+      );
 
       // print("[DatabaseService] Encryption columns added successfully.");
     }
@@ -293,7 +302,9 @@ class DatabaseService {
 
     if (oldVersion < 10) {
       // print("[DatabaseService] Adding is_quick_reply column...");
-      await db.execute('ALTER TABLE messages ADD COLUMN is_quick_reply INTEGER DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN is_quick_reply INTEGER DEFAULT 0',
+      );
       // print("[DatabaseService] is_quick_reply column added successfully.");
     }
 
@@ -301,46 +312,72 @@ class DatabaseService {
       // print("[DatabaseService] Adding attachment columns...");
       await db.execute('ALTER TABLE messages ADD COLUMN attachment_id INTEGER');
       await db.execute('ALTER TABLE messages ADD COLUMN attachment_type TEXT');
-      await db.execute('ALTER TABLE messages ADD COLUMN has_attachment INTEGER DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN has_attachment INTEGER DEFAULT 0',
+      );
       // print("[DatabaseService] Attachment columns added successfully.");
     }
 
     if (oldVersion < 12) {
       // print("[DatabaseService] Adding media encryption columns...");
-      await db.execute('ALTER TABLE messages ADD COLUMN media_encryption_key TEXT');
-      await db.execute('ALTER TABLE messages ADD COLUMN media_encryption_iv TEXT');
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN media_encryption_key TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN media_encryption_iv TEXT',
+      );
       // print("[DatabaseService] Media encryption columns added successfully.");
     }
 
     if (oldVersion < 13) {
       // print("[DatabaseService] Adding video duration column...");
-      await db.execute('ALTER TABLE messages ADD COLUMN video_duration INTEGER');
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN video_duration INTEGER',
+      );
       // print("[DatabaseService] Video duration column added successfully.");
     }
 
     if (oldVersion < 14) {
       // print("[DatabaseService] Adding sender media encryption key column...");
-      await db.execute('ALTER TABLE messages ADD COLUMN sender_media_encryption_key TEXT');
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN sender_media_encryption_key TEXT',
+      );
       // print("[DatabaseService] Sender media encryption key column added successfully.");
     }
 
     if (oldVersion < 15) {
       // print("[DatabaseService] Adding E2EE backup columns for encrypted media keys...");
-      await db.execute('ALTER TABLE messages ADD COLUMN encrypted_media_key TEXT');
-      await db.execute('ALTER TABLE messages ADD COLUMN media_encryption_type TEXT');
-      await db.execute('ALTER TABLE messages ADD COLUMN media_recipient_uid TEXT');
-      await db.execute('ALTER TABLE messages ADD COLUMN media_recipient_device_id INTEGER');
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN encrypted_media_key TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN media_encryption_type TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN media_recipient_uid TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN media_recipient_device_id INTEGER',
+      );
       await db.execute('ALTER TABLE messages ADD COLUMN media_group_id TEXT');
       await db.execute('ALTER TABLE messages ADD COLUMN media_sender_uid TEXT');
-      await db.execute('ALTER TABLE messages ADD COLUMN media_sender_device_id INTEGER');
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN media_sender_device_id INTEGER',
+      );
       // print("[DatabaseService] E2EE backup columns added successfully.");
     }
 
     if (oldVersion < 16) {
       // print("[DatabaseService] Adding reply metadata columns...");
-      await db.execute('ALTER TABLE messages ADD COLUMN reply_to_message_id INTEGER');
-      await db.execute('ALTER TABLE messages ADD COLUMN replied_message_content TEXT');
-      await db.execute('ALTER TABLE messages ADD COLUMN replied_message_sender_name TEXT');
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN reply_to_message_id INTEGER',
+      );
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN replied_message_content TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN replied_message_sender_name TEXT',
+      );
       // print("[DatabaseService] Reply metadata columns added successfully.");
     }
 
@@ -492,7 +529,11 @@ class DatabaseService {
       'replied_message_sender_name': message.repliedMessageSenderName,
     };
 
-    await db.insert('messages', data, conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.insert(
+      'messages',
+      data,
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
 
     // Invalidate cache
     if (_cachedConversationId == message.conversationId) {
@@ -502,7 +543,9 @@ class DatabaseService {
     // print("[DatabaseService] Message ${message.id} inserted (quick_reply: $isQuickReply)");
   }
 
-  Future<Map<int, String>> _getLocalSentMessagesBatch(List<int> messageIds) async {
+  Future<Map<int, String>> _getLocalSentMessagesBatch(
+    List<int> messageIds,
+  ) async {
     if (messageIds.isEmpty) return {};
 
     // print('[DEBUG] Batch requesting ${messageIds.length} local messages');
@@ -530,9 +573,16 @@ class DatabaseService {
   /// - getMessages(123) - Load all messages (backward compatible)
   /// - getMessages(123, limit: 50) - Load last 50 messages
   /// - getMessages(123, limit: 50, offset: 50) - Load messages 51-100
-  Future<List<Message>> getMessages(int conversationId, {int? limit, int offset = 0}) async {
+  Future<List<Message>> getMessages(
+    int conversationId, {
+    int? limit,
+    int offset = 0,
+  }) async {
     // Only use cache if loading all messages (no limit/offset)
-    if (limit == null && offset == 0 && _cachedConversationId == conversationId && _cachedMessages != null) {
+    if (limit == null &&
+        offset == 0 &&
+        _cachedConversationId == conversationId &&
+        _cachedMessages != null) {
       // print('[DEBUG] Returning ${_cachedMessages!.length} cached messages');
       return _cachedMessages!;
     }
@@ -546,7 +596,8 @@ class DatabaseService {
     // Build query with pagination support
     // When paginating, we query DESC (newest first) then reverse
     // When loading all, we query ASC directly
-    String query = '''
+    String query =
+        '''
     SELECT m.* FROM messages m
     LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
     WHERE m.conversationId = ? AND dm.message_id IS NULL
@@ -561,17 +612,21 @@ class DatabaseService {
       }
     }
 
-    final List<Map<String, dynamic>> maps = await db.rawQuery(query, [currentUser.uid, conversationId]);
+    final List<Map<String, dynamic>> maps = await db.rawQuery(query, [
+      currentUser.uid,
+      conversationId,
+    ]);
 
     // Reverse the list since we queried DESC to get latest messages first
     // Then reverse to display in chronological order (oldest to newest)
     final reversedMaps = limit != null ? maps.reversed.toList() : maps;
 
     final quickReplyIds = reversedMaps
-        .where((map) =>
-    map['senderUid'] == currentUser.uid &&
-        (map['is_quick_reply'] as int?) == 1
-    )
+        .where(
+          (map) =>
+              map['senderUid'] == currentUser.uid &&
+              (map['is_quick_reply'] as int?) == 1,
+        )
         .map((map) => map['id'] as int)
         .toList();
 
@@ -591,26 +646,29 @@ class DatabaseService {
         // print('[DEBUG] Using local plaintext for message $messageId');
       }
 
-      messages.add(Message(
-        id: map['id'] as int,
-        conversationId: map['conversationId'] as int,
-        username: map['username'] as String,
-        content: content, // Now uses plaintext for your own messages
-        timestamp: DateTime.parse(map['timestamp'] as String).toUtc(),
-        senderUid: senderUid,
-        status: _parseMessageStatus(map['status'] as String?),
-        encryptedContent: map['encrypted_content'] as String?,
-        isEncrypted: (map['is_encrypted'] as int?) == 1,
-        senderDeviceId: map['sender_device_id'] as int?,
-        recipientDeviceId: map['recipient_device_id'] as int?,
-        isQuickReply: (map['is_quick_reply'] as int?) == 1,
-        attachmentId: map['attachment_id'] as int?,
-        attachmentType: map['attachment_type'] as String?,
-        hasAttachment: (map['has_attachment'] as int?) == 1,
-        replyToMessageId: map['reply_to_message_id'] as int?,
-        repliedMessageContent: map['replied_message_content'] as String?,
-        repliedMessageSenderName: map['replied_message_sender_name'] as String?,
-      ));
+      messages.add(
+        Message(
+          id: map['id'] as int,
+          conversationId: map['conversationId'] as int,
+          username: map['username'] as String,
+          content: content, // Now uses plaintext for your own messages
+          timestamp: DateTime.parse(map['timestamp'] as String).toUtc(),
+          senderUid: senderUid,
+          status: _parseMessageStatus(map['status'] as String?),
+          encryptedContent: map['encrypted_content'] as String?,
+          isEncrypted: (map['is_encrypted'] as int?) == 1,
+          senderDeviceId: map['sender_device_id'] as int?,
+          recipientDeviceId: map['recipient_device_id'] as int?,
+          isQuickReply: (map['is_quick_reply'] as int?) == 1,
+          attachmentId: map['attachment_id'] as int?,
+          attachmentType: map['attachment_type'] as String?,
+          hasAttachment: (map['has_attachment'] as int?) == 1,
+          replyToMessageId: map['reply_to_message_id'] as int?,
+          repliedMessageContent: map['replied_message_content'] as String?,
+          repliedMessageSenderName:
+              map['replied_message_sender_name'] as String?,
+        ),
+      );
     }
 
     // Only cache if loading all messages (no pagination)
@@ -628,11 +686,14 @@ class DatabaseService {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) return 0;
 
-    final result = await db.rawQuery('''
+    final result = await db.rawQuery(
+      '''
       SELECT COUNT(*) as count FROM messages m
       LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
       WHERE m.conversationId = ? AND dm.message_id IS NULL
-    ''', [currentUser.uid, conversationId]);
+    ''',
+      [currentUser.uid, conversationId],
+    );
 
     return result.first['count'] as int;
   }
@@ -649,7 +710,11 @@ class DatabaseService {
   /// // Load more when scrolling up: next 50 older messages
   /// final olderMessages = await db.loadOlderMessages(conversationId, currentCount: messages.length, limit: 50);
   /// ```
-  Future<List<Message>> loadOlderMessages(int conversationId, {required int currentCount, int limit = 50}) async {
+  Future<List<Message>> loadOlderMessages(
+    int conversationId, {
+    required int currentCount,
+    int limit = 50,
+  }) async {
     return getMessages(conversationId, limit: limit, offset: currentCount);
   }
 
@@ -674,7 +739,8 @@ class DatabaseService {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) return [];
 
-    final List<Map<String, dynamic>> maps = await db.rawQuery('''
+    final List<Map<String, dynamic>> maps = await db.rawQuery(
+      '''
       SELECT m.* FROM messages m
       LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
       WHERE m.conversationId = ? 
@@ -683,13 +749,18 @@ class DatabaseService {
         AND m.status = ?
         AND dm.message_id IS NULL
       ORDER BY m.timestamp ASC
-    ''', [currentUser.uid, conversationId, 'decrypting']);
+    ''',
+      [currentUser.uid, conversationId, 'decrypting'],
+    );
 
     return List.generate(maps.length, (i) => Message.fromJson(maps[i]));
   }
 
   /// Update message with decrypted content
-  Future<void> updateMessageWithDecryptedContent(int messageId, String decryptedContent) async {
+  Future<void> updateMessageWithDecryptedContent(
+    int messageId,
+    String decryptedContent,
+  ) async {
     final db = database;
     await db.update(
       'messages',
@@ -728,7 +799,7 @@ class DatabaseService {
 
     try {
       return MessageStatus.values.firstWhere(
-            (status) => status.toString().split('.').last == statusString,
+        (status) => status.toString().split('.').last == statusString,
       );
     } catch (e) {
       return MessageStatus.sent;
@@ -742,9 +813,15 @@ class DatabaseService {
     await db.delete('messages', where: 'id = ?', whereArgs: [id]);
   }
 
-  static Future<void> deleteAllMessagesInConversation(int conversationId) async {
+  static Future<void> deleteAllMessagesInConversation(
+    int conversationId,
+  ) async {
     final db = DatabaseService.instance.database;
-    await db.delete('messages', where: 'conversationId = ?', whereArgs: [conversationId]);
+    await db.delete(
+      'messages',
+      where: 'conversationId = ?',
+      whereArgs: [conversationId],
+    );
 
     // Invalidate cache if this conversation was cached
     if (DatabaseService.instance._cachedConversationId == conversationId) {
@@ -764,15 +841,11 @@ class DatabaseService {
       return;
     }
 
-    await db.insert(
-      'deleted_messages',
-      {
-        'message_id': messageId,
-        'user_uid': currentUser.uid,
-        'deleted_at': DateTime.now().millisecondsSinceEpoch,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await db.insert('deleted_messages', {
+      'message_id': messageId,
+      'user_uid': currentUser.uid,
+      'deleted_at': DateTime.now().millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
 
     _cachedMessages = null;
     _cachedConversationId = null;
@@ -854,7 +927,9 @@ class DatabaseService {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) return;
 
-    final cutoffTime = DateTime.now().subtract(Duration(days: daysOld)).millisecondsSinceEpoch;
+    final cutoffTime = DateTime.now()
+        .subtract(Duration(days: daysOld))
+        .millisecondsSinceEpoch;
 
     final deletedCount = await db.delete(
       'deleted_messages',
@@ -873,7 +948,10 @@ class DatabaseService {
     _database = null;
   }
 
-  Future<void> updateMessageStatus(int messageId, MessageStatus newStatus) async {
+  Future<void> updateMessageStatus(
+    int messageId,
+    MessageStatus newStatus,
+  ) async {
     final db = database;
 
     // ✅ PERFORMANCE FIX: Check current status before updating
@@ -931,7 +1009,10 @@ class DatabaseService {
     // print("[DatabaseService] ✅ Updated message $messageId status to $newStatus");
   }
 
-  Future<void> updateMultipleMessageStatus(List<int> messageIds, MessageStatus newStatus) async {
+  Future<void> updateMultipleMessageStatus(
+    List<int> messageIds,
+    MessageStatus newStatus,
+  ) async {
     final db = database;
     final batch = db.batch();
 
@@ -978,17 +1059,23 @@ class DatabaseService {
     // print("[DatabaseService] Updated message $messageId with attachment $attachmentId");
   }
 
-  Future<List<Message>> getMessagesByStatus(int conversationId, MessageStatus status) async {
+  Future<List<Message>> getMessagesByStatus(
+    int conversationId,
+    MessageStatus status,
+  ) async {
     final db = database;
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) return [];
 
-    final List<Map<String, dynamic>> maps = await db.rawQuery('''
+    final List<Map<String, dynamic>> maps = await db.rawQuery(
+      '''
       SELECT m.* FROM messages m
       LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
       WHERE m.conversationId = ? AND m.status = ? AND dm.message_id IS NULL
       ORDER BY m.timestamp ASC
-    ''', [currentUser.uid, conversationId, status.toString().split('.').last]);
+    ''',
+      [currentUser.uid, conversationId, status.toString().split('.').last],
+    );
 
     return List.generate(maps.length, (i) => Message.fromJson(maps[i]));
   }
@@ -996,12 +1083,15 @@ class DatabaseService {
   Future<List<Message>> getAllUndeliveredMessages(String currentUserUid) async {
     final db = database;
 
-    final List<Map<String, dynamic>> maps = await db.rawQuery('''
+    final List<Map<String, dynamic>> maps = await db.rawQuery(
+      '''
     SELECT m.* FROM messages m
     LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
     WHERE m.senderUid != ? AND m.status = ? AND dm.message_id IS NULL
     ORDER BY m.timestamp DESC
-  ''', [currentUserUid, currentUserUid, 'sent']);
+  ''',
+      [currentUserUid, currentUserUid, 'sent'],
+    );
 
     // print('[DEBUG] getAllUndeliveredMessages found ${maps.length} messages');
     for (final map in maps) {
@@ -1011,15 +1101,21 @@ class DatabaseService {
     return List.generate(maps.length, (i) => Message.fromJson(maps[i]));
   }
 
-  Future<List<Message>> getUndeliveredMessagesInConversation(int conversationId, String currentUserUid) async {
+  Future<List<Message>> getUndeliveredMessagesInConversation(
+    int conversationId,
+    String currentUserUid,
+  ) async {
     final db = database;
 
-    final List<Map<String, dynamic>> maps = await db.rawQuery('''
+    final List<Map<String, dynamic>> maps = await db.rawQuery(
+      '''
       SELECT m.* FROM messages m
       LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
       WHERE m.conversationId = ? AND m.senderUid != ? AND m.status = ? AND dm.message_id IS NULL
       ORDER BY m.timestamp ASC
-    ''', [currentUserUid, conversationId, currentUserUid, 'sent']);
+    ''',
+      [currentUserUid, conversationId, currentUserUid, 'sent'],
+    );
 
     return List.generate(maps.length, (i) => Message.fromJson(maps[i]));
   }
@@ -1030,31 +1126,43 @@ class DatabaseService {
     // print("[DatabaseService] Database reset - ready for re-initialization");
   }
 
-  Future<bool> hasUnreadMessages(int conversationId, String currentUserUid) async {
+  Future<bool> hasUnreadMessages(
+    int conversationId,
+    String currentUserUid,
+  ) async {
     final db = database;
-    final result = await db.rawQuery('''
+    final result = await db.rawQuery(
+      '''
     SELECT COUNT(*) as count FROM messages m
     LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
     WHERE m.conversationId = ?
     AND m.senderUid != ?
     AND m.status IN ('sent', 'delivered')
     AND dm.message_id IS NULL
-  ''', [currentUserUid, conversationId, currentUserUid]);
+  ''',
+      [currentUserUid, conversationId, currentUserUid],
+    );
 
     final count = result.first['count'] as int;
     return count > 0;
   }
 
-  Future<int> getUnreadMessageCount(int conversationId, String currentUserUid) async {
+  Future<int> getUnreadMessageCount(
+    int conversationId,
+    String currentUserUid,
+  ) async {
     final db = database;
-    final result = await db.rawQuery('''
+    final result = await db.rawQuery(
+      '''
     SELECT COUNT(*) as count FROM messages m
     LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
     WHERE m.conversationId = ?
     AND m.senderUid != ?
     AND m.status IN ('sent', 'delivered')
     AND dm.message_id IS NULL
-  ''', [currentUserUid, conversationId, currentUserUid]);
+  ''',
+      [currentUserUid, conversationId, currentUserUid],
+    );
 
     final count = result.first['count'] as int;
     return count;
@@ -1065,14 +1173,66 @@ class DatabaseService {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) return null;
 
-    final result = await db.rawQuery('''
+    final result = await db.rawQuery(
+      '''
       SELECT MAX(m.timestamp) as last_timestamp FROM messages m
       LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
       WHERE m.conversationId = ? AND dm.message_id IS NULL
-    ''', [currentUser.uid, conversationId]);
+    ''',
+      [currentUser.uid, conversationId],
+    );
 
     if (result.isNotEmpty && result.first['last_timestamp'] != null) {
       return DateTime.parse(result.first['last_timestamp'] as String).toUtc();
+    }
+    return null;
+  }
+
+  Future<Message?> getLastMessage(int conversationId) async {
+    final db = database;
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) return null;
+
+    final result = await db.rawQuery(
+      '''
+      SELECT m.* FROM messages m
+      LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
+      WHERE m.conversationId = ? AND dm.message_id IS NULL
+      ORDER BY m.timestamp DESC
+      LIMIT 1
+    ''',
+      [currentUser.uid, conversationId],
+    );
+
+    if (result.isNotEmpty) {
+      final map = result.first;
+      String content = map['content'] as String;
+      final messageId = map['id'] as int;
+
+      // Handle quick reply / local plaintext
+      if ((map['is_quick_reply'] as int?) == 1 &&
+          map['senderUid'] == currentUser.uid) {
+        final plaintext = await _getLocalSentMessage(messageId);
+        if (plaintext != null) content = plaintext;
+      }
+
+      return Message(
+        id: map['id'] as int,
+        conversationId: map['conversationId'] as int,
+        username: map['username'] as String,
+        content: content,
+        timestamp: DateTime.parse(map['timestamp'] as String).toUtc(),
+        senderUid: map['senderUid'] as String?,
+        status: _parseMessageStatus(map['status'] as String?),
+        encryptedContent: map['encrypted_content'] as String?,
+        isEncrypted: (map['is_encrypted'] as int?) == 1,
+        senderDeviceId: map['sender_device_id'] as int?,
+        recipientDeviceId: map['recipient_device_id'] as int?,
+        isQuickReply: (map['is_quick_reply'] as int?) == 1,
+        attachmentId: map['attachment_id'] as int?,
+        attachmentType: map['attachment_type'] as String?,
+        hasAttachment: (map['has_attachment'] as int?) == 1,
+      );
     }
     return null;
   }
@@ -1135,11 +1295,7 @@ class DatabaseService {
   /// Delete a note
   Future<int> deleteNote(int id) async {
     final db = database;
-    return await db.delete(
-      'notes',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    return await db.delete('notes', where: 'id = ?', whereArgs: [id]);
   }
 
   /// Toggle pin status of a note
@@ -1147,7 +1303,10 @@ class DatabaseService {
     final db = database;
     return await db.update(
       'notes',
-      {'is_pinned': isPinned ? 1 : 0, 'updated_at': DateTime.now().toIso8601String()},
+      {
+        'is_pinned': isPinned ? 1 : 0,
+        'updated_at': DateTime.now().toIso8601String(),
+      },
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -1158,7 +1317,10 @@ class DatabaseService {
     final db = database;
     return await db.update(
       'notes',
-      {'is_locked': isLocked ? 1 : 0, 'updated_at': DateTime.now().toIso8601String()},
+      {
+        'is_locked': isLocked ? 1 : 0,
+        'updated_at': DateTime.now().toIso8601String(),
+      },
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -1203,11 +1365,7 @@ class DatabaseService {
       );
     }
     // Then delete the category
-    return await db.delete(
-      'note_categories',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    return await db.delete('note_categories', where: 'id = ?', whereArgs: [id]);
   }
 
   /// Get category by name
@@ -1225,4 +1383,3 @@ class DatabaseService {
     return null;
   }
 }
-

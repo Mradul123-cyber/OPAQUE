@@ -6,42 +6,33 @@ class UserSettings {
   final String bubbleStyle;
   final String myBubbleColorStart;
   final String myBubbleColorEnd;
-  final String homeScreenStyle;
+  final bool isDarkMode;
   final String groupScreenStyle;
   final String cardBubbleColor;
   final String encryptionAnimationStyle; // 'dynamic', 'minimal', 'static'
-  final String findFriendsScreenStyle; // 'default' or 'dark'
-  final String friendRequestsScreenStyle; // 'default' or 'dark'
-  final String notesScreenStyle; // 'default' or 'dark'
 
   UserSettings({
     required this.bubbleStyle,
     required this.myBubbleColorStart,
     required this.myBubbleColorEnd,
-    this.homeScreenStyle = 'default',
+    this.isDarkMode = false,
     this.groupScreenStyle = 'static',
     this.cardBubbleColor = 'blue',
-    this.encryptionAnimationStyle = 'static', // Default to static (animations disabled for now)
-    this.findFriendsScreenStyle = 'default',
-    this.friendRequestsScreenStyle = 'default',
-    this.notesScreenStyle = 'default',
+    this.encryptionAnimationStyle = 'static', // Default to static
   });
 }
 
 /// Local storage service for user customization settings
-/// Stores all settings in SharedPreferences (device only, no server)
 class UserSettingsLocalService {
   // Storage keys
   static const String _bubbleStyleKey = 'bubble_style';
   static const String _colorStartKey = 'bubble_color_start';
   static const String _colorEndKey = 'bubble_color_end';
-  static const String _homeScreenStyleKey = 'home_screen_style';
+  static const String _isDarkModeKey = 'is_dark_mode';
   static const String _groupScreenStyleKey = 'group_screen_style';
   static const String _cardBubbleColorKey = 'card_bubble_color';
-  static const String _encryptionAnimationStyleKey = 'encryption_animation_style';
-  static const String _findFriendsScreenStyleKey = 'find_friends_screen_style';
-  static const String _friendRequestsScreenStyleKey = 'friend_requests_screen_style';
-  static const String _notesScreenStyleKey = 'notes_screen_style';
+  static const String _encryptionAnimationStyleKey =
+      'encryption_animation_style';
 
   /// Load settings from local storage
   Future<UserSettings> loadSettings() async {
@@ -50,29 +41,24 @@ class UserSettingsLocalService {
 
       return UserSettings(
         bubbleStyle: prefs.getString(_bubbleStyleKey) ?? 'default_rounded',
-        myBubbleColorStart: prefs.getString(_colorStartKey) ?? '667EEA',
-        myBubbleColorEnd: prefs.getString(_colorEndKey) ?? '764BA2',
-        homeScreenStyle: prefs.getString(_homeScreenStyleKey) ?? 'default',
+        myBubbleColorStart: prefs.getString(_colorStartKey) ?? '719CDD',
+        myBubbleColorEnd: prefs.getString(_colorEndKey) ?? '507FC3',
+        isDarkMode: prefs.getBool(_isDarkModeKey) ?? false,
         groupScreenStyle: prefs.getString(_groupScreenStyleKey) ?? 'static',
         cardBubbleColor: prefs.getString(_cardBubbleColorKey) ?? 'blue',
-        encryptionAnimationStyle: prefs.getString(_encryptionAnimationStyleKey) ?? 'static',
-        findFriendsScreenStyle: prefs.getString(_findFriendsScreenStyleKey) ?? 'default',
-        friendRequestsScreenStyle: prefs.getString(_friendRequestsScreenStyleKey) ?? 'default',
-        notesScreenStyle: prefs.getString(_notesScreenStyleKey) ?? 'default',
+        encryptionAnimationStyle:
+            prefs.getString(_encryptionAnimationStyleKey) ?? 'static',
       );
     } catch (e) {
       // Return defaults on error
       return UserSettings(
         bubbleStyle: 'default_rounded',
-        myBubbleColorStart: '667EEA',
-        myBubbleColorEnd: '764BA2',
-        homeScreenStyle: 'default',
+        myBubbleColorStart: '719CDD',
+        myBubbleColorEnd: '507FC3',
+        isDarkMode: false,
         groupScreenStyle: 'static',
         cardBubbleColor: 'blue',
         encryptionAnimationStyle: 'static',
-        findFriendsScreenStyle: 'default',
-        friendRequestsScreenStyle: 'default',
-        notesScreenStyle: 'default',
       );
     }
   }
@@ -85,13 +71,13 @@ class UserSettingsLocalService {
       prefs.setString(_bubbleStyleKey, settings.bubbleStyle),
       prefs.setString(_colorStartKey, settings.myBubbleColorStart),
       prefs.setString(_colorEndKey, settings.myBubbleColorEnd),
-      prefs.setString(_homeScreenStyleKey, settings.homeScreenStyle),
+      prefs.setBool(_isDarkModeKey, settings.isDarkMode),
       prefs.setString(_groupScreenStyleKey, settings.groupScreenStyle),
       prefs.setString(_cardBubbleColorKey, settings.cardBubbleColor),
-      prefs.setString(_encryptionAnimationStyleKey, settings.encryptionAnimationStyle),
-      prefs.setString(_findFriendsScreenStyleKey, settings.findFriendsScreenStyle),
-      prefs.setString(_friendRequestsScreenStyleKey, settings.friendRequestsScreenStyle),
-      prefs.setString(_notesScreenStyleKey, settings.notesScreenStyle),
+      prefs.setString(
+        _encryptionAnimationStyleKey,
+        settings.encryptionAnimationStyle,
+      ),
     ]);
   }
 
@@ -103,13 +89,10 @@ class UserSettingsLocalService {
       prefs.remove(_bubbleStyleKey),
       prefs.remove(_colorStartKey),
       prefs.remove(_colorEndKey),
-      prefs.remove(_homeScreenStyleKey),
+      prefs.remove(_isDarkModeKey),
       prefs.remove(_groupScreenStyleKey),
       prefs.remove(_cardBubbleColorKey),
       prefs.remove(_encryptionAnimationStyleKey),
-      prefs.remove(_findFriendsScreenStyleKey),
-      prefs.remove(_friendRequestsScreenStyleKey),
-      prefs.remove(_notesScreenStyleKey),
     ]);
   }
 }

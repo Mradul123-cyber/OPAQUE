@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 /// Animated profile avatar that flips between user's profile picture and app logo
 class AnimatedProfileAvatar extends StatefulWidget {
@@ -113,14 +114,20 @@ class _AnimatedProfileAvatarState extends State<AnimatedProfileAvatar>
         width: widget.size,
         height: widget.size,
         child: widget.imageUrl != null && widget.imageUrl!.isNotEmpty
-            ? Image.network(
-                widget.imageUrl!,
-                width: widget.size,
-                height: widget.size,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) {
-                  return _buildDefaultAvatar();
-                },
+            ? CachedNetworkImage(
+                imageUrl: widget.imageUrl!,
+                imageBuilder: (context, imageProvider) => Container(
+                  width: widget.size,
+                  height: widget.size,
+                  decoration: BoxDecoration(
+                    image: DecorationImage(
+                      image: imageProvider,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                ),
+                placeholder: (context, url) => _buildDefaultAvatar(),
+                errorWidget: (context, url, error) => _buildDefaultAvatar(),
               )
             : _buildDefaultAvatar(),
       ),
