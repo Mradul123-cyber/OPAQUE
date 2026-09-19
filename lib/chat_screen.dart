@@ -37,7 +37,6 @@ import 'services/file_service.dart';
 import 'models/message_reaction.dart';
 import 'widgets/message_reactions_widget.dart';
 import 'widgets/encryption_animation_widget.dart';
-import 'widgets/particle_animation_widget.dart';
 import 'services/group_encryption_service.dart';
 import 'widgets/call_aware_screen.dart';
 import 'services/global_call_manager.dart';
