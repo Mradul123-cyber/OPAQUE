@@ -155,19 +155,5 @@
             <action android:name="android.speech.RecognitionService" />
         </intent>
 
-        <!-- UPI Intent queries for Razorpay - Required for Android 11+ (API 30+) -->
-        <!-- This allows the app to detect installed UPI apps -->
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="upi" />
-        </intent>
-
-        <!-- Query specific UPI apps for better detection -->
-        <package android:name="com.google.android.apps.nbu.paisa.user" /> <!-- Google Pay -->
-        <package android:name="net.one97.paytm" /> <!-- Paytm -->
-        <package android:name="com.phonepe.app" /> <!-- PhonePe -->
-        <package android:name="in.org.npci.upiapp" /> <!-- BHIM -->
-        <package android:name="com.amazon.mobile.shopping" /> <!-- Amazon Pay -->
-        <package android:name="com.dreamplug.androidapp" /> <!-- CRED -->
     </queries>
 </manifest>

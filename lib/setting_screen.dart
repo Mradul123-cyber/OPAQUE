@@ -15,7 +15,6 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:zarq_messenger/screens/backup_management_screen.dart';
 import 'package:zarq_messenger/screens/style_screen.dart';
 import 'package:zarq_messenger/screens/tutorial_screen.dart';
-import 'package:zarq_messenger/screens/premium_plans_screen.dart';
 import 'profile_background.dart';
 import 'login_screen.dart';
 import 'about_screen.dart';
@@ -1264,122 +1263,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     Navigator.pop(context, 'open_style');
   }
 
-  Widget _buildPremiumSection({
-    required double sectionTitleSize,
-    required double iconSize1,
-    required double bodyTextSize,
-    required double spacing2,
-    required double spacing3,
-    required double borderRadius1,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          "Premium Subscription",
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: sectionTitleSize,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        SizedBox(height: spacing2 * 0.75),
 
-        // TODO: PREMIUM - DISABLED FOR NOW (TEST MODE)
-        // Uncomment the section below when switching to Razorpay LIVE mode
-        // and comment out the "Coming Soon" section
-
-        /* ==================== ENABLE THIS WHEN GOING LIVE ====================
-        // Info about premium
-        Container(
-          padding: EdgeInsets.all(spacing3),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [
-                const Color(0xFFF59E0B).withOpacity(0.2),
-                const Color(0xFF8B5CF6).withOpacity(0.2),
-              ],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            borderRadius: BorderRadius.circular(borderRadius1 * 0.4),
-            border: Border.all(color: const Color(0xFFF59E0B).withOpacity(0.5)),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.workspace_premium, color: const Color(0xFFF59E0B), size: iconSize1),
-              SizedBox(width: spacing3),
-              Expanded(
-                child: Text(
-                  'Unlock unlimited AI power and premium features',
-                  style: TextStyle(color: Colors.white70, fontSize: bodyTextSize),
-                ),
-              ),
-            ],
-          ),
-        ),
-        SizedBox(height: spacing2 * 0.75),
-
-        // Upgrade to Premium Button
-        _buildActionButton(
-          icon: Icons.star,
-          text: 'Upgrade to Premium',
-          onTap: _navigateToPremium,
-          color: const Color(0xFFF59E0B),
-          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(45.0, 60.0),
-          borderRadius: borderRadius1 * 0.75,
-        ),
-        ==================== END LIVE VERSION ==================== */
-
-        // ==================== TEMPORARY: COMING SOON (TEST MODE) ====================
-        // Info about premium - Coming Soon
-        Container(
-          padding: EdgeInsets.all(spacing3),
-          decoration: BoxDecoration(
-            color: Colors.grey.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(borderRadius1 * 0.4),
-            border: Border.all(color: Colors.grey.withOpacity(0.3)),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.lock, color: Colors.grey, size: iconSize1),
-              SizedBox(width: spacing3),
-              Expanded(
-                child: Text(
-                  'Premium features launching soon with live payments',
-                  style: TextStyle(
-                    color: Colors.white70,
-                    fontSize: bodyTextSize,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        SizedBox(height: spacing2 * 0.75),
-
-        // Upgrade to Premium Button - Disabled (Coming Soon)
-        _buildDisabledActionButton(
-          icon: Icons.lock,
-          text: 'Coming Soon',
-          color: Colors.grey,
-          buttonHeight: (MediaQuery.of(context).size.height * 0.065).clamp(
-            45.0,
-            60.0,
-          ),
-          borderRadius: borderRadius1 * 0.75,
-        ),
-        // ==================== END COMING SOON VERSION ====================
-      ],
-    );
-  }
-
-  void _navigateToPremium() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const PremiumPlansScreen()),
-    );
-  }
 
   Widget _buildAboutSection({
     required double sectionTitleSize,

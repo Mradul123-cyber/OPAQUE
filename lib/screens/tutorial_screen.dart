@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'tutorial_e2ee_screen.dart';
 import 'tutorial_chat_screen.dart';
-import 'tutorial_ai_screen.dart';
 import 'tutorial_backup_screen.dart';
 import 'tutorial_signal_screen.dart';
 
@@ -49,17 +48,7 @@ class TutorialScreen extends StatelessWidget {
               MaterialPageRoute(builder: (context) => const TutorialChatScreen()),
             ),
           ),
-          const SizedBox(height: 16),
-          _buildTutorialCard(
-            context: context,
-            icon: Icons.psychology_rounded,
-            title: 'AI Assistant',
-            color: Colors.purpleAccent,
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const TutorialAIScreen()),
-            ),
-          ),
+
           const SizedBox(height: 16),
           _buildTutorialCard(
             context: context,

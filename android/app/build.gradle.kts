@@ -159,8 +159,6 @@ dependencies {
     // Glide for image loading
     implementation("com.github.bumptech.glide:glide:4.16.0")
 
-    // Razorpay Android SDK for native payment handling
-    implementation("com.razorpay:checkout:1.6.40")
 
     // WorkManager for background tasks
     implementation("androidx.work:work-runtime-ktx:2.9.0")

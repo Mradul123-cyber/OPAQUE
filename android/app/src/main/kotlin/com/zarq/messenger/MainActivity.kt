@@ -27,7 +27,6 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import com.razorpay.PaymentResultListener
 import java.util.Calendar
 import java.io.File
 import androidx.work.WorkManager
@@ -36,7 +35,7 @@ import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import java.util.concurrent.TimeUnit
 
-class MainActivity : FlutterActivity(), PaymentResultListener {
+class MainActivity : FlutterActivity() {
 
     // Method channels
     private val SIGNAL_CHANNEL = "com.zarq/signal"
@@ -46,7 +45,6 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
     private val NATIVE_BACKUP_CHANNEL = "com.zarq/native_backup"  // New channel for native auto-backup
     private val OVERLAY_CHANNEL = "com.zarq/overlay"
     private val VIDEO_COMPRESSION_CHANNEL = "com.zarq/video_compression"
-    private val PAYMENT_CHANNEL = "com.zarq/payment"
     private val SHARE_CHANNEL = "com.zarq/share"
 
     companion object {
@@ -76,7 +74,6 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
         setupPipChannel(flutterEngine)
         setupOverlayChannel(flutterEngine)
         setupVideoCompressionChannel(flutterEngine)
-        setupPaymentChannel(flutterEngine)
         setupShareChannel(flutterEngine)
         setupMediaStoreChannel(flutterEngine)
         setupNativeBackupChannel(flutterEngine)
@@ -125,7 +122,6 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
     private val signalManager by lazy { SignalManager(this) }
     private val backupNotificationHelper by lazy { BackupNotificationHelper(this) }
     private val videoCompressionHelper by lazy { VideoCompressionHelper(this) }
-    private val razorpayPaymentHandler by lazy { RazorpayPaymentHandler(this) }
     private val mediaStoreBackupHelper by lazy { MediaStoreBackupHelper(this) }
 
     private fun handleSignalMethods(call: MethodCall, result: MethodChannel.Result) {
@@ -1229,76 +1225,6 @@ class MainActivity : FlutterActivity(), PaymentResultListener {
                 Log.d(TAG, "Requesting overlay permission")
             }
         }
-    }
-
-    // ===== RAZORPAY PAYMENT =====
-
-    private fun setupPaymentChannel(flutterEngine: FlutterEngine) {
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PAYMENT_CHANNEL)
-            .setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "startRazorpayPayment" -> {
-                        try {
-                            val keyId = call.argument<String>("key_id")
-                                ?: throw Exception("Missing key_id")
-                            val amount = call.argument<Int>("amount")
-                                ?: throw Exception("Missing amount")
-                            val currency = call.argument<String>("currency") ?: "INR"
-                            val orderId = call.argument<String>("order_id")
-                                ?: throw Exception("Missing order_id")
-                            val name = call.argument<String>("name") ?: "Zarq Messenger"
-                            val description = call.argument<String>("description")
-                                ?: throw Exception("Missing description")
-
-                            Log.d(TAG, "Starting Razorpay payment - OrderID: $orderId, Amount: $amount")
-
-                            razorpayPaymentHandler.startPayment(
-                                keyId = keyId,
-                                amount = amount,
-                                currency = currency,
-                                orderId = orderId,
-                                name = name,
-                                description = description,
-                                callback = object : RazorpayPaymentHandler.PaymentCallback {
-                                    override fun onPaymentSuccess(orderId: String, paymentId: String, signature: String) {
-                                        Log.d(TAG, "Payment SUCCESS - PaymentID: $paymentId")
-                                        val response = mapOf(
-                                            "payment_id" to paymentId,
-                                            "order_id" to orderId,
-                                            "signature" to signature
-                                        )
-                                        result.success(response)
-                                    }
-
-                                    override fun onPaymentError(errorCode: Int, errorMessage: String) {
-                                        Log.d(TAG, "Payment ERROR - Code: $errorCode, Message: $errorMessage")
-                                        result.error("PAYMENT_ERROR", errorMessage, errorCode)
-                                    }
-                                }
-                            )
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error in startRazorpayPayment: ${e.message}", e)
-                            result.error("PAYMENT_INIT_ERROR", e.message, null)
-                        }
-                    }
-
-                    else -> result.notImplemented()
-                }
-            }
-        Log.d(TAG, "Payment channel configured on $PAYMENT_CHANNEL")
-    }
-
-    // ===== PAYMENT RESULT LISTENER IMPLEMENTATION =====
-    // These methods are called by Razorpay SDK and forwarded to the handler
-
-    override fun onPaymentSuccess(razorpayPaymentId: String?) {
-        Log.d(TAG, "🔔 MainActivity received payment SUCCESS - forwarding to handler")
-        razorpayPaymentHandler.onPaymentSuccess(razorpayPaymentId)
-    }
-
-    override fun onPaymentError(errorCode: Int, errorMessage: String?) {
-        Log.d(TAG, "🔔 MainActivity received payment ERROR - forwarding to handler")
-        razorpayPaymentHandler.onPaymentError(errorCode, errorMessage)
     }
 
     // ===== AUTO-BACKUP TRIGGER HANDLING =====
