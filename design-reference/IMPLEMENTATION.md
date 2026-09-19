@@ -59,3 +59,5 @@ About logo review: concept 09 (Conversation O — Soft) now appears in the circu
 Logo review update: concept 13 replaces concept 09 in About. User found nested circular O shapes confusing and prefers a squared inner form within a circular badge. Preview now uses a solid rounded-square conversation bubble; previous concepts retained for comparison.
 
 Logo direction correction: user wants one hollow rounded-rectangle O, tilted, inside a circular badge. Concept 14 now appears in About for review, replacing the solid bubble interpretation. No additional ring or speech bubble.
+
+Logo review concept 15: refined the user's first attached interlocking mark with rounded terminals, balanced weight and clearer gaps. Now displayed in About; earlier concepts preserved. Preview only.
