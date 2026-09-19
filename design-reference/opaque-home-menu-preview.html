@@ -1,0 +1,395 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Opaque · Home menu</title></head><body><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+#opaque-preview{font:14px/1.45 Inter,Arial,sans-serif;color:#202127;color-scheme:light;width:100%;max-width:360px;margin:0 auto;--ol-line:#ededf0;--ol-muted:#73747c;--ol-blue:#335fe8}
+#opaque-preview *{box-sizing:border-box}#opaque-preview [hidden]{display:none!important}
+#opaque-preview .ol-phone{background:#fff;border:1px solid #e8e8ec;border-radius:26px;overflow:hidden;aspect-ratio:9/20;display:flex;flex-direction:column}
+#opaque-preview [data-screen]{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+#opaque-preview .ol-status{height:30px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:5px 22px 0;font-size:11px;font-weight:600;color:#30323a}
+#opaque-preview .ol-status-icons{display:flex;align-items:center;gap:5px}
+#opaque-preview .ol-status-icons svg{width:13px;height:13px}
+#opaque-preview .ol-gesture{height:23px;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:#fff}
+#opaque-preview .ol-gesture:before{content:'';height:4px;width:104px;background:#202127;border-radius:4px}
+#opaque-preview button,#opaque-preview input{font:inherit}#opaque-preview button{background:none;border:0;cursor:pointer;color:inherit;min-height:44px;transition:background .18s,transform .18s}#opaque-preview button:active{transform:scale(.98)}#opaque-preview button:focus-visible,#opaque-preview input:focus-visible{outline:2px solid var(--ol-blue);outline-offset:3px}
+#opaque-preview .ol-top{padding:23px 23px 24px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--ol-line)}
+#opaque-preview .ol-brand{font-size:19px;letter-spacing:2.5px;font-weight:700;color:#17181c;display:flex;align-items:center;gap:3px}
+#opaque-preview .ol-brand-o{width:23px;height:25px;border:5px solid #17181c;border-radius:48%;position:relative;transform:rotate(-15deg);margin-right:1px}
+#opaque-preview .ol-brand-o:after{content:'';position:absolute;width:3px;height:33px;left:6px;top:-9px;background:#fff;transform:rotate(40deg)}
+#opaque-preview .ol-profile{width:38px;height:38px;min-height:38px;background:#eeeff2;border:3px solid white;box-shadow:0 0 0 1px #e6e7eb;border-radius:50%;font-size:12px;font-weight:600}
+#opaque-preview .ol-title-row{display:flex;justify-content:space-between;align-items:center;padding:25px 23px 18px}
+#opaque-preview h2{font-size:32px;font-weight:600;letter-spacing:-1.4px;margin:0;line-height:1.15}#opaque-preview .ol-sub{font-size:12px;color:var(--ol-muted);margin-top:7px}
+#opaque-preview .ol-tools{display:flex;align-items:center;gap:8px}#opaque-preview .ol-icon{display:grid;place-items:center;min-width:44px;width:44px;border-radius:12px}#opaque-preview .ol-icon:hover{background:#f4f5f7}
+#opaque-preview .ol-search{margin:2px 20px 10px;display:flex;align-items:center;gap:10px;background:#f5f5f7;border-radius:24px;padding:0 15px;color:var(--ol-muted)}#opaque-preview .ol-search svg{width:17px;height:17px;flex-shrink:0}#opaque-preview .ol-search input{border:0;background:transparent;width:100%;min-width:0;height:44px;font-size:16px;color:#202127}#opaque-preview .ol-search input::placeholder{font-size:13px;font-weight:400;color:#7b7d86;opacity:1}
+#opaque-preview .ol-filter{margin:14px 20px 12px;padding:3px;display:flex;align-self:flex-start;gap:2px;background:#f1f2f5;border-radius:999px}#opaque-preview .ol-filter button{position:relative;font-family:Inter,Arial,sans-serif;font-size:12px;font-weight:500;letter-spacing:-.1px;line-height:1;padding:0 16px;min-width:58px;min-height:32px;border-radius:999px;color:#737680;background:transparent}#opaque-preview .ol-filter button:before{content:'';position:absolute;inset:-6px 0;border-radius:999px}#opaque-preview .ol-filter button[aria-pressed=true]{background:#fff;color:#252830;box-shadow:0 1px 3px #20212714}
+#opaque-preview .ol-list{min-height:0;flex:1;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:0 15px}
+#opaque-preview .ol-section{display:flex;align-items:center;gap:10px;font-size:10px;font-weight:600;letter-spacing:1.2px;color:#7a7b84;padding:9px 8px 4px}#opaque-preview .ol-section:after{content:'';height:1px;background:var(--ol-line);flex:1}
+#opaque-preview .ol-row{display:flex;align-items:center;gap:12px;width:100%;padding:16px 8px;text-align:left;border-radius:12px}#opaque-preview .ol-row:hover{background:#f7f8fa}
+#opaque-preview .ol-avatar{display:grid;place-items:center;flex:0 0 44px;height:44px;border-radius:50%;color:#4c4f58;background:linear-gradient(145deg,#f5f5f7,#e5e6eb);border:1px solid #e6e7ed;font-size:13px;font-weight:500}#opaque-preview .ol-avatar.group{border-radius:13px;background:#fafafa;border-style:dashed;color:#73747c}
+#opaque-preview .ol-copy{flex:1;min-width:0}#opaque-preview .ol-name{font-weight:500;font-size:14px;display:block;margin-bottom:5px;letter-spacing:-.15px}#opaque-preview .ol-unread .ol-name{font-weight:600}#opaque-preview .ol-preview{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#7c7d85}#opaque-preview .ol-unread .ol-preview{color:#4e515c}
+#opaque-preview .ol-meta{display:flex;flex-direction:column;align-items:flex-end;gap:12px;font-size:10px;color:#81828b;flex-shrink:0}#opaque-preview .ol-dot{width:7px;height:7px;border-radius:50%;background:var(--ol-blue)}
+#opaque-preview .ol-nav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;margin:0;padding:10px 14px 3px;background:#fff;border:0;border-top:1px solid #ededf1;border-radius:0;box-shadow:none;flex-shrink:0}#opaque-preview .ol-nav button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:11px;font-weight:500;letter-spacing:-.1px;color:#7b7e89;min-width:0;min-height:57px;border-radius:17px;padding:0}#opaque-preview .ol-nav-icon{height:34px;width:38px;display:grid;place-items:center;border-radius:13px}#opaque-preview .ol-nav-icon svg{width:22px;height:22px;stroke-width:1.7}#opaque-preview .ol-nav button[aria-pressed=true]{color:#232630}#opaque-preview .ol-nav button[aria-pressed=true] .ol-nav-icon{background:#252832;color:#fff}#opaque-preview .ol-nav button[aria-pressed=true] .ol-nav-icon svg{stroke-width:1.9}#opaque-preview .ol-nav button:hover:not([aria-pressed=true]) .ol-nav-icon{background:#eceef3;color:#454955}
+#opaque-preview .ol-chat-top{display:flex;align-items:center;gap:10px;padding:17px 13px;border-bottom:1px solid var(--ol-line)}#opaque-preview .ol-chat-top .ol-copy{font-size:13px}#opaque-preview .ol-chat-top .ol-sub{font-size:10px;margin-top:3px;color:#737780}
+#opaque-preview .ol-messages{display:flex;flex-direction:column;gap:15px;min-height:0;flex:1;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:23px 20px 30px;background:#fdfdfd}#opaque-preview .ol-date{font-size:10px;text-align:center;color:#909098;margin-bottom:18px;letter-spacing:.5px}
+#opaque-preview .ol-bubble{font-size:14px;line-height:1.6;background:#f0f1f4;color:#333640;padding:12px 15px;max-width:86%;border-radius:3px 16px 16px 16px;align-self:flex-start;overflow-wrap:anywhere}#opaque-preview .ol-bubble.mine{background:#24272f;color:white;align-self:flex-end;border-radius:16px 3px 16px 16px}#opaque-preview .ol-stamp{font-size:10px;margin-top:5px;text-align:right;opacity:.65}
+#opaque-preview .ol-composer{border-top:1px solid var(--ol-line);display:flex;align-items:center;gap:7px;padding:15px 14px 20px}#opaque-preview .ol-composer input{width:100%;min-width:0;height:46px;background:#f5f5f7;border:0;border-radius:12px;padding:0 12px;font-size:16px}#opaque-preview .ol-composer button[type=submit]{background:#24272f;color:#fff;border-radius:12px}
+#opaque-preview .ol-empty{padding:28px 8px;color:#73747c;font-size:13px}#opaque-preview .ol-setting{padding:15px 8px;border-bottom:1px solid var(--ol-line)}
+#opaque-preview .ol-top{padding:15px 20px 19px;flex-shrink:0}#opaque-preview .ol-title-row{padding:22px 20px 17px;flex-shrink:0}#opaque-preview .ol-filter,#opaque-preview .ol-search,#opaque-preview .ol-chat-top,#opaque-preview .ol-composer{flex-shrink:0}#opaque-preview .ol-composer{padding-bottom:8px}#opaque-preview .ol-bubble{flex-shrink:0}
+@media(max-width:350px){#opaque-preview .ol-top{padding:19px 17px}#opaque-preview .ol-title-row{padding:22px 17px 16px}#opaque-preview .ol-filter{margin-left:17px}#opaque-preview .ol-list{padding:0 9px}#opaque-preview .ol-row{gap:9px}#opaque-preview .ol-meta{font-size:10px}#opaque-preview .ol-nav{padding-left:9px;padding-right:9px}}
+@media(prefers-reduced-motion:reduce){#opaque-preview button{transition:none}}
+#opaque-preview .ol-nav{grid-template-columns:repeat(5,minmax(0,1fr))}
+#opaque-preview [data-screen=inbox]{position:relative}
+#opaque-preview .ol-add-area{position:relative;display:flex;justify-content:flex-end;padding:8px 20px 16px;flex-shrink:0}
+#opaque-preview .ol-add{width:44px;height:44px;display:grid;place-items:center;border-radius:14px;background:#252832;color:#fff;box-shadow:0 2px 6px #20212712;transition:background .22s,box-shadow .22s;position:relative;z-index:4}
+#opaque-preview .ol-add svg{width:22px;height:22px;stroke-width:1.8;transition:transform .22s cubic-bezier(.2,.8,.2,1)}
+#opaque-preview .ol-add-area.is-open .ol-add{background:#3b4050;color:#fff;box-shadow:none}
+#opaque-preview .ol-add-area.is-open .ol-add svg{transform:rotate(45deg) scale(.86)}
+#opaque-preview .ol-add-menu{position:absolute;bottom:72px;right:20px;background:#fff;border:1px solid #e9eaf0;border-radius:18px;padding:6px;box-shadow:0 8px 24px #20212714,0 2px 5px #20212706;z-index:3;width:216px;max-width:calc(100% - 40px);transform-origin:calc(100% - 22px) bottom;transform:translateY(8px) scale(.97);opacity:0;visibility:hidden;pointer-events:none;transition:transform .3s cubic-bezier(.2,.8,.2,1),opacity .2s,visibility 0s .3s}
+#opaque-preview .ol-add-area.is-open .ol-add-menu{transform:translateY(0) scale(1);opacity:1;visibility:visible;pointer-events:auto;transition-delay:0s}
+#opaque-preview .ol-add-menu button{display:flex;align-items:center;gap:10px;width:100%;min-height:46px;text-align:left;padding:7px 8px;border-radius:12px;font-size:12px;opacity:0;transform:translateY(8px);transition:transform .28s,opacity .2s,background .18s}
+#opaque-preview .ol-add-area.is-open .ol-add-menu button{opacity:1;transform:translateY(0);transition-delay:55ms}
+#opaque-preview .ol-add-area.is-open .ol-add-menu button:last-child{transition-delay:95ms}
+#opaque-preview .ol-add-menu button:hover{background:#f5f6f8}
+#opaque-preview .ol-action-icon{display:grid;place-items:center;width:30px;height:30px;flex-shrink:0;border-radius:10px;background:#f0f2f6;color:#525968}
+#opaque-preview .ol-action-icon svg{width:18px;height:18px;stroke-width:1.7}
+#opaque-preview .ol-action-copy{display:flex;flex-direction:column;gap:4px;font-weight:500;letter-spacing:-.15px}
+#opaque-preview .ol-action-copy small{font-size:11px;color:#858792;font-weight:400;letter-spacing:0}
+#opaque-preview .ol-add-menu button+button{margin-top:9px;position:relative}#opaque-preview .ol-add-menu button+button:before{content:' ';position:absolute;top:-5px;left:48px;right:8px;height:1px;background:#e9ebf0;pointer-events:none}
+@media(prefers-reduced-motion:reduce){#opaque-preview .ol-add,#opaque-preview .ol-add svg,#opaque-preview .ol-add-menu,#opaque-preview .ol-add-menu button{transition:none!important}}
+#opaque-preview .ol-note{display:block;width:100%;min-height:180px;resize:vertical;border:1px solid #e8e9ee;border-radius:16px;background:#fafafb;padding:16px;font:14px/1.6 Inter,Arial,sans-serif;color:#333640}
+#opaque-preview .ol-preview-form{display:grid;gap:14px;padding:8px}
+#opaque-preview .ol-preview-form label{display:grid;gap:8px;font-size:13px}
+#opaque-preview .ol-preview-form input{min-width:0;width:100%;height:44px;padding:0 12px;border:1px solid #e6e7ec;border-radius:12px;font-size:16px}
+#opaque-preview .ol-preview-form button{border-radius:12px;background:#252832;color:white}
+#opaque-preview .ol-preview-form p{font-size:12px;color:#73747c;margin:0}
+#opaque-preview .ol-add-menu:after{content:'';position:absolute;right:17px;bottom:-5px;width:9px;height:9px;background:#fff;border-right:1px solid #e9eaf0;border-bottom:1px solid #e9eaf0;transform:rotate(45deg);pointer-events:none}
+#opaque-preview .ol-action-copy{flex:1;white-space:nowrap}
+#opaque-preview .ol-action-arrow{width:14px;height:14px;flex-shrink:0;color:#9399a5;stroke-width:1.6}</style>
+<style>
+#opaque-preview [data-screen=chat]{position:relative;background:#fafbfe}
+#opaque-preview .ol-chat-top{gap:8px;padding:12px 10px 15px;background:#fff;border-color:#edf0f5;flex-shrink:0}
+#opaque-preview .ol-chat-top .ol-icon{width:36px;min-width:36px}
+#opaque-preview .ol-chat-top .ol-avatar{flex-basis:38px;height:38px;font-size:12px;background:#eaf0fc;color:#52668e;border-color:#e1e8f5}
+#opaque-preview .ol-chat-top strong{font-size:14px;font-weight:600;letter-spacing:-.2px}
+#opaque-preview .ol-chat-top .ol-sub{font-size:11px;color:#858c9c}
+#opaque-preview .ol-chat-top svg{width:20px;height:20px;stroke-width:1.7}
+#opaque-preview .ol-messages{background:#fafbfe;padding:20px 16px;gap:7px}
+#opaque-preview .ol-date{font-size:11px;letter-spacing:0;margin:0 0 13px;color:#9299a7}
+#opaque-preview .ol-bubble{padding:10px 13px;font-size:13px;line-height:1.6;max-width:85%;border:1px solid #edf0f5;border-radius:17px 17px 17px 5px;background:#fff;color:#343b49}
+#opaque-preview .ol-bubble.mine{background:#3868d9;border-color:#3868d9;color:#fff;border-radius:17px 17px 5px 17px}
+#opaque-preview .ol-bubble.mine+.ol-bubble:not(.mine),#opaque-preview .ol-bubble:not(.mine)+.ol-bubble.mine{margin-top:11px}
+#opaque-preview .ol-stamp{font-size:10px;line-height:1.2;margin-top:5px;opacity:.65}
+#opaque-preview .ol-encryption{display:flex;justify-content:center;align-items:center;gap:5px;font-size:10px;color:#9aa2b1;padding:0 0 18px}
+#opaque-preview .ol-encryption svg{width:12px;height:12px}
+#opaque-preview .ol-composer{position:relative;background:#fff;border-top:1px solid #edf0f5;padding:12px 12px 10px;gap:8px;align-items:flex-end}
+#opaque-preview .ol-input-shell{display:flex;align-items:center;flex:1;min-width:0;background:#f3f5f9;border:1px solid #e9edf4;border-radius:24px;padding:0 4px}
+#opaque-preview .ol-input-shell input{background:transparent;border:0;padding:0 2px;font-size:16px;height:46px}
+#opaque-preview .ol-input-shell input::placeholder{font-size:13px;color:#939ba9}
+#opaque-preview .ol-input-shell .ol-icon{width:36px;min-width:36px;min-height:44px;color:#7b879b;border-radius:50%;padding:8px}
+#opaque-preview .ol-input-shell svg{width:19px;height:19px;stroke-width:1.7}
+#opaque-preview .ol-input-shell [data-ai]{color:#637daf}
+#opaque-preview .ol-composer button[type=submit]{background:#3868d9;color:white;width:46px;min-width:46px;height:46px;border-radius:50%;box-shadow:0 3px 9px #3868d91c}
+#opaque-preview .ol-composer button[type=submit] svg{width:20px;height:20px;stroke-width:1.9}
+#opaque-preview .ol-chat-panel{position:absolute;bottom:76px;left:12px;right:12px;background:#fff;border:1px solid #e8edf5;border-radius:20px;box-shadow:0 8px 28px #25385d15;padding:12px;z-index:5}
+#opaque-preview .ol-chat-panel header{display:flex;align-items:center;justify-content:space-between;padding:0 4px 7px;font-size:12px;font-weight:500;color:#606d82}
+#opaque-preview .ol-attach-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
+#opaque-preview .ol-attach-grid button{display:flex;flex-direction:column;align-items:center;gap:8px;padding:13px 4px;border-radius:14px;font-size:11px;background:#f6f8fc;color:#5b6982}
+#opaque-preview .ol-attach-grid svg{width:23px;height:23px;stroke-width:1.6}
+#opaque-preview .ol-ai-options{display:grid;gap:4px}
+#opaque-preview .ol-ai-options button{text-align:left;padding:0 12px;border-radius:12px;font-size:12px;background:#f6f8fc}
+#opaque-preview .ol-chat-feedback{font-size:11px;line-height:1.5;color:#738199;padding:10px 20px;background:#fff;flex-shrink:0}
+#opaque-preview .ol-recording button[type=submit]{background:#b34a59}
+</style>
+<style>
+#opaque-preview button:focus-visible{outline:2px solid #a6adb9;outline-offset:2px}
+#opaque-preview input:focus-visible{outline:1px solid #bcc2cc;outline-offset:1px}
+#opaque-preview .ol-input-shell input:focus-visible,#opaque-preview .ol-search input:focus-visible{outline:none}
+#opaque-preview .ol-input-shell:focus-within,#opaque-preview .ol-search:focus-within{box-shadow:inset 0 0 0 1px #c6cbd3}
+#opaque-preview .ol-chat-top{gap:5px;padding:9px 9px 12px}
+#opaque-preview .ol-chat-top .ol-icon{min-width:32px;width:32px;padding:6px}
+#opaque-preview .ol-chat-top .ol-avatar{margin-right:4px}
+#opaque-preview .ol-chat-top strong{display:block;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+#opaque-preview .ol-messages{background:linear-gradient(165deg,#fcfcfd 0%,#f6f8fc 100%)}
+#opaque-preview .ol-bubble{background:#eff0f3;border:0;color:#353943;border-radius:4px 16px 16px 16px;box-shadow:none}
+#opaque-preview .ol-bubble.mine{background:linear-gradient(135deg,#507bcf 0%,#3865bc 100%);border:0;box-shadow:0 2px 4px #315ba00c;border-radius:16px 4px 16px 16px}
+#opaque-preview .ol-stamp{display:flex;justify-content:flex-end;align-items:center;gap:5px;opacity:.76}
+#opaque-preview .ol-stamp svg{width:13px;height:13px;stroke-width:1.7;flex-shrink:0}
+#opaque-preview .ol-composer{padding:7px 11px 5px;border-top:0;gap:7px;align-items:center}
+#opaque-preview .ol-input-shell{background:linear-gradient(110deg,#f4f5f7,#f0f2f6);border-color:#e9ebef;border-radius:22px}
+#opaque-preview .ol-input-shell input{height:40px}
+#opaque-preview .ol-input-shell .ol-icon{min-height:40px;height:40px;width:34px;min-width:34px}
+#opaque-preview .ol-composer button[type=submit]{width:42px;min-width:42px;height:42px;min-height:42px;border-radius:15px;background:linear-gradient(140deg,#537bca,#3c62ab);box-shadow:0 2px 6px #365c9a14}
+#opaque-preview .ol-composer button[type=submit] svg{width:19px;height:19px}
+#opaque-preview .ol-recording button[type=submit]{background:linear-gradient(140deg,#bc6470,#a74957)}
+#opaque-preview .ol-chat-menu{position:absolute;top:62px;right:12px;width:184px;background:#fff;border:1px solid #e9ebf0;border-radius:15px;padding:5px;box-shadow:0 7px 22px #20212715;z-index:6}
+#opaque-preview .ol-chat-menu button{display:flex;align-items:center;gap:10px;width:100%;font-size:12px;text-align:left;padding:0 10px;border-radius:10px}
+#opaque-preview .ol-chat-menu button:hover{background:#f4f5f7}
+#opaque-preview .ol-chat-menu svg{width:17px;height:17px;color:#737d8e}
+#opaque-preview .ol-chat-menu button+button{border-top:1px solid #f0f1f4}
+</style>
+<style>
+#opaque-preview .ol-bubble{display:block;padding:9px 11px;min-width:0}
+#opaque-preview .ol-bubble:after{content:'';display:block;clear:both}
+#opaque-preview .ol-stamp{float:none;display:flex;align-items:center;justify-content:flex-start;gap:3px;margin:5px 0 0;font-size:9px;line-height:12px;text-align:left;white-space:nowrap;opacity:.7}
+#opaque-preview .ol-stamp svg{width:11px;height:11px;stroke-width:1.7}
+</style><style>
+#opaque-preview [data-attachments]{bottom:65px;left:11px;right:11px;padding:8px 16px 13px;border-radius:24px;background:linear-gradient(155deg,#fff 30%,#f7f9fd);border:1px solid #e5eaf2;box-shadow:0 12px 36px #2437591c;transform-origin:24px bottom;animation:oc-attach-in .22s cubic-bezier(.2,.8,.2,1)}
+#opaque-preview [data-attachments] header{padding:0 0 7px;color:#525f73;font-size:12px;letter-spacing:-.1px}
+#opaque-preview [data-attachments] header .ol-icon{width:32px;min-width:32px;min-height:36px;color:#9099a8}
+#opaque-preview [data-attachments] header svg{width:16px;height:16px;stroke-width:1.7}
+#opaque-preview .ol-attach-grid{grid-template-columns:repeat(3,1fr);gap:10px 16px;padding:3px 4px 10px;border-bottom:1px solid #e9edf4}
+#opaque-preview .ol-attach-grid button{height:56px;min-height:56px;justify-content:center;padding:0;border-radius:17px;background:linear-gradient(145deg,#edf2fb,#e7edf7);color:#5b749c;border:1px solid #e3eaf4;box-shadow:inset 0 1px 0 #ffffffd9;transition:transform .18s,background .18s}
+#opaque-preview .ol-attach-grid button:nth-child(2){background:linear-gradient(145deg,#eff0f7,#e8eaf3);color:#666e91;border-color:#e5e7f0}
+#opaque-preview .ol-attach-grid button:nth-child(n+4){background:linear-gradient(145deg,#f1f4f8,#eaf0f5);color:#627c8e;border-color:#e6ecf1}
+#opaque-preview .ol-attach-grid button:hover{background:#e0e9f7;transform:translateY(-2px)}
+#opaque-preview .ol-attach-grid svg{width:25px;height:25px;stroke-width:1.55}
+#opaque-preview .ol-attach-caption{font-size:10px;color:#9aa3b1;padding-top:9px;text-align:center;letter-spacing:.15px}
+@keyframes oc-attach-in{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+@media(prefers-reduced-motion:reduce){#opaque-preview [data-attachments]{animation:none}#opaque-preview .ol-attach-grid button{transition:none}}
+</style><style>
+#opaque-preview .ol-attach-grid{gap:13px 12px;padding:5px 0 12px}
+#opaque-preview .ol-attach-grid button{height:76px;min-height:76px;gap:7px;border:0;background:transparent!important;box-shadow:none;border-radius:13px;color:#4a5465}
+#opaque-preview .ol-attachment-symbol{display:grid;place-items:center;width:46px;height:46px;border-radius:15px;background:linear-gradient(145deg,#a77aef,#8055d6);color:#fff;box-shadow:0 3px 7px #8558d321,inset 0 1px 0 #ffffff30}
+#opaque-preview [data-share=Camera] .ol-attachment-symbol{background:linear-gradient(145deg,#f27da5,#dc527f);box-shadow:0 3px 7px #dc527f21,inset 0 1px 0 #ffffff30}
+#opaque-preview [data-share=Documents] .ol-attachment-symbol{background:linear-gradient(145deg,#699aef,#4576d7);box-shadow:0 3px 7px #4576d721,inset 0 1px 0 #ffffff30}
+#opaque-preview [data-share=Contact] .ol-attachment-symbol{background:linear-gradient(145deg,#51bfc4,#299ca7);box-shadow:0 3px 7px #299ca721,inset 0 1px 0 #ffffff30}
+#opaque-preview [data-share=Location] .ol-attachment-symbol{background:linear-gradient(145deg,#65bf8e,#359b68);box-shadow:0 3px 7px #359b6821,inset 0 1px 0 #ffffff30}
+#opaque-preview [data-share=Poll] .ol-attachment-symbol{background:linear-gradient(145deg,#efad61,#db873d);box-shadow:0 3px 7px #db873d21,inset 0 1px 0 #ffffff30}
+#opaque-preview .ol-attachment-label{font-size:11px;font-weight:500;line-height:15px;color:#596273;letter-spacing:-.1px}
+#opaque-preview .ol-attach-grid svg{width:23px;height:23px;stroke-width:1.7}
+#opaque-preview .ol-attach-caption{display:none}
+#opaque-preview .ol-attach-grid{border-bottom:0;padding-bottom:4px}
+</style><style>
+#opaque-preview [data-attachments]{position:relative;bottom:auto;left:auto;right:auto;flex-shrink:0;margin:3px 11px 8px;transform-origin:24px top;box-shadow:0 3px 12px #2437590a;animation:oc-attach-below .22s cubic-bezier(.2,.8,.2,1)}
+@keyframes oc-attach-below{from{opacity:0;transform:translateY(-8px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+@media(prefers-reduced-motion:reduce){#opaque-preview [data-attachments]{animation:none}}
+</style><style>
+#opaque-preview .ol-search{margin:12px 20px 0;border-radius:19px;padding:0 13px;gap:8px}
+#opaque-preview .ol-search input{height:36px}
+#opaque-preview .ol-search input::placeholder{font-size:12px}
+#opaque-preview .ol-search svg{width:16px;height:16px}
+#opaque-preview .ol-filter{margin:12px 20px 8px;padding:2px;gap:1px;border-radius:16px;background:#f1f2f5}
+#opaque-preview .ol-filter button{font-size:11px;line-height:1;min-height:27px;min-width:47px;padding:0 12px;letter-spacing:0;border-radius:14px}
+#opaque-preview .ol-filter button:before{inset:-8px 0}
+#opaque-preview .ol-filter button[aria-pressed=true]{box-shadow:0 1px 2px #20212710}
+</style><style>
+#opaque-preview .ol-ai-toast{position:absolute;bottom:67px;left:20px;right:20px;z-index:8;display:flex;align-items:center;justify-content:center;gap:9px;min-height:42px;padding:10px 14px;border-radius:14px;background:#303746;color:#f5f7fc;box-shadow:0 4px 16px #20212720;font-size:12px;pointer-events:none;animation:oc-attach-in .18s ease-out}
+#opaque-preview .ol-ai-toast svg{width:17px;height:17px;color:#c4d1ee}
+@media(prefers-reduced-motion:reduce){#opaque-preview .ol-ai-toast{animation:none}}
+</style><style>
+#opaque-preview .ol-top{display:flex;justify-content:space-between;position:relative;width:100%;min-height:60px;padding:12px 17px 4px}
+#opaque-preview .ol-top .ol-brand{position:absolute;left:50%;top:calc(50% + 4px);transform:translate(-50%,-50%);width:max-content;white-space:nowrap}
+#opaque-preview .ol-top .ol-brand>span:last-child{margin-right:-2.5px}
+#opaque-preview .ol-top>[data-home-more]{color:#59606e}
+#opaque-preview .ol-home-menu{position:absolute;top:55px;right:17px;width:156px;padding:5px;background:#fff;border:1px solid #e9ebf0;border-radius:14px;box-shadow:0 7px 22px #20212715;z-index:10}
+#opaque-preview .ol-home-menu button{display:flex;gap:10px;align-items:center;width:100%;padding:0 10px;font-size:12px;border-radius:10px;text-align:left}
+#opaque-preview .ol-home-menu button:hover{background:#f4f5f7}
+#opaque-preview .ol-home-menu svg{width:17px;height:17px;color:#747d8d}
+</style><style>
+#opaque-preview .ol-call-list{display:flex;flex-direction:column;padding:0 20px}
+#opaque-preview .ol-call-day{font-size:11px;font-weight:500;color:#9a9faa;padding:10px 0 7px}
+#opaque-preview .ol-call-row{display:flex;align-items:center;gap:11px;padding:14px 0;border-bottom:1px solid #f0f1f4}
+#opaque-preview .ol-call-row .ol-avatar{width:41px;height:41px;flex-basis:41px;background:linear-gradient(145deg,#f0f3fa,#e7ebf4);color:#727f96;border:0}
+#opaque-preview .ol-call-row .ol-name{font-size:13px;margin-bottom:5px}
+#opaque-preview .ol-call-detail{display:flex;gap:4px;align-items:center;white-space:nowrap;font-size:10px;color:#959ca9}
+#opaque-preview .ol-call-detail svg{width:12px;height:12px;color:#728d84}
+#opaque-preview .ol-call-missed .ol-name,#opaque-preview .ol-call-missed .ol-call-detail svg{color:#c5757e}
+#opaque-preview .ol-call-row>.ol-icon{width:36px;min-width:36px;color:#7184a3}
+#opaque-preview .ol-call-row>.ol-icon svg{width:19px;height:19px;stroke-width:1.7}
+#opaque-preview .ol-call-notice{font-size:11px;color:#778296;background:#f3f5f9;padding:12px;border-radius:12px;margin-top:12px}
+#opaque-preview .ol-calls-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:20px 0 60px}
+#opaque-preview .ol-empty-phone{display:grid;place-items:center;width:74px;height:74px;border-radius:26px;background:linear-gradient(145deg,#f1f4fa,#e9eef7);color:#8b9bb5;margin-bottom:20px;box-shadow:inset 0 1px 0 #fff}
+#opaque-preview .ol-empty-phone svg{width:30px;height:30px;stroke-width:1.35}
+#opaque-preview .ol-calls-empty strong{font-size:16px;font-weight:500;letter-spacing:-.3px;color:#535e70}
+#opaque-preview .ol-calls-empty p{font-size:12px;line-height:1.8;color:#969eac;margin:9px 0 0}
+</style><style>
+#opaque-preview .ol-demo-toggle{font-size:10px;color:#78849a;background:#f2f4f8;border-radius:12px;padding:0 10px;min-height:32px;max-width:108px}
+#opaque-preview .ol-friend-tabs{display:grid;grid-template-columns:1.2fr 1fr .65fr 1.2fr;gap:2px;padding:3px;background:#f1f2f5;border-radius:14px;margin:0 4px 17px}
+#opaque-preview .ol-friend-tabs button{font-size:10px;min-height:34px;padding:0 3px;white-space:nowrap;border-radius:11px;color:#888f9c;font-weight:500}
+#opaque-preview .ol-friend-tabs button[aria-pressed=true]{background:#fff;color:#343d4c;box-shadow:0 1px 3px #2021270d}
+#opaque-preview .ol-friend-count{font-size:11px;color:#929ba9;margin:7px 8px 5px}
+#opaque-preview .ol-friend-row{display:flex;align-items:center;gap:10px;padding:15px 7px;border-bottom:1px solid #f0f1f4}
+#opaque-preview .ol-friend-row .ol-avatar{flex-basis:40px;height:40px;border:0;background:linear-gradient(145deg,#f0f3fa,#e7ecf5);color:#7a8ba7}
+#opaque-preview .ol-friend-row .ol-name{font-size:13px;margin-bottom:3px}
+#opaque-preview .ol-friend-user{display:block;font-size:11px;color:#919aaa}
+#opaque-preview .ol-friend-phone{display:block;font-size:11px;color:#758499;margin-top:5px;letter-spacing:.15px}
+#opaque-preview .ol-friend-actions{display:flex;gap:2px}
+#opaque-preview .ol-friend-action{display:grid;place-items:center;width:36px;min-height:40px;border-radius:12px;color:#718ab1;background:#f1f5fb}
+#opaque-preview .ol-friend-action.secondary{color:#9ba3af;background:transparent}
+#opaque-preview .ol-friend-action svg{width:17px;height:17px;stroke-width:1.7}
+#opaque-preview .ol-friend-search{display:flex;gap:8px;margin:0 5px 13px}
+#opaque-preview .ol-friend-search label{display:flex;align-items:center;gap:8px;flex:1;min-width:0;background:#f3f5f8;border-radius:15px;padding:0 11px;color:#919cad}
+#opaque-preview .ol-friend-search label:focus-within{box-shadow:inset 0 0 0 1px #c6cbd3}
+#opaque-preview .ol-friend-search input{width:100%;min-width:0;height:40px;border:0;background:transparent;font-size:16px;color:#4a5568;outline:none}
+#opaque-preview .ol-friend-search input::placeholder{font-size:12px;color:#979fad}
+#opaque-preview .ol-friend-search svg{width:18px;height:18px;flex-shrink:0}
+#opaque-preview .ol-contact-switch{display:grid;place-items:center;width:42px;min-width:42px;min-height:40px;border-radius:14px;background:#eff3fa;color:#7d91b1}
+#opaque-preview .ol-contact-switch[aria-pressed=true]{background:#dfe8f6;color:#496c9f}
+</style><style>
+#opaque-preview .ol-list.ol-friends-list{padding:0}
+#opaque-preview .ol-friend-tabs{position:sticky;top:0;z-index:2;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;margin:0 0 18px;padding:0;background:#fff;border:0;border-bottom:1px solid #e9edf3;border-radius:0}
+#opaque-preview .ol-friend-tabs button{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:65px;padding:10px 2px 12px;border-radius:0;font-size:10px;color:#8591a3;box-shadow:none}
+#opaque-preview .ol-friend-tabs button svg{width:19px;height:19px;stroke-width:1.7;color:var(--ft-color)}
+#opaque-preview .ol-friend-tabs button[data-ft=mine]{--ft-color:#5884c8;--ft-tint:#eff4fc}
+#opaque-preview .ol-friend-tabs button[data-ft=received]{--ft-color:#479f7b;--ft-tint:#eef8f3}
+#opaque-preview .ol-friend-tabs button[data-ft=sent]{--ft-color:#d19450;--ft-tint:#fcf5ec}
+#opaque-preview .ol-friend-tabs button[data-ft=find]{--ft-color:#6087bd;--ft-tint:#f0f5fc}
+#opaque-preview .ol-friend-tabs button[aria-pressed=true]{color:var(--ft-color);background:linear-gradient(to bottom,#fff,var(--ft-tint));box-shadow:none}
+#opaque-preview .ol-friend-tabs button[aria-pressed=true]:after{content:'';position:absolute;bottom:-1px;left:18px;right:18px;height:2px;background:var(--ft-color);border-radius:2px}
+#opaque-preview [data-friend-tools]{margin:0 15px}
+#opaque-preview .ol-friend-count{margin:7px 22px 5px}
+#opaque-preview [data-friend-results]{padding:0 15px}
+#opaque-preview .ol-contact-switch{background:linear-gradient(145deg,#edb376,#df924c);color:#fff;box-shadow:0 2px 6px #d7954d19;border:1px solid #e6a361}
+#opaque-preview .ol-contact-switch[aria-pressed=true]{background:linear-gradient(145deg,#dfa367,#cd803f);color:#fff;border-color:#cd884a}
+#opaque-preview .ol-friend-action[data-friend-action=messages-square],#opaque-preview .ol-friend-action[data-friend-action=user-round-plus]{background:linear-gradient(145deg,#edf4ff,#e4edfb);color:#5d83be}
+#opaque-preview .ol-friend-action[data-friend-action=check]{background:linear-gradient(145deg,#eaf7f0,#def0e6);color:#45966e}
+#opaque-preview .ol-friend-action[data-friend-action=clock-3]{background:#fcf3e8;color:#c39154}
+#opaque-preview .ol-friend-action[data-friend-action=x]{color:#ac8c8b}
+</style><style>
+#opaque-preview .ol-friend-tabs{margin-top:10px}
+#opaque-preview .ol-contact-switch{background:linear-gradient(145deg,#719cdd,#507fc3);color:#fff;border:1px solid #6590cf;box-shadow:0 2px 6px #507fc319}
+#opaque-preview .ol-contact-switch[aria-pressed=true]{background:linear-gradient(145deg,#608bd0,#416db0);color:#fff;border-color:#527cbb}
+</style><style>
+#opaque-preview .ol-friend-action[data-friend-action=user-plus]{background:transparent;border:0;box-shadow:none;color:#607da5;width:40px;min-height:44px}
+#opaque-preview .ol-friend-action[data-friend-action=user-plus] svg{width:22px;height:22px;stroke-width:1.65}
+#opaque-preview .ol-friend-action[data-friend-action=user-plus]:hover{background:transparent;color:#365f98}
+</style><style>
+#opaque-preview .ol-friend-action[data-friend-action=messages-square],#opaque-preview .ol-friend-action[data-friend-action=clock-3]{background:transparent;border:0;box-shadow:none;width:40px;min-height:44px}
+#opaque-preview .ol-friend-action[data-friend-action=messages-square] svg,#opaque-preview .ol-friend-action[data-friend-action=clock-3] svg{width:22px;height:22px;stroke-width:1.65}
+#opaque-preview .ol-friend-action[data-friend-action=messages-square]:hover{background:transparent;color:#365f98}
+#opaque-preview .ol-friend-action[data-friend-action=clock-3]:hover{background:transparent;color:#a87739}
+</style><style>
+#opaque-preview{--bubble-start:#719cdd;--bubble-end:#507fc3;--style-surface:#fff;--style-muted:#929bad;--style-ink:#424d60;--style-line:#edf0f5;--style-tint:#f3f5f9}
+#opaque-preview .os-preview{padding:16px;background:linear-gradient(140deg,#f3f6fc,#f7f8fb);border:1px solid #eaf0f7;border-radius:20px;display:flex;flex-direction:column;gap:10px;margin:0 5px 6px}
+#opaque-preview .os-preview-label{font-size:9px;letter-spacing:1.2px;color:#a1aabb;margin-bottom:3px}
+#opaque-preview .os-incoming{font-size:12px;background:#e9edf4;color:#626d7e;padding:10px 12px;border-radius:4px 14px 14px 14px;align-self:flex-start}
+#opaque-preview .os-outgoing{font-size:12px;background:linear-gradient(135deg,var(--bubble-start),var(--bubble-end));color:white;padding:10px 12px;border-radius:14px 4px 14px 14px;align-self:flex-end}
+#opaque-preview .os-outgoing>span{display:flex;align-items:center;gap:4px;font-size:9px;opacity:.75;margin-top:5px}
+#opaque-preview .os-outgoing svg{width:12px;height:12px}
+#opaque-preview .os-section{padding:18px 7px;border-bottom:1px solid var(--style-line)}
+#opaque-preview .os-section:last-child{border:0;padding-bottom:24px}
+#opaque-preview .os-section h3{font-size:13px;font-weight:500;margin:0 0 12px;color:var(--style-ink);letter-spacing:-.15px}
+#opaque-preview .os-choices{display:flex;gap:7px}
+#opaque-preview .os-choices button{display:flex;align-items:center;justify-content:center;gap:7px;flex:1;min-height:40px;border:1px solid var(--style-line);border-radius:12px;font-size:11px;background:var(--style-surface);color:var(--style-muted)}
+#opaque-preview .os-choices button svg{width:17px;height:17px;stroke-width:1.6}
+#opaque-preview .os-choices button[aria-pressed=true]{background:#edf3fc;border-color:#dbe6f6;color:#6085ba}
+#opaque-preview .os-palette-label{display:flex;justify-content:space-between;font-size:11px;color:var(--style-muted);margin:13px 0 5px}
+#opaque-preview .os-palette-label span{font-size:10px;color:#8395ae}
+#opaque-preview .os-palette{display:grid;grid-template-columns:repeat(5,1fr);gap:7px}
+#opaque-preview .os-swatch{display:grid;place-items:center;padding:4px;min-height:44px;border-radius:50%}
+#opaque-preview .os-swatch>span{display:grid;place-items:center;background:var(--swatch);width:32px;height:32px;border-radius:50%;color:#fff;box-shadow:inset 0 1px 1px #ffffff30}
+#opaque-preview .os-swatch[aria-pressed=true]>span{outline:1px solid var(--swatch);outline-offset:4px}
+#opaque-preview .os-swatch svg{width:15px;height:15px;stroke-width:2}
+#opaque-preview .os-overlays{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+#opaque-preview .os-overlays>button{padding:7px 7px 10px;border:1px solid var(--style-line);background:var(--style-surface);border-radius:15px;font-size:10px;color:var(--style-muted)}
+#opaque-preview .os-overlays>button[aria-pressed=true]{border-color:#b9cee9;color:#6085ba}
+#opaque-preview .os-overlay-scene{height:59px;display:flex;align-items:center;justify-content:center;border-radius:10px;background:var(--style-tint);margin-bottom:8px}
+#opaque-preview .os-mini-circle{width:33px;height:33px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#86bda9,#5da38c);color:white;box-shadow:0 2px 6px #5da38c25}
+#opaque-preview .os-mini-bar{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:9px;background:#dfede7;color:#65927f;font-size:9px}
+#opaque-preview .os-overlays svg{width:14px;height:14px;stroke-width:1.6}
+#opaque-preview .ol-bubble.mine{background:linear-gradient(135deg,var(--bubble-start),var(--bubble-end))}
+#opaque-preview[data-bubble-shape=round] .ol-bubble,#opaque-preview[data-bubble-shape=round] .os-incoming,#opaque-preview[data-bubble-shape=round] .os-outgoing{border-radius:21px}
+#opaque-preview[data-bubble-shape=square] .ol-bubble,#opaque-preview[data-bubble-shape=square] .os-incoming,#opaque-preview[data-bubble-shape=square] .os-outgoing{border-radius:7px}
+#opaque-preview[data-theme=dark]{--style-surface:#202731;--style-muted:#9ca8bb;--style-ink:#e0e6ef;--style-line:#303947;--style-tint:#252e3b;color:#dce3ef;--ol-line:#303947;--ol-muted:#97a3b6;color-scheme:dark}
+#opaque-preview[data-theme=dark] .ol-phone,#opaque-preview[data-theme=dark] .ol-top,#opaque-preview[data-theme=dark] .ol-nav,#opaque-preview[data-theme=dark] .ol-gesture,#opaque-preview[data-theme=dark] .ol-chat-top,#opaque-preview[data-theme=dark] .ol-composer{background:#19202a;color:#dce3ef;border-color:#303947}
+#opaque-preview[data-theme=dark] .ol-status,#opaque-preview[data-theme=dark] .ol-brand{color:#dce3ef}
+#opaque-preview[data-theme=dark] .ol-brand-o{border-color:#dce3ef}
+#opaque-preview[data-theme=dark] .ol-brand-o:after{background:#19202a}
+#opaque-preview[data-theme=dark] .ol-gesture:before{background:#b8c4d7}
+#opaque-preview[data-theme=dark] .os-preview,#opaque-preview[data-theme=dark] .ol-messages{background:linear-gradient(140deg,#212b39,#1d2531);border-color:#303947}
+#opaque-preview[data-theme=dark] .os-incoming,#opaque-preview[data-theme=dark] .ol-bubble:not(.mine){background:#303b4b;color:#dce3ef}
+#opaque-preview[data-theme=dark] .os-choices button[aria-pressed=true]{background:#2b3b52;border-color:#405674;color:#abc9f2}
+#opaque-preview[data-theme=dark] .ol-search,#opaque-preview[data-theme=dark] .ol-input-shell,#opaque-preview[data-theme=dark] .ol-filter{background:#283241;border-color:#354256}
+#opaque-preview[data-theme=dark] input{color:#dce3ef}
+#opaque-preview[data-theme=dark] .ol-friend-tabs,#opaque-preview[data-theme=dark] .ol-friend-tabs button[aria-pressed=true]{background:#202a37}
+#opaque-preview[data-theme=dark] .ol-nav button[aria-pressed=true]{color:#dce3ef}
+</style><style>
+#opaque-preview .ol-title-row.ol-style-heading{padding:17px 22px 14px}
+#opaque-preview .ol-style-heading h2{font-size:21px;font-weight:500;letter-spacing:-.45px;line-height:1.2}
+</style><div id="opaque-preview" aria-label="OPAQUE app design preview">
+ <section class="ol-phone" aria-label="360 by 800 Android viewport reference with fictional content">
+  <div class="ol-status" aria-label="Sample Android status bar"><span>9:41</span><span class="ol-status-icons"><i data-lucide="signal" aria-hidden="true"></i><i data-lucide="wifi" aria-hidden="true"></i><i data-lucide="battery-full" aria-hidden="true"></i></span></div>
+  <div data-screen="inbox">
+   <header class="ol-top"><button class="ol-profile" data-action="profile" aria-label="Your profile">V</button><span class="ol-brand" aria-label="OPAQUE"><span class="ol-brand-o" aria-hidden="true"></span><span aria-hidden="true">PAQUE</span></span><button class="ol-icon" data-home-more aria-label="More options" aria-expanded="false"><i data-lucide="ellipsis-vertical" aria-hidden="true"></i></button><div class="ol-home-menu" data-home-menu hidden><button data-home-settings><i data-lucide="settings-2" aria-hidden="true"></i>Settings</button></div></header>
+   <div class="ol-title-row" hidden><h2 data-heading></h2><button class="ol-demo-toggle" data-empty-calls hidden>Preview empty</button></div>
+
+   <label class="ol-search"><i data-lucide="search" aria-hidden="true"></i><input data-search type="search" aria-label="Find a sample conversation" placeholder="Search conversations"></label>
+   <div class="ol-filter" aria-label="Conversation filters"><button data-filter="all" aria-pressed="true">All</button><button data-filter="unread" aria-pressed="false">Unread</button><button data-filter="groups" aria-pressed="false">Groups</button></div>
+   <div class="ol-list" data-list aria-live="polite"></div>
+   <div class="ol-add-area"><div class="ol-add-menu" id="ol-add-menu" aria-label="Add options" aria-hidden="true" inert><button data-create="friend"><span class="ol-action-icon"><i data-lucide="user-round-plus" aria-hidden="true"></i></span><span class="ol-action-copy">Add new friend</span><i class="ol-action-arrow" data-lucide="chevron-right" aria-hidden="true"></i></button><button data-create="group"><span class="ol-action-icon"><i data-lucide="users-round" aria-hidden="true"></i></span><span class="ol-action-copy">New group</span><i class="ol-action-arrow" data-lucide="chevron-right" aria-hidden="true"></i></button></div><button class="ol-add" data-add aria-label="Add friend or group" aria-expanded="false" aria-controls="ol-add-menu"><i data-lucide="plus" aria-hidden="true"></i></button></div>
+   <nav class="ol-nav" aria-label="Main navigation"><button data-page="chats" aria-pressed="true"><span class="ol-nav-icon"><i data-lucide="messages-square" aria-hidden="true"></i></span>Chats</button><button data-page="calls" aria-pressed="false"><span class="ol-nav-icon"><i data-lucide="phone" aria-hidden="true"></i></span>Calls</button><button data-page="people" aria-pressed="false"><span class="ol-nav-icon"><i data-lucide="contact-round" aria-hidden="true"></i></span>Friends</button><button data-page="style" aria-pressed="false"><span class="ol-nav-icon"><i data-lucide="palette" aria-hidden="true"></i></span>Style</button><button data-page="notes" aria-pressed="false"><span class="ol-nav-icon"><i data-lucide="notebook-pen" aria-hidden="true"></i></span>Notes</button></nav>
+  </div>
+  <div data-screen="chat" hidden>
+   <header class="ol-chat-top"><button class="ol-icon" data-action="back" aria-label="Back to chats"><i data-lucide="arrow-left" aria-hidden="true"></i></button><span class="ol-avatar" data-avatar>MC</span><div class="ol-copy"><strong data-person>Maya Chen</strong><div class="ol-sub">Online</div></div><button class="ol-icon" data-chat-call="Voice" aria-label="Voice call"><i data-lucide="phone" aria-hidden="true"></i></button><button class="ol-icon" data-chat-call="Video" aria-label="Video call"><i data-lucide="video" aria-hidden="true"></i></button><button class="ol-icon" data-more aria-label="Chat options" aria-expanded="false"><i data-lucide="ellipsis-vertical" aria-hidden="true"></i></button></header>
+   <div class="ol-chat-menu" data-chat-menu hidden><button data-detail><i data-lucide="info" aria-hidden="true"></i>Chat details</button><button data-mute aria-pressed="false"><i data-lucide="bell-off" aria-hidden="true"></i><span>Mute notifications</span></button></div>
+   <div class="ol-messages" data-messages aria-live="polite"></div>
+   <div class="ol-chat-feedback" data-chat-feedback aria-live="polite" hidden></div>
+
+   <div class="ol-ai-toast" data-ai-toast role="status" aria-live="polite" hidden><i data-lucide="sparkles" aria-hidden="true"></i><span>AI features coming soon</span></div>
+   <form class="ol-composer"><div class="ol-input-shell"><button type="button" class="ol-icon" data-attach aria-label="Add attachment" aria-expanded="false"><i data-lucide="paperclip" aria-hidden="true"></i></button><input data-draft aria-label="Write a sample message" placeholder="Message…" autocomplete="off"><button type="button" class="ol-icon" data-ai aria-label="AI assistant"><i data-lucide="sparkles" aria-hidden="true"></i></button></div><button type="submit" class="ol-icon" data-send aria-label="Record voice note preview"><i data-lucide="mic" aria-hidden="true"></i></button></form>
+   <div class="ol-chat-panel" data-attachments aria-label="Attachments" hidden><header><span>Share something</span><button class="ol-icon" type="button" data-close-panel aria-label="Close attachments"><i data-lucide="x" aria-hidden="true"></i></button></header><div class="ol-attach-grid"><button data-share="Gallery" aria-label="Gallery: photos and videos" data-tooltip="Gallery · Photos & videos"><span class="ol-attachment-symbol"><i data-lucide="images" aria-hidden="true"></i></span><span class="ol-attachment-label">Gallery</span></button><button data-share="Camera" aria-label="Camera: take photo or video" data-tooltip="Camera · Photo & video"><span class="ol-attachment-symbol"><i data-lucide="camera" aria-hidden="true"></i></span><span class="ol-attachment-label">Camera</span></button><button data-share="Documents" aria-label="Documents" data-tooltip="Documents"><span class="ol-attachment-symbol"><i data-lucide="files" aria-hidden="true"></i></span><span class="ol-attachment-label">Documents</span></button><button data-share="Contact" aria-label="Contact" data-tooltip="Contact"><span class="ol-attachment-symbol"><i data-lucide="contact-round" aria-hidden="true"></i></span><span class="ol-attachment-label">Contact</span></button><button data-share="Location" aria-label="Location" data-tooltip="Location"><span class="ol-attachment-symbol"><i data-lucide="map-pin" aria-hidden="true"></i></span><span class="ol-attachment-label">Location</span></button><button data-share="Poll" aria-label="Poll" data-tooltip="Poll"><span class="ol-attachment-symbol"><i data-lucide="list-checks" aria-hidden="true"></i></span><span class="ol-attachment-label">Poll</span></button></div><div class="ol-attach-caption" aria-hidden="true">Photos, files, and more</div></div>
+  </div>
+  <div class="ol-gesture" aria-label="Android gesture navigation bar"></div>
+ </section>
+</div>
+<script>
+(()=>{const root=document.getElementById('opaque-preview'),q=s=>root.querySelector(s);let page='style',filter='all',noteText='Ideas for the weekend…',recording=false;const options={rounded:true,emptyCalls:false};
+const items=[{name:'Maya Chen',initials:'MC',text:'That’s the one. See you at four?',time:'Now',unread:true},{name:'Studio circle',initials:'SC',text:'Arjun: I’ve shared the final sketches.',time:'12m',unread:true,group:true},{name:'Arjun Rao',initials:'AR',text:'You: Thanks for sending these over.',time:'10:42'},{name:'Weekend plans',initials:'WP',text:'Maya: Saturday works for everyone.',time:'Yesterday',group:true}];
+function icon(){if(globalThis.lucide)lucide.createIcons({attrs:{width:18,height:18}})}
+function bubble(text,mine,status='sent'){const el=document.createElement('div');el.className='ol-bubble'+(mine?' mine':'');el.textContent=text;const stamp=document.createElement('div');stamp.className='ol-stamp';stamp.textContent=mine?'10:42':'10:41';if(mine){const state=document.createElement('span');state.setAttribute('role','img');state.setAttribute('aria-label',{sent:'Sent',delivered:'Delivered',seen:'Seen'}[status]);state.style.display='inline-flex';const mark=document.createElement('i');mark.setAttribute('data-lucide',{sent:'check',delivered:'check-check',seen:'eye'}[status]);mark.setAttribute('aria-hidden','true');state.append(mark);stamp.append(state)}el.append(stamp);q('[data-messages]').append(el)}
+function chat(item){closePanels();clearTimeout(aiToastTimer);q('[data-ai-toast]').hidden=true;recording=false;q('[data-draft]').value='';feedback('');q('[data-screen=inbox]').hidden=true;q('[data-screen=chat]').hidden=false;q('[data-person]').textContent=item.name;q('[data-avatar]').textContent=item.initials;q('[data-messages]').innerHTML='<div class="ol-date">Today</div>';bubble('Still up for a walk tomorrow?');bubble('Definitely. Let’s take the long way.',true,'seen');bubble('The café near the museum?');bubble('Around four? The light should be lovely then.');bubble('Perfect. I’ll bring my camera.',true,'delivered');bubble('See you there!',true);syncComposer();icon();q('[data-action=back]').focus()}
+function setAddOpen(open){const menu=q('.ol-add-menu');q('.ol-add-area').classList.toggle('is-open',open);menu.inert=!open;menu.setAttribute('aria-hidden',String(!open));q('[data-add]').setAttribute('aria-expanded',String(open));q('[data-add]').setAttribute('aria-label',open?'Close add options':'Add friend or group')}function render(){applyStyle();setAddOpen(false);q('[data-empty-calls]').hidden=page!=='calls';q('[data-empty-calls]').textContent=options.emptyCalls?'Show sample calls':'Preview empty';q('.ol-add-area').hidden=page!=='chats';root.style.setProperty('--ol-blue','#335fe8');q('.ol-phone').style.borderRadius=options.rounded?'26px':'12px';q('[data-screen=inbox]').hidden=false;q('[data-screen=chat]').hidden=true;q('[data-heading]').textContent={chats:'Chats',calls:'Calls',people:'Friends',you:'Your space',style:'Style',notes:'Notes',friend:'Add new friend',group:'New group'}[page];q('.ol-title-row').hidden=page==='chats'||page==='people';q('.ol-title-row').classList.toggle('ol-style-heading',page==='style');q('.ol-search').hidden=page!=='chats';q('.ol-filter').hidden=page!=='chats';root.querySelectorAll('[data-page]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.page===page)));const list=q('[data-list]');list.replaceChildren();list.classList.remove('ol-call-list');list.classList.toggle('ol-friends-list',page==='people');if(page==='people'){renderFriends(list);return}if(page==='style'){renderStyle(list);return}if(page==='notes'){const note=document.createElement('textarea');note.className='ol-note';note.setAttribute('aria-label','Personal sample note');note.value=noteText;note.oninput=()=>{noteText=note.value};list.append(note);return}if(page==='friend'||page==='group'){const isFriend=page==='friend';list.innerHTML='<form class="ol-preview-form"><label>'+(isFriend?'Friend’s username':'Group name')+'<input required aria-label="'+(isFriend?'Friend username':'Group name')+'"></label><button type="submit">'+(isFriend?'Add friend':'Create group')+'</button><p data-feedback aria-live="polite">Interface preview · sample interaction only</p></form>';list.querySelector('form').onsubmit=e=>{e.preventDefault();list.querySelector('[data-feedback]').textContent=isFriend?'Preview: friend request sent.':'Preview: group created.'};return}if(page==='calls'){list.classList.add('ol-call-list');if(options.emptyCalls){list.innerHTML='<div class="ol-calls-empty"><span class="ol-empty-phone"><i data-lucide="phone" aria-hidden="true"></i></span><strong>No calls yet</strong><p>Your voice and video calls will appear here.<br>Call a friend to start a conversation.</p></div>';icon();return}const calls=[{day:'Today',name:'Maya Chen',initials:'MC',kind:'Incoming',time:'10:42',duration:'12 min',video:true},{day:'Today',name:'Arjun Rao',initials:'AR',kind:'Missed',time:'09:18',duration:'',video:false},{day:'Today',name:'Maya Chen',initials:'MC',kind:'Outgoing',time:'08:35',duration:'4 min',video:false},{day:'Yesterday',name:'Riya Kapoor',initials:'RK',kind:'Incoming',time:'18:24',duration:'23 min',video:true},{day:'Yesterday',name:'Arjun Rao',initials:'AR',kind:'Outgoing',time:'14:06',duration:'7 min',video:false}];let day='';calls.forEach(c=>{if(c.day!==day){day=c.day;const heading=document.createElement('div');heading.className='ol-call-day';heading.textContent=day;list.append(heading)}const row=document.createElement('div');row.className='ol-call-row'+(c.kind==='Missed'?' ol-call-missed':'');row.innerHTML='<span class="ol-avatar">'+c.initials+'</span><div class="ol-copy"><span class="ol-name">'+c.name+'</span><span class="ol-call-detail"><i data-lucide="'+(c.kind==='Outgoing'?'arrow-up-right':c.kind==='Missed'?'phone-missed':'arrow-down-left')+'" aria-hidden="true"></i>'+c.kind+' · '+c.time+(c.duration?' · '+c.duration:'')+'</span></div><button class="ol-icon" aria-label="'+(c.video?'Video':'Voice')+' call '+c.name+'"><i data-lucide="'+(c.video?'video':'phone')+'" aria-hidden="true"></i></button>';row.querySelector('button').onclick=()=>{const notice=list.querySelector('[data-call-notice]');notice.hidden=false;notice.textContent=(c.video?'Video':'Voice')+' call to '+c.name+' · preview only'};list.append(row)});const notice=document.createElement('div');notice.dataset.callNotice='';notice.className='ol-call-notice';notice.setAttribute('role','status');notice.hidden=true;list.append(notice);icon();return}if(page==='you'){list.innerHTML='<div class="ol-setting">Profile</div><div class="ol-setting">Appearance</div><div class="ol-setting">Privacy</div><div class="ol-setting">Encrypted backups</div>';return}const rows=items.filter(p=>(page!=='people'||!p.group)&&(page!=='chats'||filter==='all'||filter==='unread'&&p.unread||filter==='groups'&&p.group)&&p.name.toLowerCase().includes(q('[data-search]').value.toLowerCase()));for(const p of rows){const b=document.createElement('button');b.className='ol-row'+(p.unread?' ol-unread':'');b.innerHTML='<span class="ol-avatar'+(p.group?' group':'')+'">'+p.initials+'</span><span class="ol-copy"><span class="ol-name">'+p.name+'</span><span class="ol-preview">'+(page==='people'?'Start a conversation':p.text)+'</span></span><span class="ol-meta">'+(page==='people'?'':p.time)+(p.unread&&page==='chats'?'<span class="ol-dot" aria-label="Unread"></span>':'')+'</span>';b.onclick=()=>chat(p);list.append(b)}if(!rows.length)list.innerHTML='<div class="ol-empty">No matching conversations.</div>'}
+const stylePrefs={theme:'light',shape:'soft',start:0,end:0,overlay:'circle'};
+const startColors=[['Blue','#719cdd'],['Lilac','#a58bd4'],['Mint','#70b9a4'],['Rose','#d88fa4'],['Amber','#d9ad76']];
+const endColors=[['Blue','#507fc3'],['Violet','#8066b8'],['Teal','#438e83'],['Berry','#b56588'],['Copper','#b88853']];
+function applyStyle(){root.dataset.theme=stylePrefs.theme;root.dataset.bubbleShape=stylePrefs.shape;root.style.setProperty('--bubble-start',startColors[stylePrefs.start][1]);root.style.setProperty('--bubble-end',endColors[stylePrefs.end][1])}
+function renderStyle(list){applyStyle();list.innerHTML='<div class="os-preview"><span class="os-preview-label">CHAT PREVIEW</span><div class="os-incoming">Coffee after the rain?</div><div class="os-outgoing">Absolutely. Same place?<span>10:42 <i data-lucide="check-check" aria-hidden="true"></i></span></div></div><section class="os-section"><h3>Theme</h3><div class="os-choices" data-theme-choices></div></section><section class="os-section"><h3>Message bubbles</h3><div class="os-choices" data-shape-choices></div></section><section class="os-section"><h3>Bubble colours</h3><div class="os-palette-label">Start colour<span data-start-name></span></div><div class="os-palette" data-start-palette></div><div class="os-palette-label">End colour<span data-end-name></span></div><div class="os-palette" data-end-palette></div></section><section class="os-section"><h3>Call overlay</h3><div class="os-overlays"><button data-overlay="circle"><span class="os-overlay-scene"><span class="os-mini-circle"><i data-lucide="phone" aria-hidden="true"></i></span></span><span>Circular bubble</span></button><button data-overlay="bar"><span class="os-overlay-scene"><span class="os-mini-bar"><i data-lucide="phone" aria-hidden="true"></i><span>02:34</span><i data-lucide="mic" aria-hidden="true"></i></span></span><span>Horizontal bar</span></button></div></section>';
+function choice(parent,label,value,key,ic){const b=document.createElement('button');b.setAttribute('aria-pressed',String(stylePrefs[key]===value));b.innerHTML=(ic?'<i data-lucide="'+ic+'" aria-hidden="true"></i>':'')+'<span>'+label+'</span>';b.onclick=()=>{stylePrefs[key]=value;render()};list.querySelector(parent).append(b)}
+choice('[data-theme-choices]','Light','light','theme','sun');choice('[data-theme-choices]','Dark','dark','theme','moon');choice('[data-shape-choices]','Soft','soft','shape');choice('[data-shape-choices]','Rounded','round','shape');choice('[data-shape-choices]','Squared','square','shape');
+function palette(colors,key){list.querySelector('[data-'+key+'-name]').textContent=colors[stylePrefs[key]][0];colors.forEach(([name,color],i)=>{const b=document.createElement('button');b.className='os-swatch';b.style.setProperty('--swatch',color);b.setAttribute('aria-label',name+' '+key+' colour');b.setAttribute('aria-pressed',String(stylePrefs[key]===i));b.innerHTML='<span>'+(stylePrefs[key]===i?'<i data-lucide="check" aria-hidden="true"></i>':'')+'</span>';b.onclick=()=>{stylePrefs[key]=i;render()};list.querySelector('[data-'+key+'-palette]').append(b)})}palette(startColors,'start');palette(endColors,'end');list.querySelectorAll('[data-overlay]').forEach(b=>{b.setAttribute('aria-pressed',String(stylePrefs.overlay===b.dataset.overlay));b.onclick=()=>{stylePrefs.overlay=b.dataset.overlay;render()}});icon()}let friendsTab='mine',contactMode=false,friendQuery='';
+const friendData=[{name:'Maya Chen',user:'maya.chen',initials:'MC',phone:'+1 202-555-0101',state:'mine'},{name:'Arjun Rao',user:'arjun.rao',initials:'AR',phone:'+1 202-555-0102',state:'mine'},{name:'Riya Kapoor',user:'riya.k',initials:'RK',phone:'+1 202-555-0103',state:'mine'},{name:'Noah Williams',user:'noah.w',initials:'NW',phone:'+1 202-555-0104',state:'mine'},{name:'Aisha Khan',user:'aisha.k',initials:'AK',phone:'+1 202-555-0105',state:'received'},{name:'Leo Park',user:'leo.park',initials:'LP',phone:'+1 202-555-0106',state:'received'},{name:'Sofia Reed',user:'sofia.r',initials:'SR',phone:'+1 202-555-0107',state:'sent'},{name:'Ethan Cole',user:'ethan.c',initials:'EC',phone:'+1 202-555-0108',state:'discover'},{name:'Nina Shah',user:'nina.shah',initials:'NS',phone:'+1 202-555-0109',state:'discover'}];
+function renderFriends(list){list.innerHTML='<div class="ol-friend-tabs" aria-label="Friend sections"><button data-ft="mine"><i data-lucide="users-round" aria-hidden="true"></i><span>My Friends</span></button><button data-ft="received"><i data-lucide="arrow-down-left" aria-hidden="true"></i><span>Received</span></button><button data-ft="sent"><i data-lucide="arrow-up-right" aria-hidden="true"></i><span>Sent</span></button><button data-ft="find"><i data-lucide="search" aria-hidden="true"></i><span>Find Friends</span></button></div><div data-friend-tools></div><div class="ol-friend-count" data-friend-count></div><div data-friend-results></div>';
+list.querySelectorAll('[data-ft]').forEach(b=>{b.setAttribute('aria-pressed',String(b.dataset.ft===friendsTab));b.onclick=()=>{friendsTab=b.dataset.ft;friendQuery='';render()}});
+if(friendsTab==='find'){list.querySelector('[data-friend-tools]').innerHTML='<div class="ol-friend-search"><label><i data-lucide="search" aria-hidden="true"></i><input data-find-user aria-label="'+(contactMode?'Search contacts':'Search by username')+'" placeholder="'+(contactMode?'Search contacts':'Search by username')+'"></label><button class="ol-contact-switch" aria-label="'+(contactMode?'Return to username search':'Find friends in contacts')+'" aria-pressed="'+contactMode+'"><i data-lucide="contact-round" aria-hidden="true"></i></button></div>';list.querySelector('[data-find-user]').value=friendQuery;list.querySelector('[data-find-user]').oninput=e=>{friendQuery=e.target.value;drawFriendResults(list)};list.querySelector('.ol-contact-switch').onclick=()=>{contactMode=!contactMode;friendQuery='';render()}}drawFriendResults(list);icon()}
+function drawFriendResults(list){const dest=list.querySelector('[data-friend-results]');dest.replaceChildren();const query=friendQuery.trim().toLowerCase().replace(/^@/,'');const rows=friendData.filter(p=>friendsTab==='find'?(contactMode?(p.name.toLowerCase().includes(query)||p.phone.includes(query)):p.user.includes(query)):p.state===friendsTab);
+list.querySelector('[data-friend-count]').textContent=friendsTab==='mine'?'Total friends · '+rows.length:friendsTab==='received'?'Received requests · '+rows.length:friendsTab==='sent'?'Sent requests · '+rows.length:contactMode?'Contacts · Sample phone numbers':query?'Username results · '+rows.length:'Find someone by their @username';
+rows.forEach(p=>{const row=document.createElement('div');row.className='ol-friend-row';row.innerHTML='<span class="ol-avatar">'+p.initials+'</span><div class="ol-copy"><span class="ol-name">'+p.name+'</span><span class="ol-friend-user">@'+p.user+'</span>'+(friendsTab==='find'&&contactMode?'<span class="ol-friend-phone">'+p.phone+'</span>':'')+'</div><div class="ol-friend-actions"></div>';const actions=row.querySelector('.ol-friend-actions');function action(label,ic,fn,secondary){const b=document.createElement('button');b.className='ol-friend-action'+(secondary?' secondary':'');b.setAttribute('aria-label',label+' '+p.name);b.dataset.friendAction=ic;b.innerHTML='<i data-lucide="'+ic+'" aria-hidden="true"></i>';b.onclick=fn;actions.append(b)}if(friendsTab==='mine'||p.state==='mine'){action('Message','messages-square',()=>chat(p))}else if(friendsTab==='received'){action('Accept request from','check',()=>{p.state='mine';render()});action('Decline request from','x',()=>{p.state='discover';render()},true)}else if(p.state==='sent'){action('Cancel request to','clock-3',()=>{p.state='discover';render()},true)}else{action('Add friend','user-plus',()=>{p.state='sent';render()})}dest.append(row)});if(!rows.length){dest.innerHTML='<div class="ol-empty">'+(friendsTab==='find'?'No matching usernames or contacts.':'No requests here right now.')+'</div>'}icon()}
+q('[data-empty-calls]').onclick=()=>{options.emptyCalls=!options.emptyCalls;render()};root.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>{page=b.dataset.page;q('.ol-search').hidden=true;q('[data-search]').value='';render()});root.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{filter=b.dataset.filter;root.querySelectorAll('[data-filter]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));render()});root.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>{if(b.dataset.action==='back'){page='chats';render()}if(b.dataset.action==='profile'){page='you';render()}});q('[data-add]').onclick=()=>{const open=!q('.ol-add-area').classList.contains('is-open');setAddOpen(open);if(open)q('[data-create]').focus()};root.querySelectorAll('[data-create]').forEach(b=>b.onclick=()=>{page=b.dataset.create;render();q('.ol-preview-form input').focus()});root.addEventListener('keydown',e=>{if(e.key==='Escape'&&q('.ol-add-area').classList.contains('is-open')){setAddOpen(false);q('[data-add]').focus()}});root.addEventListener('click',e=>{if(!e.target.closest('.ol-add-area')){setAddOpen(false)}});q('[data-home-more]').onclick=()=>{const open=q('[data-home-menu]').hidden;q('[data-home-menu]').hidden=!open;q('[data-home-more]').setAttribute('aria-expanded',String(open))};q('[data-home-settings]').onclick=()=>{page='you';q('[data-home-menu]').hidden=true;q('[data-home-more]').setAttribute('aria-expanded','false');render()};root.addEventListener('click',e=>{if(!e.target.closest('[data-home-more], [data-home-menu]')){q('[data-home-menu]').hidden=true;q('[data-home-more]').setAttribute('aria-expanded','false')}});root.addEventListener('keydown',e=>{if(e.key==='Escape'&&!q('[data-home-menu]').hidden){q('[data-home-menu]').hidden=true;q('[data-home-more]').setAttribute('aria-expanded','false');q('[data-home-more]').focus()}});q('[data-search]').oninput=render;function feedback(text){q('[data-chat-feedback]').hidden=!text;q('[data-chat-feedback]').textContent=text}
+function closePanels(){q('[data-chat-menu]').hidden=true;q('[data-more]').setAttribute('aria-expanded','false');q('[data-attachments]').hidden=true;q('[data-attach]').setAttribute('aria-expanded','false');q('[data-ai]').removeAttribute('aria-expanded')}
+function syncComposer(){const typed=!!q('[data-draft]').value.trim();if(typed&&recording){recording=false;feedback('')}q('.ol-composer').classList.toggle('ol-recording',recording);const name=recording?'square':typed?'arrow-up':'mic';q('[data-send]').innerHTML='<i data-lucide="'+name+'" aria-hidden="true"></i>';q('[data-send]').setAttribute('aria-label',recording?'Stop voice note preview':typed?'Send message':'Record voice note preview');icon()}
+q('[data-more]').onclick=()=>{const open=q('[data-chat-menu]').hidden;closePanels();q('[data-chat-menu]').hidden=!open;q('[data-more]').setAttribute('aria-expanded',String(open))};q('[data-detail]').onclick=()=>{closePanels();feedback(q('[data-person]').textContent+' · End-to-end encrypted conversation')};q('[data-mute]').onclick=()=>{const muted=q('[data-mute]').getAttribute('aria-pressed')!=='true';q('[data-mute]').setAttribute('aria-pressed',String(muted));q('[data-mute] span').textContent=muted?'Unmute notifications':'Mute notifications';closePanels();feedback(muted?'Notifications muted · preview':'Notifications unmuted · preview')};
+root.addEventListener('click',e=>{if(!e.target.closest('[data-more], [data-chat-menu]')){q('[data-chat-menu]').hidden=true;q('[data-more]').setAttribute('aria-expanded','false')}});q('[data-draft]').oninput=syncComposer;
+q('[data-attach]').onclick=()=>{const open=q('[data-attachments]').hidden;closePanels();q('[data-attachments]').hidden=!open;q('[data-attach]').setAttribute('aria-expanded',String(open))};
+let aiToastTimer;q('[data-ai]').onclick=()=>{closePanels();clearTimeout(aiToastTimer);q('[data-ai-toast]').hidden=false;aiToastTimer=setTimeout(()=>{q('[data-ai-toast]').hidden=true},3000)};
+root.querySelectorAll('[data-close-panel]').forEach(b=>b.onclick=closePanels);
+root.querySelectorAll('[data-chat-call]').forEach(b=>b.onclick=()=>feedback(b.dataset.chatCall+' call · interface preview'));
+root.querySelectorAll('[data-share]').forEach(b=>b.onclick=()=>{closePanels();feedback(b.dataset.share+' picker selected · interface preview')});
+root.querySelectorAll('[data-assist]').forEach(b=>b.onclick=()=>{const input=q('[data-draft]');if(b.dataset.assist==='reply'){input.value='Sounds good! See you at four.';feedback('Sample reply inserted for review.')}else if(input.value.trim()){const draft=input.value.trim();input.value=draft.charAt(0).toUpperCase()+draft.slice(1)+( /[.!?]$/.test(draft)?'':'.');feedback('Preview: draft formatting polished.')}else{feedback('Write a draft first, then choose Polish.')}closePanels();syncComposer();input.focus()});
+root.addEventListener('keydown',e=>{if(e.key==='Escape'){closePanels();if(recording){recording=false;feedback('');syncComposer()}}});
+q('.ol-composer').onsubmit=e=>{e.preventDefault();closePanels();const input=q('[data-draft]');if(input.value.trim()){bubble(input.value.trim(),true);input.value='';feedback('');q('[data-messages]').scrollTop=q('[data-messages]').scrollHeight}else{recording=!recording;feedback(recording?'Voice note preview · tap stop to finish. No audio is captured.':'Voice note preview stopped.')}syncComposer()};render();icon();if(globalThis.Tweak){const t=new Tweak({container:root,onChange:render});t.addToggle(options,'rounded',{label:'Rounded frame'});t.addToggle(options,'emptyCalls',{label:'Empty calls page'})}
+})();
+</script>
+
+<style>
+body{margin:0;background:#f1f2f4;font-family:Inter,Arial,sans-serif}.review-layout{display:flex;gap:70px;align-items:center;justify-content:center;min-height:100vh;padding:32px;box-sizing:border-box}.review-intro{width:290px;color:#202127}.review-intro small{font-size:10px;letter-spacing:2px;color:#777d88}.review-intro h1{font-size:36px;line-height:1.17;letter-spacing:-1.4px;font-weight:600;margin:19px 0}.review-intro p{font-size:13px;line-height:1.8;color:#777d88}.review-controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:24px}.review-controls button{font:12px Inter,Arial;border:1px solid #daddE3;background:white;border-radius:10px;padding:11px 15px;cursor:pointer}.review-controls button[aria-pressed=true]{background:#252832;color:white;border-color:#252832}#opaque-preview{margin:0;flex-shrink:0;--hm-bg:#fff;--hm-soft:#f4f5f7;--hm-line:#e8eaee;--hm-ink:#252832;--hm-muted:#7b808b;--hm-red:#b54d52;--hm-redbg:#faf0f0}#opaque-preview[data-theme=dark]{--hm-bg:#19202a;--hm-soft:#242e3c;--hm-line:#303b4b;--hm-ink:#e1e7ef;--hm-muted:#a0adbf;--hm-red:#e09a9d;--hm-redbg:#352a33}#opaque-preview .ol-phone{position:relative}#opaque-preview .ol-profile{border:1.5px solid #101114;box-shadow:none}#opaque-preview .ol-home-menu{position:absolute;top:59px;right:16px;width:246px;max-width:calc(100% - 32px);padding:7px;background:var(--hm-bg);border:1px solid var(--hm-line);border-radius:18px;box-shadow:0 12px 40px #121a2824;z-index:30}#opaque-preview .ol-home-menu button{display:flex;align-items:center;gap:12px;width:100%;padding:12px 11px;text-align:left;border-radius:11px;min-height:52px;color:var(--hm-ink);font-size:13px;font-weight:500}#opaque-preview .ol-home-menu button:hover{background:var(--hm-soft)}#opaque-preview .ol-home-menu button svg{width:19px;height:19px;flex-shrink:0;stroke-width:1.65;color:var(--hm-muted)}#opaque-preview .ol-home-menu .hm-rule{height:1px;background:var(--hm-line);margin:5px 10px}#opaque-preview .ol-home-menu .hm-logout,#opaque-preview .ol-home-menu .hm-logout svg{color:var(--hm-red)}#opaque-preview .ol-home-menu .hm-logout:hover{background:var(--hm-redbg)}#opaque-preview [data-home-more][aria-expanded=true]{background:var(--hm-soft);color:var(--hm-ink)}#opaque-preview .hm-overlay{position:absolute;inset:0;background:#0b101a65;z-index:60;display:flex;align-items:center;justify-content:center;padding:24px}#opaque-preview .hm-dialog{width:100%;background:var(--hm-bg);border:1px solid var(--hm-line);border-radius:23px;padding:23px;color:var(--hm-ink);box-shadow:0 20px 70px #0003}#opaque-preview .hm-dialog .hm-symbol{width:45px;height:45px;border-radius:14px;display:grid;place-items:center;background:var(--hm-soft);color:var(--hm-ink);margin-bottom:20px}#opaque-preview .hm-symbol svg{width:22px;height:22px}#opaque-preview .hm-dialog h2{font-size:23px;font-weight:600;letter-spacing:-.7px;margin:0 0 10px}#opaque-preview .hm-dialog p{font-size:13px;line-height:1.75;color:var(--hm-muted);margin:0 0 20px}#opaque-preview .hm-preserved{display:flex;align-items:flex-start;gap:10px;background:var(--hm-soft);padding:13px;border-radius:12px;margin-bottom:24px}#opaque-preview .hm-preserved svg{width:17px;height:17px;flex-shrink:0;color:var(--hm-muted);margin-top:2px}#opaque-preview .hm-preserved span{font-size:11px;line-height:1.7;color:var(--hm-muted)}#opaque-preview .hm-preserved strong{display:block;font-size:12px;font-weight:500;color:var(--hm-ink);margin-bottom:2px}#opaque-preview .hm-buttons{display:flex;gap:9px}#opaque-preview .hm-buttons button{flex:1;min-height:44px;border-radius:11px;font-size:12px;font-weight:600;border:1px solid var(--hm-line)}#opaque-preview .hm-buttons .hm-confirm{background:var(--hm-ink);color:var(--hm-bg);border-color:var(--hm-ink)}#opaque-preview .hm-toast{position:absolute;left:20px;right:20px;bottom:105px;background:var(--hm-ink);color:var(--hm-bg);border-radius:12px;padding:14px;font-size:12px;z-index:70;text-align:center}.review-controls button:focus-visible{outline:2px solid #527abd;outline-offset:3px}@media(max-width:760px){.review-layout{flex-direction:column;gap:24px;padding:24px 12px}.review-intro{width:min(360px,100%)}.review-intro h1{font-size:27px;margin:12px 0}.review-intro p{margin:8px 0}.review-controls{margin-top:15px}#opaque-preview{width:min(360px,100%)}}
+</style>
+<script>
+(()=>{
+const root=document.getElementById('opaque-preview'),phone=root.querySelector('.ol-phone');
+const layout=document.createElement('div');layout.className='review-layout';root.before(layout);layout.innerHTML=`<aside class="review-intro"><small>OPAQUE · HOME PREVIEW</small><h1>A simpler menu.<br>A clearer goodbye.</h1><p>The Home menu, with familiar options and a calmer logout confirmation.</p><div class="review-controls"><button id="hm-light" aria-pressed="true">Light</button><button id="hm-dark" aria-pressed="false">Dark</button></div><div class="review-controls"><button id="hm-menu">Open menu</button><button id="hm-dialog">Logout dialog</button></div><p>Preview only. No account changes.</p></aside>`;layout.append(root);
+const paths={settings:'<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="var(--hm-bg)"/><circle cx="15" cy="17" r="3" fill="var(--hm-bg)"/>',backup:'<path d="M4 10a8 8 0 1 1 1 8M4 4v6h6M12 16V8m-3 3 3-3 3 3"/>',info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/>',logout:'<path d="M9 4H4v16h5M10 12h11m-4-4 4 4-4 4"/>',phone:'<rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 18h4"/>'};
+const icon=n=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[n]}</svg>`;
+const menu=root.querySelector('[data-home-menu]'),trigger=root.querySelector('[data-home-more]');
+menu.innerHTML=[['settings','Settings'],['backup','Backup / Restore'],['info','About']].map(([i,t])=>`<button data-option="${i}">${icon(i)}<span>${t}</span></button>`).join('')+`<div class="hm-rule"></div><button class="hm-logout" data-option="logout">${icon('logout')}<span>Log out</span></button>`;
+const overlay=document.createElement('div');overlay.className='hm-overlay';overlay.hidden=true;overlay.innerHTML=`<section class="hm-dialog" role="dialog" aria-modal="true" aria-labelledby="hm-title" aria-describedby="hm-description"><div class="hm-symbol">${icon('logout')}</div><h2 id="hm-title">Log out of Opaque?</h2><p id="hm-description">You can sign back in whenever you're ready.</p><div class="hm-preserved">${icon('phone')}<span><strong>Your messages stay here</strong>Logging out keeps your messages on this phone.</span></div><div class="hm-buttons"><button id="hm-cancel">Cancel</button><button class="hm-confirm" id="hm-confirm">Log out</button></div></section>`;phone.append(overlay);
+const toast=document.createElement('div');toast.className='hm-toast';toast.setAttribute('role','status');toast.hidden=true;phone.append(toast);let timer,focusBefore;
+function notify(text){clearTimeout(timer);toast.textContent=text;toast.hidden=false;timer=setTimeout(()=>toast.hidden=true,2600)}
+function openMenu(){menu.hidden=false;trigger.setAttribute('aria-expanded','true')}
+function closeMenu(){menu.hidden=true;trigger.setAttribute('aria-expanded','false')}
+function closeDialog(){overlay.hidden=true;[...phone.children].forEach(e=>e.inert=false);(focusBefore?.isConnected?focusBefore:trigger).focus()}
+function openDialog(){focusBefore=trigger;closeMenu();overlay.hidden=false;[...phone.children].forEach(e=>e.inert=e!==overlay&&e!==toast);document.getElementById('hm-cancel').focus()}
+menu.querySelectorAll('button').forEach(b=>b.onclick=()=>{closeMenu();if(b.dataset.option==='logout')openDialog();else notify(b.textContent+' selected · preview')});
+document.getElementById('hm-cancel').onclick=closeDialog;document.getElementById('hm-confirm').onclick=()=>{closeDialog();notify('Logout preview complete. You are still signed in.')};overlay.onclick=e=>{if(e.target===overlay)closeDialog()};
+overlay.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();closeDialog()}if(e.key==='Tab'){const a=document.getElementById('hm-cancel'),b=document.getElementById('hm-confirm');if(e.shiftKey&&document.activeElement===a){e.preventDefault();b.focus()}else if(!e.shiftKey&&document.activeElement===b){e.preventDefault();a.focus()}}});
+for(const theme of ['light','dark'])document.getElementById('hm-'+theme).onclick=()=>{root.dataset.theme=theme;for(const t of ['light','dark'])document.getElementById('hm-'+t).setAttribute('aria-pressed',String(t===theme))};
+document.getElementById('hm-menu').onclick=()=>{if(!overlay.hidden)closeDialog();openMenu()};document.getElementById('hm-dialog').onclick=openDialog;openMenu();
+})();
+</script></body></html>
