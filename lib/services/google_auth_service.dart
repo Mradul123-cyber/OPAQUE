@@ -51,9 +51,9 @@ class GoogleAuthService {
     // Initialize (required in v7.x)
     await _googleSignInInstance!.initialize();
 
-    // Disconnect first to force account picker to show
+    // Sign out locally to show the account picker without revoking consent
     // This ensures user can choose which Google account to use
-    await _googleSignInInstance!.disconnect();
+    await _googleSignInInstance!.signOut();
 
     // Show account picker - user can choose their Google account
     final account = await _googleSignInInstance!.authenticate();

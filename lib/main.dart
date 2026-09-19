@@ -30,8 +30,9 @@ import 'login_screen.dart';
 import 'message_model.dart';
 import 'providers/chat_provider.dart';
 import 'providers/home_provider.dart';
-import 'register_screen.dart';
-import 'profile_setup_screen.dart';
+import 'screens/opaque_auth_screen.dart';
+import 'services/opaque_auth_service.dart';
+import 'widgets/opaque_auth_design.dart';
 import 'services/conversation_service.dart';
 import 'services/database_service.dart';
 import 'services/websocket_service.dart';
@@ -488,32 +489,20 @@ class AuthGate extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return Scaffold(
-            backgroundColor: const Color(0xFF0a1128),
-            body: Center(
-              child: Image.asset(
-                'assets/zarq_logo_circle.png',
-                width: 200,
-                height: 200,
-                fit: BoxFit.contain,
-              ),
-            ),
-          );
-        }
-
-        if (snapshot.hasData) {
-          return AuthWrapper(
-            key: ValueKey(snapshot.data!.uid),
-            user: snapshot.data!,
-          );
-        }
-
-        return const LoginScreen();
-      },
+    return ValueListenableBuilder<bool>(
+      valueListenable: OpaqueAuthService.interactive,
+      builder: (context, interactive, _) => StreamBuilder<User?>(
+        stream: FirebaseAuth.instance.authStateChanges(),
+        initialData: FirebaseAuth.instance.currentUser,
+        builder: (context, snapshot) {
+          if (interactive || !snapshot.hasData) return const LoginScreen();
+          final user = snapshot.data!;
+          if (OpaqueAuthService.needsEmailVerification(user)) {
+            return OpaqueAuthScreen(key: ValueKey('verify_${user.uid}'), user: user);
+          }
+          return AuthWrapper(key: ValueKey(user.uid), user: user);
+        },
+      ),
     );
   }
 }
@@ -1063,15 +1052,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     }
   }
 
-  Future<bool> _checkIfProfileExists() async {
-    final token = await widget.user.getIdToken(true);
-    final url = Uri.parse('${AppConfig.baseUrl}/profiles/me');
-    final response = await http.get(
-      url,
-      headers: {'Authorization': 'Bearer $token'},
-    );
-    return response.statusCode == 200;
-  }
+  Future<bool> _checkIfProfileExists() => OpaqueAuthService.profileExists(widget.user);
 
   // Check for backups after login (only for new users or after clear data)
   Future<void> _checkForBackupsAfterLogin() async {
@@ -1212,162 +1193,19 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       future: _initializationFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return Scaffold(
-            backgroundColor: const Color(0xFF0a1128),
-            body: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  // Zarq Logo circular
-                  Image.asset(
-                    'assets/zarq_logo_circle.png',
-                    width: 200,
-                    height: 200,
-                    fit: BoxFit.contain,
-                  ),
-                  const SizedBox(height: 60),
-                  // Loading bar - conditionally shown
-                  ValueListenableBuilder<bool>(
-                    valueListenable: _showProgressBar,
-                    builder: (context, showProgress, child) {
-                      if (!showProgress) {
-                        return const SizedBox.shrink();
-                      }
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 60.0),
-                        child: ValueListenableBuilder<double>(
-                          valueListenable: _initProgress,
-                          builder: (context, progress, child) {
-                            return Column(
-                              children: [
-                                ClipRRect(
-                                  borderRadius: BorderRadius.circular(10),
-                                  child: SizedBox(
-                                    height: 8,
-                                    width: double.infinity,
-                                    child: LinearProgressIndicator(
-                                      value: progress,
-                                      backgroundColor: Colors.grey.shade800,
-                                      valueColor:
-                                          const AlwaysStoppedAnimation<Color>(
-                                            Color(0xFF00D9FF),
-                                          ),
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(height: 16),
-                                ValueListenableBuilder<String>(
-                                  valueListenable: _initStep,
-                                  builder: (context, step, child) {
-                                    return Text(
-                                      step,
-                                      textAlign: TextAlign.center,
-                                      style: const TextStyle(
-                                        fontSize: 14,
-                                        color: Colors.white70,
-                                        fontWeight: FontWeight.w400,
-                                      ),
-                                    );
-                                  },
-                                ),
-                              ],
-                            );
-                          },
-                        ),
-                      );
-                    },
-                  ),
-                ],
-              ),
-            ),
+          return ValueListenableBuilder<double>(
+            valueListenable: _initProgress,
+            builder: (_, progress, __) => AuthStartupView(progress: progress),
           );
         }
-
         if (snapshot.hasError) {
-          // Determine user-friendly error message
-          String friendlyMessage = 'Something went wrong';
-          String suggestion = 'Please try again';
-          IconData errorIcon = Icons.error_outline;
-
-          final errorString = snapshot.error.toString().toLowerCase();
-
-          if (errorString.contains('network') ||
-              errorString.contains('connection') ||
-              errorString.contains('internet')) {
-            friendlyMessage = 'No Internet Connection';
-            suggestion = 'Please check your internet and try again';
-            errorIcon = Icons.wifi_off;
-          } else if (errorString.contains('timeout')) {
-            friendlyMessage = 'Connection Timeout';
-            suggestion = 'Please check your internet and try again';
-            errorIcon = Icons.hourglass_empty;
-          } else if (errorString.contains('profile')) {
-            friendlyMessage = 'Profile Setup Required';
-            suggestion = 'Please complete your profile setup';
-            errorIcon = Icons.account_circle;
-          } else if (errorString.contains('permission')) {
-            friendlyMessage = 'Permission Required';
-            suggestion = 'Please grant required permissions';
-            errorIcon = Icons.lock;
-          }
-
-          return Scaffold(
-            backgroundColor: Colors.white,
-            body: SafeArea(
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(32.0),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(errorIcon, size: 80, color: Colors.orange),
-                      const SizedBox(height: 24),
-                      Text(
-                        friendlyMessage,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        suggestion,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          fontSize: 16,
-                          color: Colors.black54,
-                        ),
-                      ),
-                      const SizedBox(height: 32),
-                      ElevatedButton.icon(
-                        onPressed: () {
-                          // Retry initialization without logging out
-                          setState(() {
-                            _initializationFuture = _initializeUserServices();
-                          });
-                        },
-                        icon: const Icon(Icons.refresh),
-                        label: const Text('Try Again'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF667eea),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 32,
-                            vertical: 16,
-                          ),
-                          textStyle: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+          return AuthStartupView(
+            error: OpaqueAuthService.errorMessage(snapshot.error!),
+            onRetry: () { if (mounted) setState(() { _initializationFuture = _initializeUserServices(); }); },
+            onSignOut: () async {
+              await FirebaseAuth.instance.signOut();
+              if (mounted) Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const AuthGate()), (_) => false);
+            },
           );
         }
 
@@ -1376,30 +1214,11 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
           return const HomeScreen();
         } else {
           // User has Firebase account but no backend profile - complete registration
-          return ProfileSetupScreen(
+          return OpaqueAuthScreen(
             user: widget.user,
-            onSetupComplete:
-                (String? displayName, String? avatarUrl, String? username) {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (context) => RegisterScreen(
-                        user: widget.user,
-                        displayName: displayName,
-                        avatarUrl: avatarUrl,
-                        username: username,
-                        onRegistrationComplete: () {
-                          // print("[AuthWrapper] onRegistrationComplete triggered. Re-initializing services...");
-                          // Pop RegisterScreen to go back to AuthWrapper
-                          Navigator.of(context).pop();
-                          // Trigger re-initialization which will connect WebSocket and show HomeScreen
-                          setState(() {
-                            _initializationFuture = _initializeUserServices();
-                          });
-                        },
-                      ),
-                    ),
-                  );
-                },
+            onComplete: () {
+              if (mounted) setState(() { _initializationFuture = _initializeUserServices(); });
+            },
           );
         }
       },
