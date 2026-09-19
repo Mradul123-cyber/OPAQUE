@@ -133,7 +133,7 @@ class SignalManager(private val context: Context) {
             // Combine multiple sources for better uniqueness
             val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
             val timestamp = System.currentTimeMillis()
-            val random = secureRandom.nextInt(999999)
+            val random = secureRandom.nextInt(Integer.MAX_VALUE)
 
             val userUid = try {
                 FirebaseAuth.getInstance().currentUser?.uid ?: "anonymous"
@@ -146,16 +146,16 @@ class SignalManager(private val context: Context) {
             val combined = "$androidId-$userUid-$timestamp-$random"
             val hash = combined.hashCode()
 
-            // Ensure positive ID between 1 and Integer.MAX_VALUE
-            val deviceId = (Math.abs(hash) % 999999) + 1
-
-            Log.d(TAG, "Generated new device ID: $deviceId")
-            deviceId
+            // Use full Int range (1 to 2,147,483,647) to minimize collisions
+            // With 2 billion possible IDs, birthday paradox allows ~50,000 users before 1% collision risk
+            val deviceId = Math.abs(hash)
+            if (deviceId == 0) 1 else deviceId
 
         } catch (e: Exception) {
             Log.w(TAG, "Fallback device ID generation", e)
-            // Fallback: timestamp-based ID
-            ((System.currentTimeMillis() % 999999) + 1).toInt()
+            // Fallback: timestamp-based ID with larger range
+            val fallbackId = Math.abs((System.currentTimeMillis() + secureRandom.nextInt()).hashCode())
+            if (fallbackId == 0) 1 else fallbackId
         }
 
         // Store the device ID permanently
@@ -194,14 +194,58 @@ class SignalManager(private val context: Context) {
     }
 
     /**
-     * Get the current device ID (generates if not exists)
+     * Get the current device ID with server fallback
+     * Priority: 1) Local cache 2) Server 3) Generate new
      */
     fun getDeviceId(): Int {
-        val deviceId = sharedPrefs.getInt(KEY_DEVICE_ID, -1)
-        return if (deviceId == -1) {
-            generateDeviceId()
-        } else {
-            deviceId
+        val localDeviceId = sharedPrefs.getInt(KEY_DEVICE_ID, -1)
+
+        if (localDeviceId != -1) {
+            return localDeviceId
+        }
+
+        Log.w(TAG, "Device ID not found locally, checking server...")
+
+        // Try to fetch from server before generating new one
+        val serverDeviceId = fetchDeviceIdFromServer()
+        if (serverDeviceId != null && serverDeviceId > 0) {
+            Log.d(TAG, "Recovered device ID from server: $serverDeviceId")
+            sharedPrefs.edit().putInt(KEY_DEVICE_ID, serverDeviceId).apply()
+            return serverDeviceId
+        }
+
+        // No device ID on server, generate new one
+        Log.d(TAG, "No device ID on server, generating new one")
+        return generateDeviceId()
+    }
+
+    /**
+     * Fetch device ID from server (synchronous call - should be quick)
+     */
+    private fun fetchDeviceIdFromServer(): Int? {
+        return try {
+            val user = FirebaseAuth.getInstance().currentUser ?: return null
+            val uid = user.uid
+            val idToken = com.google.android.gms.tasks.Tasks.await(user.getIdToken(true)).token ?: return null
+
+            val url = java.net.URL("${AppConfig.BASE_URL}/v1/users/$uid/device")
+            val connection = url.openConnection() as java.net.HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.setRequestProperty("Authorization", "Bearer $idToken")
+            connection.connectTimeout = 5000
+            connection.readTimeout = 5000
+
+            if (connection.responseCode == 200) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                val json = org.json.JSONObject(response)
+                json.getInt("device_id")
+            } else {
+                Log.w(TAG, "Server returned ${connection.responseCode} for device ID fetch")
+                null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to fetch device ID from server: ${e.message}")
+            null
         }
     }
 

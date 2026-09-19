@@ -18,6 +18,7 @@ import '../services/mediastore_backup_service.dart';
 import '../services/secure_storage_service.dart';
 import '../widgets/call_aware_screen.dart';
 import 'backup_info_screen.dart';
+import 'google_drive_backups_screen.dart';
 import 'package:provider/provider.dart';
 
 class BackupManagementScreen extends StatefulWidget {
@@ -1064,232 +1065,17 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
   }
 
   Future<void> _viewGoogleDriveBackups() async {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final borderRadius = (screenWidth * 0.0375).clamp(12.0, 18.0);
-    final borderRadius2 = (screenWidth * 0.025).clamp(8.0, 12.0);
-    final titleSize = 20.0;
-    final bodySize = 12.0;
-    final smallSize = 10.0;
-    final iconSize1 = (screenWidth * 0.05).clamp(18.0, 24.0);
-    final iconSize2 = (screenWidth * 0.045).clamp(16.0, 20.0);
-    final spacing1 = (MediaQuery.of(context).size.height * 0.0125).clamp(
-      8.0,
-      12.0,
-    );
-
-    try {
-      if (!mounted) return;
-      setState(() => _isLoading = true);
-
-      // Optimistic execution: Trust cache and try to list backups
-      // getDriveApi() inside listBackupsFromGoogleDrive() will handle auth if needed
-      final backups = await _backupService.listBackupsFromGoogleDrive();
-
-      // Update cache after successful operation
-      if (_isGoogleDriveSignedIn) {
-        _updateGoogleDriveCache(true, _googleDriveEmail);
-      }
-
-      if (backups.isEmpty) {
-        _showSnackbar('No backups found in Google Drive');
-        return;
-      }
-
-      if (!mounted) return;
-
-      await showBackupSheet(
-        context: context,
-        builder: (context) => BackupDialog(
-          backgroundColor: _ui.surface,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(borderRadius),
-            side: BorderSide(color: _ui.blue.withOpacity(0.3)),
-          ),
-          title: Text(
-            'Google Drive Backups',
-            style: TextStyle(color: _ui.ink, fontSize: titleSize),
-          ),
-          content: Container(
-            width: double.maxFinite,
-            constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height * 0.6,
-            ),
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: backups.length,
-              itemBuilder: (context, index) {
-                final backup = backups[index];
-
-                // CRITICAL: Convert UTC time from Drive API to local time
-                final localDate = backup.createdTime != null
-                    ? backup.createdTime!
-                          .toLocal() // Convert UTC to local
-                    : null;
-                final date = localDate != null
-                    ? _formatDateTime(localDate)
-                    : 'Unknown date';
-
-                return Card(
-                  color: _ui.soft,
-                  margin: EdgeInsets.only(bottom: spacing1),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(borderRadius2),
-                    side: BorderSide(color: _ui.blue.withOpacity(0.2)),
-                  ),
-                  child: Padding(
-                    padding: EdgeInsets.all(spacing1),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Backup name with folder icon
-                        Row(
-                          children: [
-                            Icon(
-                              Icons.cloud_done,
-                              color: _ui.blue,
-                              size: iconSize1,
-                            ),
-                            SizedBox(width: spacing1),
-                            Expanded(
-                              child: Text(
-                                backup.name ?? 'Unknown',
-                                style: TextStyle(
-                                  color: _ui.ink,
-                                  fontSize: bodySize,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
-                        SizedBox(height: spacing1),
-
-                        // Date and type info
-                        Row(
-                          children: [
-                            Icon(
-                              Icons.access_time,
-                              color: _ui.muted,
-                              size: iconSize2 * 0.8,
-                            ),
-                            SizedBox(width: spacing1 * 0.5),
-                            Text(
-                              date,
-                              style: TextStyle(
-                                color: _ui.muted,
-                                fontSize: smallSize,
-                              ),
-                            ),
-                          ],
-                        ),
-                        SizedBox(height: spacing1 * 0.5),
-                        Row(
-                          children: [
-                            Icon(
-                              Icons.photo_library,
-                              color: _ui.blue,
-                              size: iconSize2 * 0.8,
-                            ),
-                            SizedBox(width: spacing1 * 0.5),
-                            Text(
-                              'Full backup with media',
-                              style: TextStyle(
-                                color: _ui.blue,
-                                fontSize: smallSize,
-                              ),
-                            ),
-                          ],
-                        ),
-                        SizedBox(height: spacing1),
-
-                        // Action buttons
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                onPressed: () {
-                                  Navigator.pop(context);
-                                  _restoreFromGoogleDrive(backup.id!);
-                                },
-                                icon: Icon(
-                                  Icons.download,
-                                  size: iconSize2 * 0.9,
-                                ),
-                                label: Text(
-                                  'Restore',
-                                  style: TextStyle(fontSize: smallSize),
-                                ),
-                                style: OutlinedButton.styleFrom(
-                                  foregroundColor: _ui.blue,
-                                  side: BorderSide(color: _ui.blue),
-                                  padding: EdgeInsets.symmetric(
-                                    vertical: spacing1 * 0.8,
-                                    horizontal: spacing1,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            SizedBox(width: spacing1),
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                onPressed: () {
-                                  Navigator.pop(context);
-                                  _deleteGoogleDriveBackup(backup.id!);
-                                },
-                                icon: Icon(Icons.delete, size: iconSize2 * 0.9),
-                                label: Text(
-                                  'Delete',
-                                  style: TextStyle(fontSize: smallSize),
-                                ),
-                                style: OutlinedButton.styleFrom(
-                                  foregroundColor: Color(0xFFBF6974),
-                                  side: BorderSide(color: Color(0xFFBF6974)),
-                                  padding: EdgeInsets.symmetric(
-                                    vertical: spacing1 * 0.8,
-                                    horizontal: spacing1,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          actions: [
-            TextButton.icon(
-              onPressed: () {
-                Navigator.pop(context);
-                _importBackupFromGoogleDrive();
-              },
-              icon: Icon(Icons.file_download, color: _ui.blue, size: iconSize2),
-              label: Text(
-                'Import Backup File',
-                style: TextStyle(color: _ui.blue, fontSize: bodySize),
-              ),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text(
-                'Close',
-                style: TextStyle(color: _ui.blue, fontSize: bodySize),
-              ),
-            ),
-          ],
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => GoogleDriveBackupsScreen(
+          accountEmail: _googleDriveEmail,
+          onRestore: (folderId) async {
+            await _restoreFromGoogleDrive(folderId);
+          },
         ),
-      );
-    } catch (e) {
-      debugPrint('[BackupManagement] Error listing Google Drive backups: $e');
-      if (mounted) _showSnackbar('Failed to load backups: $e', isError: true);
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
+      ),
+    );
   }
 
   /// Import a backup file from local device storage
@@ -2271,6 +2057,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
       builder: (ctx) => NotesSheet(
         title: title,
         description: 'Choose what works for you.',
+        icon: Icons.tune_rounded,
         child: Column(
           children: [
             for (final item in items)
@@ -2318,6 +2105,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
       builder: (ctx) => NotesSheet(
         title: 'Google Drive',
         description: _googleDriveEmail ?? 'Connected account',
+        icon: Icons.cloud_outlined,
         child: Column(
           children: [
             _settingRow(
@@ -2355,6 +2143,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
     String? value,
     VoidCallback? onTap,
     Widget? trailing,
+    bool showChevron = true,
     bool allowBusy = false,
   }) {
     final c = _ui;
@@ -2366,14 +2155,33 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
           border: Border(bottom: BorderSide(color: c.line)),
         ),
         child: Row(
+          crossAxisAlignment: subtitle != null ? CrossAxisAlignment.start : CrossAxisAlignment.center,
           children: [
-            Icon(icon, size: 17, color: c.muted),
+            Padding(
+              padding: EdgeInsets.only(top: subtitle != null ? 2.0 : 0.0),
+              child: Icon(icon, size: 17, color: c.muted),
+            ),
             const SizedBox(width: 11),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(title, style: c.text(12)),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(title, style: c.text(12)),
+                      ),
+                      if (value != null) ...[
+                        const SizedBox(width: 8),
+                        Text(
+                          value,
+                          textAlign: TextAlign.right,
+                          style: c.text(11, muted: true),
+                        ),
+                      ],
+                    ],
+                  ),
                   if (subtitle != null) ...[
                     const SizedBox(height: 3),
                     Text(subtitle, style: c.text(10, muted: true)),
@@ -2381,19 +2189,14 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
                 ],
               ),
             ),
-            if (value != null)
-              Flexible(
-                child: Text(
-                  value,
-                  textAlign: TextAlign.right,
-                  style: c.text(11, muted: true),
-                ),
-              ),
             if (trailing != null)
               trailing
-            else if (onTap != null)
+            else if (onTap != null && showChevron)
               Padding(
-                padding: const EdgeInsets.only(left: 5),
+                padding: EdgeInsets.only(
+                  left: 6,
+                  top: subtitle != null ? 1.0 : 0.0,
+                ),
                 child: Icon(Icons.chevron_right, size: 15, color: c.muted),
               ),
           ],
@@ -2409,12 +2212,12 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
       style: _ui.text(9, muted: true).copyWith(letterSpacing: 1.3),
     ),
   );
-  Widget _note(String text) => Padding(
+  Widget _note(String text, {IconData icon = Icons.lock_outline}) => Padding(
     padding: const EdgeInsets.only(top: 20),
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(Icons.lock_outline, size: 13, color: _ui.muted),
+        Icon(icon, size: 13, color: _ui.muted),
         const SizedBox(width: 7),
         Expanded(
           child: Text(
@@ -2432,17 +2235,19 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
       builder: (ctx) => NotesSheet(
         title: 'Backup options',
         description: backup['name'] as String,
+        icon: Icons.inventory_2_outlined,
         child: Column(
           children: [
             for (final item in [
               ('Rename', Icons.edit_outlined),
-              ('Restore', Icons.restore),
+              ('Restore', Icons.settings_backup_restore_rounded),
               ('Delete', Icons.delete_outline),
             ])
               _settingRow(
                 item.$2,
                 item.$1,
                 allowBusy: true,
+                showChevron: false,
                 onTap: () => Navigator.pop(ctx, item.$1),
               ),
           ],
@@ -2668,6 +2473,13 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
                               : int.parse(v.split(' ')[1]),
                         ),
                       ),
+                    )
+                  else
+                    _settingRow(
+                      Icons.photo_outlined,
+                      'Include media',
+                      value: 'Messages only',
+                      showChevron: false,
                     ),
                   _settingRow(
                     Icons.schedule,
@@ -2739,7 +2551,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
                       padding: const EdgeInsets.only(top: 14),
                       child: Text(
                         hasPassphrase
-                            ? 'Passphrase configured. Keep it safe — it cannot be changed here.'
+                            ? 'Passphrase configured. Keep it safe. It cannot be changed here.'
                             : 'Set a passphrase to schedule your first automatic backup.',
                         style: c.text(10, muted: true).copyWith(height: 1.7),
                       ),
@@ -2782,7 +2594,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
                     onTap: () => _runAction(_accountOptions),
                   ),
                   _note(
-                    'Backups are protected by your passphrase. Keep it safe — you’ll need it to restore.',
+                    'Backups are protected by your passphrase. Keep it safe. You’ll need it to restore.',
                   ),
                 ] else ...[
                   BackupAction(
@@ -2909,7 +2721,8 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
                     ),
                   ),
                   _note(
-                    'You’ll need the passphrase used to create your backup.',
+                    'Restoring will recover your saved conversations and media onto this device.',
+                    icon: Icons.restore_rounded,
                   ),
                 ],
               ],

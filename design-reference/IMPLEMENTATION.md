@@ -49,3 +49,13 @@ Notes implemented from the approved standalone preview: shared header and naviga
 Notes protection now follows the approved preview in light/dark mode: settings sheet, setup, unlock, change with confirmation, disable with verification, inline validation, password visibility, and locked Notes surface. Uses the existing NotesPasswordService and credentials. No tests or APK build run.
 
 Chat sharing UI: contact picker/search and selected-number review, compact contact cards with filled Call/Save icon buttons, full-page poll composer and simple live-vote cards, and GPS location review redesigned. Existing encrypted payload methods retained. User explicitly approved external coordinate/query sharing. OpenStreetMap tiles, Nominatim submitted search, and Overpass nearby places are now integrated, including selectable map pins, distance labels, GPS refresh and message maps. Endpoints can be configured with OPAQUE_MAP_TILE_URL, OPAQUE_PLACE_SEARCH_URL and OPAQUE_NEARBY_URL. Search requests are throttled and cached; map tiles use flutter_map 8.2.2 caching and visible attribution. No tests or APK build run.
+
+About preview (2026-09-20): added to the unified opaque-preview.html reference; open with #about or Home menu > About. Includes a neutral logo placeholder, light/dark preview control, version 1.0.0 build 27 from pubspec, and the three existing legal/support document routes. Documents show existing source text with a branding-pending label. Flutter About implementation remains unchanged; this is a browser design proposal only.
+
+About logo direction: the final OPAQUE logo will be circular. Keep the About placeholder circular until the logo asset is decided.
+
+About logo review: concept 09 (Conversation O — Soft) now appears in the circular 74px About logo area. CSS frames the primary badge from the original concept sheet without altering the image. Preview only; final logo approval and production asset preparation remain pending.
+
+Logo review update: concept 13 replaces concept 09 in About. User found nested circular O shapes confusing and prefers a squared inner form within a circular badge. Preview now uses a solid rounded-square conversation bubble; previous concepts retained for comparison.
+
+Logo direction correction: user wants one hollow rounded-rectangle O, tilted, inside a circular badge. Concept 14 now appears in About for review, replacing the solid bubble interpretation. No additional ring or speech bubble.

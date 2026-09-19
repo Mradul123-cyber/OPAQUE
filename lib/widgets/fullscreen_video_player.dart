@@ -129,7 +129,7 @@ class _FullscreenVideoPlayerState extends State<FullscreenVideoPlayer> {
       // Share the video file
       await Share.shareXFiles(
         [XFile(widget.videoPath)],
-        text: 'Shared from Zarq Messenger',
+        text: 'Shared from OPAQUE',
       );
     } catch (e) {
       // print('[VideoPlayer] Error sharing video: $e');

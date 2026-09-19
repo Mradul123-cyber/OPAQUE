@@ -167,9 +167,13 @@ class NotesSheet extends StatelessWidget {
     required this.title,
     required this.description,
     required this.child,
+    this.icon,
+    this.showIcon = true,
   });
   final String title, description;
   final Widget child;
+  final IconData? icon;
+  final bool showIcon;
   @override
   Widget build(BuildContext context) {
     final c = NotesColors(context);
@@ -204,19 +208,20 @@ class NotesSheet extends StatelessWidget {
                 const SizedBox(height: 18),
                 Row(
                   children: [
-                    Container(
-                      width: 38,
-                      height: 38,
-                      decoration: BoxDecoration(
-                        color: c.soft,
-                        borderRadius: BorderRadius.circular(12),
+                    if (showIcon)
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: c.soft,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Icon(
+                          icon ?? Icons.notes_outlined,
+                          color: c.blue,
+                          size: 19,
+                        ),
                       ),
-                      child: Icon(
-                        Icons.notes_outlined,
-                        color: c.blue,
-                        size: 19,
-                      ),
-                    ),
                     const Spacer(),
                     IconButton(
                       tooltip: 'Close',

@@ -5,6 +5,7 @@ import '../services/user_settings_provider.dart';
 import '../widgets/call_aware_screen.dart';
 import '../widgets/global_call_overlay.dart';
 import '../widgets/opaque_style_panel.dart';
+import '../widgets/backup_design.dart';
 
 class StyleScreen extends StatefulWidget {
   const StyleScreen({super.key, this.embedded = false});
@@ -65,16 +66,7 @@ class _StyleScreenState extends State<StyleScreen> {
                 : Colors.white,
             appBar: widget.embedded
                 ? null
-                : AppBar(
-                    backgroundColor: settings.isDarkMode
-                        ? const Color(0xFF19202A)
-                        : Colors.white,
-                    foregroundColor: settings.isDarkMode
-                        ? Colors.white
-                        : const Color(0xFF424D60),
-                    elevation: 0,
-                    scrolledUnderElevation: 0,
-                  ),
+                : const BackupHeader(),
             body: OpaqueStylePanel(
               settings: settings,
               circularOverlay: _isCircularOverlay,

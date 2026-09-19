@@ -128,6 +128,26 @@ class _NotesScreenState extends State<NotesScreen> {
     }
   }
 
+  Color _getCategoryColor(String? categoryName, {Color? defaultColor}) {
+    if (categoryName == null) return defaultColor ?? const Color(0xFF507FC3);
+    for (final cat in _categories) {
+      if (cat.name.toLowerCase() == categoryName.toLowerCase()) {
+        if (cat.colorCode != null && cat.colorCode!.isNotEmpty) {
+          try {
+            final hex = cat.colorCode!.replaceFirst('#', '');
+            if (hex.length == 6) {
+              return Color(int.parse('0xFF$hex'));
+            } else if (hex.length == 8) {
+              return Color(int.parse('0x$hex'));
+            }
+          } catch (_) {}
+        }
+        break;
+      }
+    }
+    return defaultColor ?? const Color(0xFF507FC3);
+  }
+
   Future<void> _editNote(Note note) async {
     final result = await Navigator.of(context).push(
       MaterialPageRoute(builder: (context) => CreateNoteScreen(note: note)),
@@ -297,18 +317,37 @@ class _NotesScreenState extends State<NotesScreen> {
                                           : Colors.transparent,
                                       borderRadius: BorderRadius.circular(14),
                                     ),
-                                    child: Text(
-                                      category ?? 'All',
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        fontWeight:
-                                            _selectedCategory == category
-                                            ? FontWeight.w600
-                                            : FontWeight.w400,
-                                        color: _selectedCategory == category
-                                            ? ink
-                                            : muted,
-                                      ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        if (category != null) ...[
+                                          Container(
+                                            width: 7,
+                                            height: 7,
+                                            margin: const EdgeInsets.only(right: 6),
+                                            decoration: BoxDecoration(
+                                              shape: BoxShape.circle,
+                                              color: _getCategoryColor(
+                                                category,
+                                                defaultColor: blue,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                        Text(
+                                          category ?? 'All',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight:
+                                                _selectedCategory == category
+                                                ? FontWeight.w600
+                                                : FontWeight.w400,
+                                            color: _selectedCategory == category
+                                                ? ink
+                                                : muted,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),
@@ -600,24 +639,35 @@ class _NotesScreenState extends State<NotesScreen> {
                                         Row(
                                           children: [
                                             if (note.category != null) ...[
-                                              Container(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                      horizontal: 7,
-                                                      vertical: 2,
+                                              Builder(
+                                                builder: (context) {
+                                                  final catColor = _getCategoryColor(
+                                                    note.category,
+                                                    defaultColor: blue,
+                                                  );
+                                                  return Container(
+                                                    padding:
+                                                        const EdgeInsets.symmetric(
+                                                          horizontal: 7,
+                                                          vertical: 2,
+                                                        ),
+                                                    decoration: BoxDecoration(
+                                                      color: dark
+                                                          ? catColor.withOpacity(0.18)
+                                                          : catColor.withOpacity(0.12),
+                                                      borderRadius:
+                                                          BorderRadius.circular(5),
                                                     ),
-                                                decoration: BoxDecoration(
-                                                  color: soft,
-                                                  borderRadius:
-                                                      BorderRadius.circular(5),
-                                                ),
-                                                child: Text(
-                                                  note.category!,
-                                                  style: TextStyle(
-                                                    fontSize: 10,
-                                                    color: blue,
-                                                  ),
-                                                ),
+                                                    child: Text(
+                                                      note.category!,
+                                                      style: TextStyle(
+                                                        fontSize: 10,
+                                                        fontWeight: FontWeight.w500,
+                                                        color: catColor,
+                                                      ),
+                                                    ),
+                                                  );
+                                                },
                                               ),
                                               const SizedBox(width: 7),
                                             ],
@@ -844,23 +894,31 @@ class _NotesScreenState extends State<NotesScreen> {
                   Row(
                     children: [
                       if (note.category != null)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.blue.withOpacity(0.12),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            note.category!,
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: Colors.blue,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
+                        Builder(
+                          builder: (context) {
+                            final catColor = _getCategoryColor(
+                              note.category,
+                              defaultColor: Colors.blue,
+                            );
+                            return Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: catColor.withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                note.category!,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: catColor,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            );
+                          },
                         ),
                       const Spacer(),
                       Text(

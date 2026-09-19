@@ -219,7 +219,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
         try {
             val key = PREFIX_PREKEY + preKeyId
             val recordB64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
-            prefs.edit().putString(key, recordB64).apply()
+            prefs.edit().putString(key, recordB64).commit()  // FIX: Use commit() to ensure disk write completes before upload
             Log.d(TAG, "Stored prekey $preKeyId")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to store prekey $preKeyId", e)
@@ -285,7 +285,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
         try {
             val key = PREFIX_SIGNED_PREKEY + signedPreKeyId
             val recordB64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
-            prefs.edit().putString(key, recordB64).apply()
+            prefs.edit().putString(key, recordB64).commit()  // FIX: Use commit() to ensure disk write completes
             Log.d(TAG, "Stored signed prekey $signedPreKeyId")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to store signed prekey $signedPreKeyId", e)
@@ -360,7 +360,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
             Log.d(TAG, "STORE SESSION: $address, size before: $sizeBefore")
 
             val recordB64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
-            prefs.edit().putString(key, recordB64).apply()
+            prefs.edit().putString(key, recordB64).commit()  // FIX: Use commit() to ensure session is saved before use
 
             // Debug: Verify stored session can be loaded back
             val loadedRecord = loadSession(address)
@@ -449,9 +449,17 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
     fun exportSignalState(): String {
         return try {
             val allData = JSONObject()
+            var skippedPrekeys = 0
 
-            // Export all SharedPreferences entries
+            // Export all SharedPreferences entries EXCEPT one-time prekeys
+            // One-time prekeys should NEVER be backed up (violates forward secrecy)
             for ((key, value) in prefs.all) {
+                // Skip one-time prekeys (they will be regenerated fresh on restore)
+                if (key.startsWith(PREFIX_PREKEY)) {
+                    skippedPrekeys++
+                    continue
+                }
+
                 when (value) {
                     is String -> allData.put(key, value)
                     is Int -> allData.put(key, value)
@@ -461,7 +469,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
             }
 
             val result = allData.toString()
-            Log.d(TAG, "Exported Signal state: ${prefs.all.size} entries")
+            Log.d(TAG, "Exported Signal state: ${prefs.all.size - skippedPrekeys} entries (skipped $skippedPrekeys one-time prekeys for forward secrecy)")
             result
         } catch (e: Exception) {
             Log.e(TAG, "Failed to export Signal state", e)
@@ -497,8 +505,8 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
                 count++
             }
 
-            editor.apply()
-            Log.d(TAG, "Imported Signal state: $count entries")
+            editor.commit()  // Use commit() to ensure restore completes synchronously
+            Log.d(TAG, "Imported Signal state: $count entries (one-time prekeys will be regenerated fresh)")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to import Signal state", e)
@@ -516,7 +524,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
         try {
             val key = PREFIX_SENDER_KEY + senderKeyName.groupId + "_" + senderKeyName.sender.name + "_" + senderKeyName.sender.deviceId
             val recordB64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
-            prefs.edit().putString(key, recordB64).apply()
+            prefs.edit().putString(key, recordB64).commit()  // FIX: Use commit() for group encryption keys
             Log.d(TAG, "Stored sender key for ${senderKeyName.sender.name}:${senderKeyName.sender.deviceId} in group ${senderKeyName.groupId}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to store sender key for ${senderKeyName.sender.name}", e)

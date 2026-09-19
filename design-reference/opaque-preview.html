@@ -367,3 +367,57 @@ root.addEventListener('keydown',e=>{if(e.key==='Escape'){closePanels();if(record
 q('.ol-composer').onsubmit=e=>{e.preventDefault();closePanels();const input=q('[data-draft]');if(input.value.trim()){bubble(input.value.trim(),true);input.value='';feedback('');q('[data-messages]').scrollTop=q('[data-messages]').scrollHeight}else{recording=!recording;feedback(recording?'Voice note preview · tap stop to finish. No audio is captured.':'Voice note preview stopped.')}syncComposer()};render();icon();if(globalThis.Tweak){const t=new Tweak({container:root,onChange:render});t.addToggle(options,'rounded',{label:'Rounded frame'});t.addToggle(options,'emptyCalls',{label:'Empty calls page'})}
 })();
 </script>
+
+<!-- About design preview: kept in the shared reference; no production callbacks. -->
+<style>
+#opaque-preview .oa-header{display:flex;align-items:center;gap:9px;padding:9px 14px;border-bottom:1px solid var(--ol-line);flex-shrink:0}
+#opaque-preview .oa-header h1{font-size:16px;font-weight:500;letter-spacing:-.3px;margin:0;flex:1}
+#opaque-preview .oa-header svg,#opaque-preview .oa-link svg{width:19px;height:19px}
+#opaque-preview .oa-scroll{overflow:auto;min-height:0;flex:1;padding:0 23px 24px;scrollbar-width:thin}
+#opaque-preview .oa-hero{text-align:center;padding:30px 0 25px}
+#opaque-preview .oa-logo{width:74px;height:74px;position:relative;overflow:hidden;margin:0 auto 17px;border-radius:50%;background:#101010}
+#opaque-preview .oa-logo img{position:absolute;width:111.12%;max-width:none;height:auto;left:-5.56%;top:-5.56%}
+#opaque-preview .oa-hero h2{font-size:26px;font-weight:600;letter-spacing:4px;padding-left:4px}
+#opaque-preview .oa-tagline{font-size:13px;margin:9px 0 12px;color:var(--ol-muted)}
+#opaque-preview .oa-version{font-size:10px;color:var(--ol-muted);background:#f3f4f7;padding:5px 10px;border-radius:20px;display:inline-block}
+#opaque-preview .oa-section{padding:20px 0;border-top:1px solid var(--ol-line)}
+#opaque-preview .oa-section h3{margin:0 0 9px;font-size:13px;font-weight:600;letter-spacing:-.15px}
+#opaque-preview .oa-section p{font-size:12px;line-height:1.75;color:var(--ol-muted);margin:0}
+#opaque-preview .oa-security{display:flex;gap:12px;padding:15px;background:#f4f6fa;border-radius:14px;margin:0 0 22px}
+#opaque-preview .oa-security>svg{width:19px;height:19px;flex-shrink:0;color:#607aa3;margin-top:2px}
+#opaque-preview .oa-security h3{font-size:12px;margin:0 0 5px;font-weight:600}
+#opaque-preview .oa-security p{font-size:11px;line-height:1.65;color:var(--ol-muted);margin:0}
+#opaque-preview .oa-features{display:grid;grid-template-columns:1fr 1fr;gap:13px 10px;margin-top:15px;font-size:11px;color:var(--ol-muted)}
+#opaque-preview .oa-features span{display:flex;gap:8px;align-items:center}
+#opaque-preview .oa-features svg{width:16px;height:16px;flex-shrink:0}
+#opaque-preview .oa-link{width:100%;display:flex;align-items:center;gap:11px;text-align:left;border-bottom:1px solid var(--ol-line);padding:12px 0;font-size:12px;min-height:48px}
+#opaque-preview .oa-link span{flex:1}#opaque-preview .oa-link>svg{color:var(--ol-muted)}
+#opaque-preview .oa-footer{text-align:center;font-size:10px;line-height:1.8;color:var(--ol-muted);padding-top:23px}
+#opaque-preview .oa-document{white-space:pre-wrap;font:12px/1.8 Inter,Arial,sans-serif;overflow-wrap:anywhere;margin-top:20px}
+#opaque-preview[data-theme=dark] .oa-logo,#opaque-preview[data-theme=dark] .oa-version,#opaque-preview[data-theme=dark] .oa-security{background:#252e3b}
+#opaque-preview[data-theme=dark] .oa-hero h2{color:#fff}
+#opaque-preview[data-theme=dark] .ol-icon:hover,#opaque-preview[data-theme=dark] .oa-link:hover{background:#283241;color:#fff}
+#opaque-preview[data-theme=dark] .oa-header .ol-icon:focus-visible{outline-color:#9bbcff}
+.oa-preview-tools{max-width:360px;margin:14px auto;display:flex;align-items:center;justify-content:space-between;font:11px Inter,Arial,sans-serif;color:#73747c;gap:12px}.oa-preview-tools button{font:inherit;border:1px solid #d9dce4;border-radius:20px;background:#fff;color:#30323a;padding:9px 13px;cursor:pointer}
+</style>
+<script>
+(()=>{
+ const root=document.getElementById('opaque-preview'),phone=root.querySelector('.ol-phone');
+ const paths={back:'M19 12H5m7-7-7 7 7 7',arrow:'m9 5 7 7-7 7',shield:'M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6Z M9 12l2 2 4-4',chat:'M21 11a8 8 0 0 1-8 8H5l-3 3V11a9 9 0 0 1 19 0Z',users:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M9 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8 M17 4a4 4 0 0 1 0 8 M22 21v-2a4 4 0 0 0-3-4',phone:'M22 16v3a2 2 0 0 1-2 2A18 18 0 0 1 3 4a2 2 0 0 1 2-2h3l2 5-3 2a14 14 0 0 0 8 8l2-3Z',image:'M3 3h18v18H3Z M3 16l5-5 5 5 3-3 5 5 M8 7h.01',backup:'M4 11a8 8 0 1 1 2 7 M4 4v7h7 M12 8v5l3 2',style:'M12 3a9 9 0 1 0 0 18h2a2 2 0 0 0 0-4h-1a2 2 0 0 1 0-4h4a4 4 0 0 0 4-4c0-3-4-6-9-6Z',file:'M14 2H4v20h16V8Z M14 2v6h6 M8 13h8 M8 17h6',support:'M4 14v-3a8 8 0 0 1 16 0v7a3 3 0 0 1-3 3h-3 M4 11H2v7h4v-7Z M20 11h2v7h-4v-7Z'};
+ const icon=n=>'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="'+paths[n]+'"/></svg>';
+ const about=document.createElement('div');about.dataset.screen='about';about.hidden=true;
+ about.innerHTML='<header class="oa-header"><button class="ol-icon" data-about-back aria-label="Back from About">'+icon('back')+'</button><h1>About</h1></header><div class="oa-scroll"><div class="oa-hero"><div class="oa-logo"><img src="logo-concepts/14-tilted-rectangular-o.png" alt="OPAQUE tilted rectangular O logo, concept 14"></div><h2>OPAQUE</h2><p class="oa-tagline">A little more private. A lot more you.</p><span class="oa-version">Version 1.0.0 · Build 27</span></div><section class="oa-section"><h3>Your conversations. Your space.</h3><p>Stay close to your people with private messages, group conversations, and voice and video calls.</p></section><div class="oa-security">'+icon('shield')+'<div><h3>End-to-end encrypted messaging</h3><p>Built on the Signal Protocol to help keep your personal conversations private.</p></div></div><section class="oa-section"><h3>Made for the everyday</h3><div class="oa-features">'+[['chat','Private messages'],['users','Group chats'],['phone','Voice & video calls'],['image','Media sharing'],['backup','Backup & restore'],['style','Your own style']].map(([i,t])=>'<span>'+icon(i)+t+'</span>').join('')+'</div></section><section class="oa-section"><h3>Built with care</h3><p>Independently developed with a focus on privacy, thoughtful design, and everyday connection.</p></section><section class="oa-section"><h3>Legal & support</h3>'+[['shield','Privacy Policy','privacy_policy'],['file','Terms of Service','terms_of_service'],['support','Contact Support','contact_support']].map(([i,t,f])=>'<button class="oa-link" data-about-doc="'+f+'" data-title="'+t+'">'+icon(i)+'<span>'+t+'</span>'+icon('arrow')+'</button>').join('')+'</section><footer class="oa-footer">OPAQUE<br>A space for your conversations.</footer></div>';
+ phone.insertBefore(about,root.querySelector('.ol-gesture'));
+ const documentView=document.createElement('div');documentView.dataset.screen='about-document';documentView.hidden=true;documentView.innerHTML='<header class="oa-header"><button class="ol-icon" aria-label="Back to About">'+icon('back')+'</button><h1></h1></header><div class="oa-scroll"><p class="ol-sub">Existing app document · branding update pending</p><div class="oa-document"></div></div>';phone.insertBefore(documentView,root.querySelector('.ol-gesture'));
+ let previous,returnFocus;
+ function openAbout(){previous=root.querySelector('[data-screen]:not([hidden])');returnFocus=document.activeElement;previous.hidden=true;about.hidden=false;root.querySelector('[data-home-menu]').hidden=true;root.querySelector('[data-home-more]').setAttribute('aria-expanded','false');about.querySelector('button').focus()}
+ function closeAbout(){about.hidden=true;(previous||root.querySelector('[data-screen=inbox]')).hidden=false;if(returnFocus&&returnFocus.offsetParent)returnFocus.focus();else root.querySelector('[data-home-more]').focus();if(location.hash==='#about')history.replaceState(null,'',location.pathname+location.search)}
+ const menuButton=document.createElement('button');menuButton.textContent='About';menuButton.onclick=openAbout;root.querySelector('[data-home-menu]').append(menuButton);
+ about.querySelector('[data-about-back]').onclick=closeAbout;
+ let activeLink;
+ documentView.querySelector('button').onclick=()=>{documentView.hidden=true;about.hidden=false;activeLink.focus()};
+ about.querySelectorAll('[data-about-doc]').forEach(button=>button.onclick=async()=>{activeLink=button;about.hidden=true;documentView.hidden=false;documentView.querySelector('h1').textContent=button.dataset.title;const content=documentView.querySelector('.oa-document');content.textContent='Loading document…';documentView.querySelector('button').focus();try{const response=await fetch('../assets/'+button.dataset.aboutDoc+'.md');if(!response.ok)throw Error();content.textContent=await response.text()}catch{content.textContent='This document is available inside the app. Serve the preview from the project folder to read it here.'}});
+ const controls=document.createElement('div');controls.className='oa-preview-tools';controls.innerHTML='<span>About design preview · logo 14</span><button type="button" aria-pressed="false">Dark preview</button>';root.after(controls);controls.querySelector('button').onclick=e=>{const dark=root.dataset.theme!=='dark';root.dataset.theme=dark?'dark':'light';e.currentTarget.setAttribute('aria-pressed',String(dark));e.currentTarget.textContent=dark?'Light preview':'Dark preview'};
+ if(location.hash==='#about')openAbout();
+})();
+</script>

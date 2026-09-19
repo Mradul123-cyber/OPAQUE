@@ -275,7 +275,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
               _buildHelpStep(
                 '4',
                 'Add to Safe Senders',
-                'Add noreply@zarq-messenger.com to your contacts',
+                'Add opaquelabs.in@gmail.com to your contacts',
                 screenWidth,
               ),
               SizedBox(height: (screenWidth * 0.03).clamp(10.0, 14.0)),

@@ -199,7 +199,7 @@ We may share information only in these limited circumstances:
 
 If we discover that a child under 13 has created an account, we will delete it immediately.
 
-Parents/guardians can contact us at **zarqmessenger@gmail.com** if they believe their child has provided us with information.
+Parents/guardians can contact us at **opaquelabs.in@gmail.com** if they believe their child has provided us with information.
 
 ---
 
@@ -226,7 +226,7 @@ Continued use of the app after changes means you accept the updated policy.
 
 If you have questions, concerns, or requests regarding this Privacy Policy or your data:
 
-**Email:** zarqmessenger@gmail.com
+**Email:** opaquelabs.in@gmail.com
 
 **Developer:** Zarq Messenger (Independent Developer, India)
 

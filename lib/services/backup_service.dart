@@ -354,12 +354,14 @@ class BackupService {
     // CRITICAL: Exclude both "delete for me" and "delete for everyone" messages
     // 1. Use LEFT JOIN to exclude messages in deleted_messages table (delete for me)
     // 2. Filter out messages with deletion placeholder content (delete for everyone)
+    // 3. Filter out location messages (for privacy/security)
     final messages = await db.rawQuery('''
       SELECT m.* FROM messages m
       LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
       WHERE dm.message_id IS NULL
         AND m.content NOT LIKE 'This message was deleted%'
         AND m.content NOT LIKE '%deleted this message%'
+        AND m.content NOT LIKE '{"type":"location"%'
       ORDER BY m.timestamp ASC
     ''', [currentUser.uid]);
 
@@ -609,6 +611,7 @@ class BackupService {
 
   /// Decrypt backup data with AES-256-GCM (runs in background isolate)
   Future<BackupData> decryptBackup(File encryptedFile, String passphrase) async {
+    bool decryptionComplete = false;
     try {
       debugPrint('[BackupService] Starting backup decryption in background...');
 
@@ -616,7 +619,6 @@ class BackupService {
       final encryptedData = await encryptedFile.readAsBytes();
 
       // Start periodic notification updates to keep it alive during decryption
-      bool decryptionComplete = false;
       int notificationProgress = 26;
       Timer.periodic(const Duration(seconds: 2), (timer) {
         if (decryptionComplete) {
@@ -643,6 +645,7 @@ class BackupService {
 
       return backupData;
     } catch (e) {
+      decryptionComplete = true; // CRITICAL: Stop timer on error
       debugPrint('[BackupService] Decryption error: $e');
       throw Exception('Failed to decrypt backup. Incorrect passphrase or corrupted file.');
     }

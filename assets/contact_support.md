@@ -10,7 +10,7 @@ We value your feedback and are here to assist you with any questions, issues, or
 
 ### Primary Contact
 
-**Email:** zarqmessenger@gmail.com
+**Email:** opaquelabs.in@gmail.com
 
 **Response Time:** We aim to respond within 7 business days.
 
@@ -145,12 +145,12 @@ When contacting us:
 - Describe steps to reproduce
 
 **Critical Bugs (App Crashes, Security Issues):**
-- Email immediately: zarqmessenger@gmail.com
+- Email immediately: opaquelabs.in@gmail.com
 - Use subject line: "URGENT: [Brief Description]"
 - Include all relevant details
 
 **Security Vulnerabilities:**
-- Email: zarqmessenger@gmail.com
+- Email: opaquelabs.in@gmail.com
 - Subject: "SECURITY: Vulnerability Report"
 - Please report responsibly (don't publicly disclose until fixed)
 - We appreciate your help keeping Zarq secure!
@@ -215,7 +215,7 @@ We're constantly improving Zarq Messenger!
 - Performance issues
 
 **How to Share Feedback:**
-- Email: zarqmessenger@gmail.com
+- Email: opaquelabs.in@gmail.com
 - Subject: "Feedback: [Your Topic]"
 
 ---
@@ -231,7 +231,7 @@ We're constantly improving Zarq Messenger!
 - Security threats
 
 **Please Report:**
-- Email: zarqmessenger@gmail.com
+- Email: opaquelabs.in@gmail.com
 - Subject: "Report: [Issue Type]"
 - Include: Username of violator, screenshots, description
 
@@ -283,7 +283,7 @@ We're planning to add more support channels:
 
 **For security vulnerabilities or critical security issues:**
 
-**Email:** zarqmessenger@gmail.com
+**Email:** opaquelabs.in@gmail.com
 **Subject:** "SECURITY: [Brief Description]"
 
 **Please include:**
@@ -304,7 +304,7 @@ We're planning to add more support channels:
 
 **For legal inquiries or law enforcement requests:**
 
-**Email:** zarqmessenger@gmail.com
+**Email:** opaquelabs.in@gmail.com
 **Subject:** "LEGAL: [Request Type]"
 
 **Please note:**
@@ -337,7 +337,7 @@ We're planning to add more support channels:
 
 Currently, we don't have a status page. If you suspect a service outage:
 - Check your internet connection first
-- Email us: zarqmessenger@gmail.com
+- Email us: opaquelabs.in@gmail.com
 - We'll respond if there's a known issue
 
 **Planned:** Status page at status.zarqmessenger.com
@@ -362,13 +362,13 @@ We're committed to:
 
 | Need Help With | Contact Method | Expected Response |
 |---------------|----------------|-------------------|
-| Technical Support | zarqmessenger@gmail.com | 7 business days |
-| Bug Reports | zarqmessenger@gmail.com | 7 business days |
-| Security Issues | zarqmessenger@gmail.com (Subject: SECURITY) | 48 hours |
-| Account Issues | zarqmessenger@gmail.com | 7 business days |
-| Feature Requests | zarqmessenger@gmail.com | 7 business days |
-| Abuse Reports | zarqmessenger@gmail.com (Subject: Report) | 3 business days |
-| Legal Requests | zarqmessenger@gmail.com (Subject: LEGAL) | 7 business days |
+| Technical Support | opaquelabs.in@gmail.com | 7 business days |
+| Bug Reports | opaquelabs.in@gmail.com | 7 business days |
+| Security Issues | opaquelabs.in@gmail.com (Subject: SECURITY) | 48 hours |
+| Account Issues | opaquelabs.in@gmail.com | 7 business days |
+| Feature Requests | opaquelabs.in@gmail.com | 7 business days |
+| Abuse Reports | opaquelabs.in@gmail.com (Subject: Report) | 3 business days |
+| Legal Requests | opaquelabs.in@gmail.com (Subject: LEGAL) | 7 business days |
 
 ---
 
@@ -376,7 +376,7 @@ We're committed to:
 
 *Your messages. Zero access. Total privacy.*
 
-**Email:** zarqmessenger@gmail.com
+**Email:** opaquelabs.in@gmail.com
 
 ---
 

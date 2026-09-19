@@ -27,6 +27,7 @@ import 'services/database_service.dart';
 import 'widgets/call_aware_screen.dart';
 import 'services/overlay_permission_helper.dart';
 import 'services/system_overlay_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zarq_messenger/app_config.dart';
 
 class Friend {
@@ -53,6 +54,14 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   final User? _currentUser = FirebaseAuth.instance.currentUser;
 
+  // Static in-memory cache across screen navigations in the current session
+  static String? _cachedUid;
+  static String? _cachedUsername;
+  static String? _cachedDisplayName;
+
+  // Active bottom sheet updater (if profile sheet is open during a background sync)
+  void Function(void Function())? _profileSheetUpdater;
+
   late TextEditingController _nameController;
   bool _isUploading = false;
   String? _avatarUrl;
@@ -70,9 +79,67 @@ class _SettingsScreenState extends State<SettingsScreen> {
       text: _currentUser?.displayName ?? '',
     );
     _avatarUrl = _currentUser?.photoURL;
+
+    // 1. Immediate in-memory cache population (0ms, no flicker)
+    final uid = _currentUser?.uid;
+    if (_cachedUid == uid && uid != null) {
+      _username = _cachedUsername;
+      _displayName = _cachedDisplayName ?? _currentUser?.displayName;
+    } else {
+      _cachedUid = uid;
+      _cachedUsername = null;
+      _cachedDisplayName = null;
+      _username = null;
+      _displayName = _currentUser?.displayName;
+    }
+
+    if (_displayName != null && _displayName!.isNotEmpty) {
+      _displayNameController.text = _displayName!;
+    }
+
+    // 2. Load from persistent local storage (survives app restarts)
+    _loadCachedProfile();
+
+    // 3. Silent background revalidation with backend (Stale-While-Revalidate)
     _fetchProfileData();
   }
 
+  /// Load profile from local SharedPreferences without blocking UI
+  Future<void> _loadCachedProfile() async {
+    try {
+      final uid = _currentUser?.uid;
+      if (uid == null) return;
+
+      final prefs = await SharedPreferences.getInstance();
+      final savedUid = prefs.getString('cached_user_uid');
+      if (savedUid != uid) return;
+
+      final savedUsername = prefs.getString('cached_user_username');
+      final savedDisplayName = prefs.getString('cached_user_display_name');
+
+      if (!mounted) return;
+
+      bool changed = false;
+      if (savedUsername != null && savedUsername.isNotEmpty && _username == null) {
+        _username = savedUsername;
+        _cachedUsername = savedUsername;
+        changed = true;
+      }
+      if (savedDisplayName != null && savedDisplayName.isNotEmpty && _displayName == null) {
+        _displayName = savedDisplayName;
+        _cachedDisplayName = savedDisplayName;
+        _displayNameController.text = savedDisplayName;
+        changed = true;
+      }
+
+      if (changed && mounted) {
+        setState(() {});
+        _profileSheetUpdater?.call(() {});
+      }
+    } catch (_) {}
+  }
+
+  /// Silent background fetch to ensure local state stays in sync with backend
   Future<void> _fetchProfileData() async {
     try {
       final user = FirebaseAuth.instance.currentUser;
@@ -86,15 +153,64 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        setState(() {
-          _displayName = data['display_name'];
-          _username = data['username'];
-          _displayNameController.text = _displayName ?? '';
-        });
+        final fetchedDisplayName = data['display_name'] as String?;
+        final fetchedUsername = data['username'] as String?;
+
+        bool changed = false;
+
+        if (fetchedUsername != null && fetchedUsername.isNotEmpty) {
+          if (_username != fetchedUsername) {
+            _username = fetchedUsername;
+            changed = true;
+          }
+          _cachedUsername = fetchedUsername;
+        }
+
+        if (fetchedDisplayName != null && fetchedDisplayName.isNotEmpty) {
+          if (_displayName != fetchedDisplayName) {
+            _displayName = fetchedDisplayName;
+            _displayNameController.text = fetchedDisplayName;
+            changed = true;
+          }
+          _cachedDisplayName = fetchedDisplayName;
+        }
+
+        final uid = user.uid;
+        _cachedUid = uid;
+
+        // Persist to local storage for offline reliability
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('cached_user_uid', uid);
+          if (fetchedUsername != null && fetchedUsername.isNotEmpty) {
+            await prefs.setString('cached_user_username', fetchedUsername);
+          }
+          if (fetchedDisplayName != null && fetchedDisplayName.isNotEmpty) {
+            await prefs.setString('cached_user_display_name', fetchedDisplayName);
+          }
+        } catch (_) {}
+
+        if (mounted && changed) {
+          setState(() {});
+          _profileSheetUpdater?.call(() {});
+        }
       }
     } catch (e) {
-      // print('Error fetching profile data: $e');
+      // Silent error: Keep existing cached profile intact without showing placeholders
     }
+  }
+
+  /// Clear in-memory and persistent profile cache (e.g. on logout/delete account)
+  static Future<void> _clearProfileCache() async {
+    _cachedUid = null;
+    _cachedUsername = null;
+    _cachedDisplayName = null;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('cached_user_uid');
+      await prefs.remove('cached_user_username');
+      await prefs.remove('cached_user_display_name');
+    } catch (_) {}
   }
 
   @override
@@ -289,6 +405,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (!mounted) return;
 
       if (response.statusCode == 200) {
+        _cachedDisplayName = newDisplayName;
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('cached_user_display_name', newDisplayName);
+        } catch (_) {}
         setState(() {
           _displayName = newDisplayName;
         });
@@ -473,6 +594,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       backgroundColor: Colors.transparent,
       builder: (sheetContext) => StatefulBuilder(
         builder: (ctx, updateSheet) {
+          _profileSheetUpdater = updateSheet;
           final c = NotesColors(ctx);
           Widget identity(IconData icon, String label, String value) =>
               Container(
@@ -516,6 +638,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           return NotesSheet(
             title: 'Your profile',
             description: 'How you appear to your friends.',
+            showIcon: false,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -674,6 +797,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               );
                               if (response.statusCode != 200)
                                 throw StateError('Update failed');
+                              _cachedDisplayName = name;
+                              try {
+                                final prefs = await SharedPreferences.getInstance();
+                                await prefs.setString('cached_user_display_name', name);
+                              } catch (_) {}
                               if (mounted) setState(() => _displayName = name);
                               if (ctx.mounted) Navigator.pop(ctx);
                             } catch (_) {
@@ -695,6 +823,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         },
       ),
     );
+    _profileSheetUpdater = null;
   }
 
   Widget _opaqueAvatar(NotesColors c, double size) {
@@ -1132,10 +1261,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _navigateToStyle() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const StyleScreen()),
-    );
+    Navigator.pop(context, 'open_style');
   }
 
   Widget _buildPremiumSection({
@@ -1492,7 +1618,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
       websocketService.disconnect();
 
-      // 5. Firebase logout (always)
+      // 5. Clear cached profile data
+      await _clearProfileCache();
+
+      // 6. Firebase logout (always)
       await FirebaseAuth.instance.signOut();
       // print("[SettingsScreen] Firebase logout completed");
     } catch (e) {
@@ -1734,6 +1863,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           listen: false,
         );
         websocketService.disconnect();
+
+        // Clear cached profile data
+        await _clearProfileCache();
 
         // Sign out from Firebase
         await FirebaseAuth.instance.signOut();

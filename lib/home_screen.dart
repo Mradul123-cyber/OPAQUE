@@ -603,10 +603,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             )
           : _buildDefaultUserAvatar(user, isDark, textColor),
       onProfile: () async {
-        await Navigator.of(
+        final result = await Navigator.of(
           context,
         ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
-        if (mounted) _refreshUserData();
+        if (result == 'open_style') {
+          if (mounted) setState(() => _currentNavIndex = 3);
+        } else if (mounted) {
+          _refreshUserData();
+        }
       },
       menuItems: [
         _popupItem(
@@ -643,10 +647,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         if (result == 'logout') {
           _showLogoutDialog(context);
         } else if (result == 'settings') {
-          await Navigator.of(
+          final res = await Navigator.of(
             context,
           ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
-          if (mounted) _refreshUserData();
+          if (res == 'open_style') {
+            if (mounted) setState(() => _currentNavIndex = 3);
+          } else if (mounted) {
+            _refreshUserData();
+          }
         } else if (result == 'backup_restore') {
           Navigator.of(
             context,

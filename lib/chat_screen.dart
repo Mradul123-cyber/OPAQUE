@@ -104,6 +104,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   final Set<int> _decryptedMessageIds = {};
   final Set<int> _selectedMessageIds = {};
   final Set<int> _animatedMessageIds = {}; // Track which messages have been animated
+  final Map<int, GlobalKey> _messageKeys = {};
+  int? _highlightedMessageId;
   bool _isMultiSelectionMode = false;
   final Set<int> _processedSentMessageIds = {};
 
@@ -173,8 +175,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
   // E2E encryption banner state
   bool _showEncryptionBanner = true;
-  bool _isRemovingBanner = false;
-  bool _isBannerInHindi = true; // Default to Hindi
 
   // Cache for downloaded audio (stores file paths, not bytes)
   final Map<int, String> _audioCache = {};
@@ -3396,6 +3396,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                           controller: _scrollController,
                           reverse: true, // Build from bottom to top like WhatsApp
                           padding: const EdgeInsets.symmetric(vertical: 8),
+                          cacheExtent: 1500.0,
                           itemCount: messages.length + extraItems,
                           itemBuilder: (context, index) {
                             // Loading indicator appears when scrolling to older messages
@@ -3426,28 +3427,37 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                             // Reverse the index to show oldest first
                             final reversedIndex = messages.length - 1 - index;
                             final message = messages[reversedIndex];
+                            final dark = Theme.of(context).brightness == Brightness.dark;
                             return Dismissible(
                               key: Key('msg_${message.id}'),
-                              direction: DismissDirection.horizontal,
+                              direction: DismissDirection.startToEnd,
                               dismissThresholds: const {
-                                DismissDirection.endToStart: 0.01,
-                                DismissDirection.startToEnd: 0.01,
+                                DismissDirection.startToEnd: 0.15,
                               },
-                              movementDuration: const Duration(milliseconds: 100),
-                              resizeDuration: const Duration(milliseconds: 100),
+                              movementDuration: const Duration(milliseconds: 150),
+                              resizeDuration: const Duration(milliseconds: 150),
                               confirmDismiss: (direction) async {
-                                _setReplyToMessage(message);
+                                if (direction == DismissDirection.startToEnd) {
+                                  HapticFeedback.lightImpact();
+                                  _setReplyToMessage(message);
+                                }
                                 return false; // Don't actually dismiss
                               },
                               background: Container(
                                 alignment: Alignment.centerLeft,
                                 padding: const EdgeInsets.only(left: 20),
-                                child: const Icon(Icons.reply, color: Colors.black),
-                              ),
-                              secondaryBackground: Container(
-                                alignment: Alignment.centerRight,
-                                padding: const EdgeInsets.only(right: 20),
-                                child: const Icon(Icons.reply, color: Colors.black),
+                                child: Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: dark ? const Color(0xFF283241) : const Color(0xFFE2E7F0),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Icon(
+                                    Icons.reply_rounded,
+                                    color: dark ? Colors.white70 : const Color(0xFF424D60),
+                                    size: 18,
+                                  ),
+                                ),
                               ),
                               child: _buildMessageBubble(message, reversedIndex, messages.length),
                             );
@@ -3581,21 +3591,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                       color: ink,
                     ),
                   ),
-                  SizedBox(height: verticalSpacing),
-                  // Show member count for groups
-                  if (widget.conversationInfo.isGroup)
+                  if (widget.conversationInfo.isGroup) ...[
+                    SizedBox(height: verticalSpacing),
                     Text(
                       _groupMemberCount != null
                           ? '$_groupMemberCount ${_groupMemberCount == 1 ? "member" : "members"}'
                           : 'Tap for info',
                       style: TextStyle(fontSize: smallTextSize, color: dark ? Colors.grey[400] : const Color(0xFF858C9C)),
-                    )
-                  // Show online status for 1-1 chats
-                  else if (!widget.conversationInfo.isGroup && _recipientUid != null)
+                    ),
+                  ] else if (!widget.conversationInfo.isGroup && _recipientUid != null && _getStatusText().isNotEmpty) ...[
+                    SizedBox(height: verticalSpacing),
                     Text(
                       _getStatusText(), maxLines: 1, overflow: TextOverflow.ellipsis,
                       style: TextStyle(fontSize: smallTextSize, color: dark ? Colors.grey[400] : const Color(0xFF858C9C)),
                     ),
+                  ],
                 ],
               ),
             ),
@@ -4006,12 +4016,33 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   }
 
   void _showComingSoon() {
+    final dark = Theme.of(context).brightness == Brightness.dark;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(
-        content: Text('Coming soon', textAlign: TextAlign.center),
-        duration: Duration(seconds: 3),
+      ..showSnackBar(SnackBar(
+        content: Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            OpaqueIcon('sparkles', size: 15, color: const Color(0xFFC4D1EE)),
+            const SizedBox(width: 8),
+            const Text(
+              'AI features coming soon',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFFF5F7FC),
+              ),
+            ),
+          ],
+        ),
+        width: 215,
+        backgroundColor: dark ? const Color(0xFF303746) : const Color(0xFF202632),
+        duration: const Duration(seconds: 2),
         behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        elevation: 6,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       ));
   }
 
@@ -4138,80 +4169,66 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     final bannerPadding = (screenWidth * 0.04).clamp(12.0, 20.0);
     final fontSize = (screenWidth * 0.035).clamp(13.0, 16.0);
 
-    // Hindi and English content
-    final title = _isBannerInHindi ? 'एंड-टू-एंड एन्क्रिप्टेड' : 'End-to-End Encrypted';
-    final subtitle = _isBannerInHindi
-        ? 'आपके संदेश निजी रहते हैं — केवल आप और आपका चैट पार्टनर पढ़ सकते हैं। Zarq Messenger भी नहीं'
-        : 'Your messages stay private — only you and your chat partner can read them. Not even Zarq Messenger can';
+    const title = 'End-to-End Encrypted';
+    const subtitle =
+        'Your messages stay private — only you and your chat partner can read them. Not even OPAQUE can.';
 
-    return ParticleAnimationWidget(
-      isRemoving: _isRemovingBanner,
-      onAnimationComplete: () {},
-      child: GestureDetector(
-        onTap: _showRemoveBannerDialog,
-        onDoubleTap: () {
-          setState(() {
-            _isBannerInHindi = !_isBannerInHindi;
-          });
-        },
-        child: Container(
-          margin: EdgeInsets.symmetric(
-            horizontal: bannerPadding,
-            vertical: bannerPadding * 0.5,
+    return Container(
+      margin: EdgeInsets.symmetric(
+        horizontal: bannerPadding,
+        vertical: bannerPadding * 0.5,
+      ),
+      padding: EdgeInsets.all(bannerPadding),
+      decoration: BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
           ),
-          padding: EdgeInsets.all(bannerPadding),
-          decoration: BoxDecoration(
-            color: Colors.black,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.3),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
-              ),
-            ],
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.2),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.lock,
+              color: Colors.white,
+              size: 24,
+            ),
           ),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  shape: BoxShape.circle,
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: fontSize,
+                  ),
                 ),
-                child: const Icon(
-                  Icons.lock,
-                  color: Colors.white,
-                  size: 24,
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: fontSize * 0.85,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: fontSize,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      style: TextStyle(
-                        color: Colors.white.withOpacity(0.9),
-                        fontSize: fontSize * 0.85,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -4225,6 +4242,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
     // Responsive sizing
     final screenWidth = MediaQuery.of(context).size.width;
+    final safePadding = MediaQuery.paddingOf(context);
     final bodyTextSize = (screenWidth * 0.04).clamp(14.0, 18.0);
     final smallTextSize = (screenWidth * 0.0325).clamp(12.0, 15.0);
     final tinyTextSize = (screenWidth * 0.03).clamp(11.0, 14.0);
@@ -4232,6 +4250,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     final padding2 = (screenWidth * 0.03).clamp(10.0, 16.0);
     final spacing1 = (screenWidth * 0.01).clamp(3.0, 6.0);
     final spacing2 = (screenWidth * 0.02).clamp(6.0, 10.0);
+    final dynamicHorizontal = (screenWidth * 0.04).clamp(14.0, 18.0);
+    final leftInset = isMe ? dynamicHorizontal * 2 : math.max(dynamicHorizontal, safePadding.left);
+    final rightInset = isMe ? math.max(dynamicHorizontal, safePadding.right) : dynamicHorizontal * 2;
 
     // 🚨 1. Dynamic styling access 🚨
     final userSettings = Provider.of<UserSettingsProvider>(context);
@@ -4240,10 +4261,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     final colorEndHex = userSettings.colorEndHex;     // Get dynamic end color
     final cardBubbleColor = userSettings.cardBubbleColor; // Get card color for modern style
 
-    final itemKey = ValueKey('message_${message.id}');
+    final globalKey = _messageKeys.putIfAbsent(message.id, () => GlobalKey());
 
     return GestureDetector(
-      key: itemKey,
+      key: globalKey,
       onLongPress: () => _handleMessageLongPress(message),
       onTap: () {
         if (_isAIMode) {
@@ -4261,7 +4282,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         }
       },
       child: Container(
-        padding: EdgeInsets.symmetric(horizontal: spacing2, vertical: spacing1),
+        padding: EdgeInsets.only(
+          left: leftInset,
+          right: rightInset,
+          top: spacing1,
+          bottom: spacing1,
+        ),
         child: Align(
           alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
           child: _buildMessageWithAnimation(
@@ -4308,23 +4334,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     final animationStyle = userSettings.encryptionAnimationStyle;
     final shouldAnimate = !structured && animationStyle == 'dynamic' && !_animatedMessageIds.contains(message.id);
 
+    final isHighlighted = _highlightedMessageId == message.id;
+
     final bubbleWidget = Stack(
       clipBehavior: Clip.none,
       children: [
         Container(
             constraints: BoxConstraints(
-              maxWidth: MediaQuery.of(context).size.width * 0.85,
+              maxWidth: screenWidth * 0.78,
             ),
             padding: contactCard ? EdgeInsets.zero : const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
             clipBehavior: contactCard ? Clip.antiAlias : Clip.none,
             decoration: structured ? BoxDecoration(
-              color: isSelected ? (dark ? const Color(0xFF35465E) : const Color(0xFFDCE8F8)) : contactCard ? (isMe ? (dark ? const Color(0xFF2A3544) : const Color(0xFFF0F2F5)) : (dark ? const Color(0xFF222C39) : Colors.white)) : (dark ? const Color(0xFF19202A) : Colors.white),
-              border: Border.all(color: contactCard ? (dark ? const Color(0xFF3C4655) : const Color(0xFFDFE3E8)) : (dark ? const Color(0xFF35465E) : const Color(0xFFDFE7F1))),
+              color: (isSelected || isHighlighted) ? (dark ? const Color(0xFF35465E) : const Color(0xFFDCE8F8)) : contactCard ? (isMe ? (dark ? const Color(0xFF2A3544) : const Color(0xFFF0F2F5)) : (dark ? const Color(0xFF222C39) : Colors.white)) : (dark ? const Color(0xFF19202A) : Colors.white),
+              border: Border.all(color: isHighlighted ? const Color(0xFF667EEA) : (contactCard ? (dark ? const Color(0xFF3C4655) : const Color(0xFFDFE3E8)) : (dark ? const Color(0xFF35465E) : const Color(0xFFDFE7F1))), width: isHighlighted ? 2 : 1),
               borderRadius: messageBubbleRadius(isMe, styleKey, screenWidth),
             ) : styleKey == 'modern_card'
-              ? messageCardDecoration(isMe, isSelected, cardBubbleColor, screenWidth)
+              ? messageCardDecoration(isMe, isSelected || isHighlighted, cardBubbleColor, screenWidth)
               : BoxDecoration(
-                  gradient: isSelected
+                  gradient: (isSelected || isHighlighted)
                       ? LinearGradient(
                     colors: isMe
                         ? [const Color(0xFFE1BEE7), const Color(0xFFCE93D8)]
@@ -4347,8 +4375,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.02),
-                      blurRadius: 4,
+                      color: isHighlighted
+                          ? const Color(0xFF667EEA).withOpacity(0.5)
+                          : Colors.black.withOpacity(0.02),
+                      blurRadius: isHighlighted ? 8 : 4,
                       offset: const Offset(0, 2),
                     ),
                   ],
@@ -4372,41 +4402,46 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                   ),
                 // Display replied message if this is a reply
                 if (message.replyToMessageId != null && message.repliedMessageContent != null)
-                  Container(
-                    margin: contactCard ? EdgeInsets.fromLTRB(14, 9, 14, spacing1) : EdgeInsets.only(bottom: spacing1),
-                    padding: EdgeInsets.all(spacing1),
-                    decoration: BoxDecoration(
-                      color: (isMe ? Colors.white : Colors.grey[300])?.withOpacity(0.3),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border(
-                        left: BorderSide(
-                          color: isMe ? Colors.white : const Color(0xFF667EEA),
-                          width: 3,
+                  GestureDetector(
+                    onTap: () {
+                      _scrollToRepliedMessage(message.replyToMessageId!);
+                    },
+                    child: Container(
+                      margin: contactCard ? EdgeInsets.fromLTRB(14, 9, 14, spacing1) : EdgeInsets.only(bottom: spacing1),
+                      padding: EdgeInsets.all(spacing1),
+                      decoration: BoxDecoration(
+                        color: (isMe ? Colors.white : Colors.grey[300])?.withOpacity(0.3),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border(
+                          left: BorderSide(
+                            color: isMe ? Colors.white : const Color(0xFF667EEA),
+                            width: 3,
+                          ),
                         ),
                       ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          message.repliedMessageSenderName ?? 'User',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 10,
-                            color: isMe ? Colors.white : const Color(0xFF667EEA),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            message.repliedMessageSenderName ?? 'User',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 10,
+                              color: isMe ? Colors.white : const Color(0xFF667EEA),
+                            ),
                           ),
-                        ),
-                        Text(
-                          message.repliedMessageContent!,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: isMe ? Colors.white70 : Colors.grey[700],
+                          Text(
+                            message.repliedMessageContent!,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: isMe ? Colors.white70 : Colors.grey[700],
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                 // Display image if has attachment (hide if message is deleted)
@@ -6467,7 +6502,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       // Share the file
       await Share.shareXFiles(
         [XFile(documentPath)],
-        text: 'Shared from Zarq Messenger',
+        text: 'Shared from OPAQUE',
       );
 
       // print('[ChatScreen] ✅ Document shared successfully');
@@ -6620,6 +6655,76 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         }
       }
     });
+  }
+
+  void _scrollToRepliedMessage(int targetMessageId) async {
+    final messages = [..._chatProvider.messages]
+      ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+
+    final targetIndex = messages.indexWhere((m) => m.id == targetMessageId);
+    if (targetIndex == -1) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Original message not found in this chat'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+
+    void highlightTarget() {
+      if (!mounted) return;
+      setState(() {
+        _highlightedMessageId = targetMessageId;
+      });
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        if (mounted && _highlightedMessageId == targetMessageId) {
+          setState(() {
+            _highlightedMessageId = null;
+          });
+        }
+      });
+    }
+
+    final key = _messageKeys[targetMessageId];
+    if (key?.currentContext != null) {
+      await Scrollable.ensureVisible(
+        key!.currentContext!,
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeInOut,
+        alignment: 0.5,
+      );
+      highlightTarget();
+    } else {
+      final reversedIndex = messages.length - 1 - targetIndex;
+      if (_scrollController.hasClients) {
+        final estimatedOffset = (reversedIndex * 90.0).clamp(
+          0.0,
+          _scrollController.position.maxScrollExtent,
+        );
+
+        await _scrollController.animateTo(
+          estimatedOffset,
+          duration: const Duration(milliseconds: 350),
+          curve: Curves.easeInOut,
+        );
+
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          final updatedKey = _messageKeys[targetMessageId];
+          if (updatedKey?.currentContext != null) {
+            await Scrollable.ensureVisible(
+              updatedKey!.currentContext!,
+              duration: const Duration(milliseconds: 250),
+              curve: Curves.easeInOut,
+              alignment: 0.5,
+            );
+          }
+          highlightTarget();
+        });
+      }
+    }
   }
 
   void _toggleMessageSelection(Message message) {
@@ -7288,13 +7393,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
         // Create temporary file
         final tempDir = await getTemporaryDirectory();
-        final tempFile = File(path.join(tempDir.path, 'zarq_share_${DateTime.now().millisecondsSinceEpoch}.jpg'));
+        final tempFile = File(path.join(tempDir.path, 'opaque_share_${DateTime.now().millisecondsSinceEpoch}.jpg'));
         await tempFile.writeAsBytes(imageData);
 
         // Share the file
         await Share.shareXFiles(
           [XFile(tempFile.path)],
-          text: 'Shared from Zarq Messenger',
+          text: 'Shared from OPAQUE',
         );
 
         // Clean up temp file after a delay
@@ -7313,7 +7418,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
         await Share.shareXFiles(
           [XFile(videoPath)],
-          text: 'Shared from Zarq Messenger',
+          text: 'Shared from OPAQUE',
         );
       } else if (message.attachmentType == 'document') {
         // Share document
@@ -7356,10 +7461,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
   // Get status text for app bar subtitle
   String _getStatusText() {
-    if (_establishingSession) {
-      return 'Establishing...';
-    }
-
     if (_isRecipientOnline) {
       return 'online';
     }
@@ -7368,11 +7469,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       return 'last seen ${_formatLastSeen(_recipientLastSeen!)}';
     }
 
-    if (_sessionEstablished) {
-      return 'End-to-end encrypted';
-    }
-
-    return 'Tap to encrypt';
+    return '';
   }
 
   // Format last seen time in local timezone
@@ -7810,76 +7907,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     }
   }
 
-  /// Show dialog to confirm banner removal
-  void _showRemoveBannerDialog() {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final titleFontSize = (screenWidth * 0.045).clamp(16.0, 20.0);
-    final contentFontSize = (screenWidth * 0.038).clamp(14.0, 16.0);
-    final buttonFontSize = (screenWidth * 0.035).clamp(13.0, 15.0);
-    final iconSize = (screenWidth * 0.06).clamp(22.0, 26.0);
-    final padding = (screenWidth * 0.04).clamp(16.0, 24.0);
 
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          contentPadding: EdgeInsets.all(padding),
-          title: Row(
-            children: [
-              Icon(Icons.lock, color: Colors.blue, size: iconSize),
-              SizedBox(width: padding * 0.5),
-              Expanded(
-                child: Text(
-                  'Hide Encryption Banner',
-                  style: TextStyle(fontSize: titleFontSize),
-                ),
-              ),
-            ],
-          ),
-          content: Text(
-            'Do you want to hide the end-to-end encryption banner?\n\nYour messages will still remain encrypted.',
-            style: TextStyle(fontSize: contentFontSize),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: Text('Cancel', style: TextStyle(fontSize: buttonFontSize)),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                _removeBannerWithAnimation();
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue,
-                foregroundColor: Colors.white,
-              ),
-              child: Text('Hide', style: TextStyle(fontSize: buttonFontSize)),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  /// Remove banner with particle animation
-  void _removeBannerWithAnimation() {
-    setState(() {
-      _isRemovingBanner = true;
-    });
-
-    // Wait for animation to complete before hiding banner
-    Future.delayed(const Duration(milliseconds: 600), () {
-      if (mounted) {
-        setState(() {
-          _showEncryptionBanner = false;
-          _isRemovingBanner = false;
-        });
-        _saveEncryptionBannerPreference(false);
-      }
-    });
-  }
 
   /// Show wallpaper picker dialog
   void _showWallpaperPicker() {

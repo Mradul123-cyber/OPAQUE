@@ -91,13 +91,13 @@ class _FullscreenImageViewerState extends State<FullscreenImageViewer> {
     try {
       // Create temporary file
       final tempDir = await getTemporaryDirectory();
-      final tempFile = File(path.join(tempDir.path, 'zarq_share_${DateTime.now().millisecondsSinceEpoch}.jpg'));
+      final tempFile = File(path.join(tempDir.path, 'opaque_share_${DateTime.now().millisecondsSinceEpoch}.jpg'));
       await tempFile.writeAsBytes(widget.imageData);
 
       // Share the file
       await Share.shareXFiles(
         [XFile(tempFile.path)],
-        text: 'Shared from Zarq Messenger',
+        text: 'Shared from OPAQUE',
       );
 
       // Clean up temp file after a delay (give share enough time)

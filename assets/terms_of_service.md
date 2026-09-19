@@ -254,7 +254,7 @@ These Terms are governed by the laws of India.
 
 ### Contact First
 
-Before taking legal action, please contact us at **zarqmessenger@gmail.com** to resolve the issue.
+Before taking legal action, please contact us at **opaquelabs.in@gmail.com** to resolve the issue.
 
 ### Jurisdiction
 
@@ -330,7 +330,7 @@ We are not liable for failures due to circumstances beyond our control (natural 
 
 **For questions, concerns, or legal inquiries:**
 
-**Email:** zarqmessenger@gmail.com
+**Email:** opaquelabs.in@gmail.com
 
 **Developer:** Zarq Messenger (Independent Developer, India)
 

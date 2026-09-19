@@ -94,7 +94,7 @@ class BackupInfoScreen extends StatelessWidget {
                 ),
                 item(
                   'Media attachments',
-                  'Photos, videos, audio and documents included in the backup. Google Drive backups let you choose all media, the last 7, 15 or 30 days, or no media.',
+                  'Google Drive backups let you choose all media, the last 7, 15 or 30 days, or no media. Local backups save messages and encryption keys only.',
                 ),
                 item(
                   'Encryption state',
@@ -185,6 +185,10 @@ class BackupInfoScreen extends StatelessWidget {
                 faq(
                   'Can I import a backup after reinstalling?',
                   'If you still have an accessible backup file, choose Import backup file and select it. A file does not need to appear in the local backup list to be imported.',
+                ),
+                faq(
+                  'Is media saved in local backups?',
+                  'No. Local backups save conversation messages, contacts, and encryption state only. To back up media files, use Google Drive.',
                 ),
                 faq(
                   'Will my media come back?',

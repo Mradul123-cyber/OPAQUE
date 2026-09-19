@@ -458,8 +458,12 @@ class _CreateNoteScreenState extends State<CreateNoteScreen>
                       children: [
                         TextButton(
                           style: TextButton.styleFrom(
-                            backgroundColor: soft,
-                            foregroundColor: blue,
+                            backgroundColor: _selectedCategory != null
+                                ? _getCategoryColor(_selectedCategory!).withOpacity(isDark ? 0.18 : 0.12)
+                                : soft,
+                            foregroundColor: _selectedCategory != null
+                                ? _getCategoryColor(_selectedCategory!)
+                                : blue,
                             minimumSize: const Size(0, 28),
                             padding: const EdgeInsets.symmetric(horizontal: 8),
                             shape: RoundedRectangleBorder(
@@ -470,6 +474,17 @@ class _CreateNoteScreenState extends State<CreateNoteScreen>
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
+                              if (_selectedCategory != null) ...[
+                                Container(
+                                  width: 7,
+                                  height: 7,
+                                  margin: const EdgeInsets.only(right: 6),
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: _getCategoryColor(_selectedCategory!),
+                                  ),
+                                ),
+                              ],
                               Text(
                                 _selectedCategory ?? 'No category',
                                 style: const TextStyle(fontSize: 11),
