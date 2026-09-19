@@ -1,117 +1,45 @@
-// lib/create_group_screen.dart
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
-import 'package:zarq_messenger/home_screen.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'dart:math' as math;
 import 'package:provider/provider.dart';
-import 'services/user_settings_provider.dart';
-
+import 'home_screen.dart';
 import 'chat_screen.dart';
+import 'app_config.dart';
+import 'services/user_settings_provider.dart';
 import 'widgets/call_aware_screen.dart';
-import 'package:zarq_messenger/app_config.dart';
+import 'widgets/backup_design.dart';
+import 'widgets/notes_design.dart';
 
-// This Friend model should be consistent with the one in your other files.
 class Friend {
   final String username;
   final String? avatarUrl;
   final String? displayName;
-
   Friend({required this.username, this.avatarUrl, this.displayName});
-
-  factory Friend.fromJson(Map<String, dynamic> json) {
-    return Friend(
-      username: json['username'] ?? 'Unknown User',
-      avatarUrl: json['avatarUrl'],
-      displayName: json['displayName'],
-    );
-  }
-
-  String get displayNameOrUsername => displayName ?? username;
-}
-
-// The Leaf animation classes and painter can remain as they were,
-// as they are purely for visual effect.
-class Leaf {
-  final math.Random random;
-  final double size;
-  final double speed;
-  double x;
-  double y;
-  final double rotationDirection;
-  final Color color;
-
-  Leaf(this.random, double screenWidth, double screenHeight)
-    : size = 20.0 + random.nextDouble() * 15,
-      speed = 1.0 + random.nextDouble() * 2,
-      x = random.nextDouble() * screenWidth,
-      y = random.nextDouble() * screenHeight,
-      rotationDirection = random.nextBool() ? 1.0 : -1.0,
-      color = Colors.lightGreenAccent.withOpacity(
-        0.5 + random.nextDouble() * 0.5,
-      );
-
-  void updatePosition(double screenWidth, double screenHeight) {
-    y += speed;
-    x += math.sin(y / 50) * speed * rotationDirection * 0.1;
-    if (y > screenHeight) {
-      y = -size;
-      x = random.nextDouble() * screenWidth;
-    }
-  }
-}
-
-class LeafPainter extends CustomPainter {
-  final List<Leaf> leaves;
-
-  LeafPainter(this.leaves);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint();
-    for (final leaf in leaves) {
-      paint.color = leaf.color;
-
-      final iconPainter = TextPainter(
-        text: TextSpan(
-          text: '🌿',
-          style: TextStyle(fontSize: leaf.size, color: leaf.color),
-        ),
-        textDirection: TextDirection.ltr,
-      );
-      iconPainter.layout();
-
-      canvas.save();
-      canvas.translate(leaf.x, leaf.y);
-      canvas.rotate(leaf.y / 50 * leaf.rotationDirection);
-      iconPainter.paint(canvas, Offset.zero);
-      canvas.restore();
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  factory Friend.fromJson(Map<String, dynamic> json) => Friend(
+    username: json['username'] ?? 'Unknown User',
+    avatarUrl: json['avatarUrl'],
+    displayName: json['displayName'],
+  );
+  String get displayNameOrUsername =>
+      displayName?.trim().isNotEmpty == true ? displayName! : username;
 }
 
 class CreateGroupScreen extends StatefulWidget {
   final WebSocketChannel channel;
   final VoidCallback onGroupCreated;
-
   const CreateGroupScreen({
     super.key,
     required this.channel,
     required this.onGroupCreated,
   });
-
   @override
   State<CreateGroupScreen> createState() => _CreateGroupScreenState();
 }
 
-class _CreateGroupScreenState extends State<CreateGroupScreen>
-    with TickerProviderStateMixin {
+class _CreateGroupScreenState extends State<CreateGroupScreen> {
   final _groupNameController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _searchController = TextEditingController();
@@ -119,70 +47,26 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
   final Set<String> _selectedFriends = {};
   bool _isLoading = true;
   bool _isCreatingGroup = false;
-  String _searchQuery = '';
-
-  final List<Leaf> _leaves = [];
-  late final AnimationController _animationController;
-  late final Animation<Color?> _colorAnimation;
+  bool _descriptionOpen = false;
+  bool _leaving = false;
+  bool _askingToLeave = false;
+  String? _loadError;
+  bool get _canCreate =>
+      !_isCreatingGroup &&
+      !_descriptionOpen &&
+      _groupNameController.text.trim().isNotEmpty &&
+      _selectedFriends.isNotEmpty;
 
   @override
   void initState() {
     super.initState();
+    _groupNameController.addListener(_refresh);
+    _searchController.addListener(_refresh);
     _fetchFriendsList();
-    _searchController.addListener(() {
-      setState(() {
-        _searchQuery = _searchController.text;
-      });
-    });
+  }
 
-    // --- Start of Bug Fix ---
-    // This listener is crucial. It tells the UI to rebuild every time
-    // the text in the group name field changes, which allows the
-    // "Create" button to correctly enable or disable itself.
-    _groupNameController.addListener(() {
-      setState(() {});
-    });
-    // --- End of Bug Fix ---
-
-    _animationController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 15),
-    )..repeat();
-
-    _colorAnimation =
-        ColorTween(
-          begin: const Color(0xFF0F380F),
-          end: const Color(0xFF2E8B57),
-        ).animate(
-          CurvedAnimation(
-            parent: _animationController,
-            curve: Curves.easeInOut,
-          ),
-        );
-
-    final random = math.Random();
-    _animationController.addListener(() {
-      if (mounted) {
-        setState(() {
-          for (final leaf in _leaves) {
-            leaf.updatePosition(
-              MediaQuery.of(context).size.width,
-              MediaQuery.of(context).size.height,
-            );
-          }
-        });
-      }
-    });
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        final screenWidth = MediaQuery.of(context).size.width;
-        final screenHeight = MediaQuery.of(context).size.height;
-        for (int i = 0; i < 30; i++) {
-          _leaves.add(Leaf(random, screenWidth, screenHeight));
-        }
-      }
-    });
+  void _refresh() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -190,1088 +74,707 @@ class _CreateGroupScreenState extends State<CreateGroupScreen>
     _groupNameController.dispose();
     _descriptionController.dispose();
     _searchController.dispose();
-    _animationController.dispose();
     super.dispose();
   }
 
   Future<void> _fetchFriendsList() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      setState(() {
-        _isLoading = false;
-      });
-      return;
-    }
-    final token = await user.getIdToken();
-
+    setState(() {
+      _isLoading = true;
+      _loadError = null;
+    });
     try {
-      final url = Uri.parse('${AppConfig.baseUrl}/friends/list');
-      final response = await http.get(
-        url,
-        headers: {'Authorization': 'Bearer $token'},
-      );
-      if (response.statusCode == 200 && mounted) {
-        final List<dynamic> friendsFromServer = json.decode(response.body);
-        setState(() {
-          _friendsList = friendsFromServer
-              .map((fJson) => Friend.fromJson(fJson as Map<String, dynamic>))
-              .toList();
-          _isLoading = false;
-        });
-      } else {
-        if (mounted)
-          setState(() {
-            _isLoading = false;
-          });
-      }
-    } catch (e) {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) throw StateError('Sign in required');
+      final token = await user.getIdToken();
+      final response = await http
+          .get(
+            Uri.parse('${AppConfig.baseUrl}/friends/list'),
+            headers: {'Authorization': 'Bearer $token'},
+          )
+          .timeout(const Duration(seconds: 20));
+      if (response.statusCode != 200)
+        throw StateError('Could not load friends');
+      final rows = json.decode(response.body) as List<dynamic>;
+      final seen = <String>{};
+      final friends = rows
+          .map((row) => Friend.fromJson(row as Map<String, dynamic>))
+          .where(
+            (friend) =>
+                friend.username.trim().isNotEmpty && seen.add(friend.username),
+          )
+          .toList();
+      if (mounted) setState(() => _friendsList = friends);
+    } catch (_) {
       if (mounted)
-        setState(() {
-          _isLoading = false;
-        });
+        setState(
+          () => _loadError = 'Couldn’t load your friends. Please try again.',
+        );
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  void _showDescriptionDialog() {
-    final tempDescriptionController = TextEditingController();
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-
-    final dialogTitleSize = (screenWidth * 0.045).clamp(16.0, 20.0);
-    final dialogTextSize = (screenWidth * 0.035).clamp(12.0, 16.0);
-    final spacing1 = (screenHeight * 0.02).clamp(14.0, 20.0);
-
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: Colors.grey[850],
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16.0),
-          ),
-          title: Text(
-            'Add Group Description',
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: dialogTitleSize,
-              color: Colors.white,
-            ),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'Would you like to add a description for this group? (Optional)',
-                style: TextStyle(
-                  fontSize: dialogTextSize,
-                  color: Colors.white70,
-                ),
-              ),
-              SizedBox(height: spacing1),
-              TextField(
-                controller: tempDescriptionController,
-                maxLines: 3,
-                style: TextStyle(fontSize: dialogTextSize),
-                decoration: InputDecoration(
-                  hintText: 'e.g., For discussing project updates',
-                  hintStyle: TextStyle(fontSize: dialogTextSize),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(color: Colors.blue, width: 2),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _createGroupWithDescription(''); // Skip description
-              },
-              child: Text('Skip', style: TextStyle(fontSize: dialogTextSize)),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                final description = tempDescriptionController.text.trim();
-                Navigator.pop(context);
-                _createGroupWithDescription(description);
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue,
-                foregroundColor: Colors.white,
-              ),
-              child: Text('Add & Create', style: TextStyle(fontSize: dialogTextSize)),
-            ),
-          ],
+  Future<void> _leave() async {
+    if (_isCreatingGroup || _askingToLeave) return;
+    _askingToLeave = true;
+    final changed =
+        _groupNameController.text.isNotEmpty ||
+        _selectedFriends.isNotEmpty ||
+        _descriptionController.text.isNotEmpty;
+    final discard =
+        !changed ||
+        await showNotesConfirmation(
+          context,
+          title: 'Discard this group?',
+          body:
+              'Your group hasn’t been created yet. Leave without keeping these details?',
+          confirm: 'Discard',
+          danger: true,
+          icon: Icons.group_outlined,
         );
-      },
-    );
+    _askingToLeave = false;
+    if (!mounted || !discard) return;
+    setState(() => _leaving = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) Navigator.pop(context);
+    });
   }
 
-  void _showCreatingGroupDialog() {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-    final dialogTextSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final spacing1 = (screenHeight * 0.025).clamp(18.0, 24.0);
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: Colors.grey[850],
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(15.0),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const CircularProgressIndicator(
-                valueColor: AlwaysStoppedAnimation<Color>(
-                  Colors.lightGreenAccent,
-                ),
-              ),
-              SizedBox(height: spacing1),
-              Text(
-                "Creating group...",
-                style: TextStyle(color: Colors.white, fontSize: dialogTextSize),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  void _createGroup() {
+  void _toggleFriend(Friend friend) {
     if (_isCreatingGroup) return;
-
-    if (_groupNameController.text.trim().isEmpty || _selectedFriends.isEmpty) {
+    if (!_selectedFriends.contains(friend.username) &&
+        _selectedFriends.length >= 99) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-            'Please enter a group name and select at least one friend.',
-          ),
-          backgroundColor: Colors.red,
+          content: Text('Maximum 100 members allowed, including you.'),
         ),
       );
       return;
     }
+    setState(() {
+      if (!_selectedFriends.remove(friend.username))
+        _selectedFriends.add(friend.username);
+    });
+  }
 
-    // Show description dialog first
-    _showDescriptionDialog();
+  Future<void> _createGroup() async {
+    if (!_canCreate) return;
+    setState(() => _descriptionOpen = true);
+    final description = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        final c = NotesColors(sheetContext);
+        return NotesSheet(
+          title: 'Add a description',
+          description: 'A little context for everyone. This is optional.',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('DESCRIPTION', style: c.text(10, muted: true)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _descriptionController,
+                minLines: 3,
+                maxLines: 5,
+                style: c.text(12).copyWith(height: 1.8),
+                decoration: c.field('What’s this group for?'),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  Expanded(
+                    child: NotesButton(
+                      label: 'Skip',
+                      onPressed: () => Navigator.pop(sheetContext, ''),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: NotesButton(
+                      label: 'Add & create',
+                      primary: true,
+                      onPressed: () => Navigator.pop(
+                        sheetContext,
+                        _descriptionController.text.trim(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (!mounted) return;
+    setState(() => _descriptionOpen = false);
+    if (description != null) await _createGroupWithDescription(description);
   }
 
   Future<void> _createGroupWithDescription(String description) async {
-    setState(() => _isCreatingGroup = true);
-    _showCreatingGroupDialog();
-
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      if (mounted) {
-        Navigator.of(context).pop();
-        setState(() {
-          _isCreatingGroup = false;
-        });
-      }
+    if (_isCreatingGroup ||
+        _selectedFriends.isEmpty ||
+        _selectedFriends.length > 99 ||
+        _groupNameController.text.trim().isEmpty)
       return;
-    }
-    final token = await user.getIdToken();
-
+    setState(() => _isCreatingGroup = true);
+    String? error;
+    ConversationInfo? conversation;
     try {
-      final url = Uri.parse('${AppConfig.baseUrl}/conversations/create-group');
-      final response = await http.post(
-        url,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: json.encode({
-          'groupName': _groupNameController.text.trim(),
-          'description': description,
-          'memberUsernames': _selectedFriends.toList(),
-        }),
-      );
-
-      if (!mounted) return;
-      Navigator.of(context).pop();
-
-      if (response.statusCode == 201) {
-        final data = json.decode(response.body);
-
-        // This is now an integer, matching our unified backend.
-        final int conversationId = data['conversationId'];
-        final String groupName = data['groupName'];
-        final String creatorUid = data['creatorUid'];
-
-        widget.onGroupCreated();
-
-        final newConversationInfo = ConversationInfo(
-          conversationId: conversationId,
-          chatTitle: groupName,
-          isGroup: true, // This is a group chat
-          creatorUid: creatorUid,
-          partnerUid: null, // No partner in a group chat
-        );
-
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (context) => ChatScreen(
-              channel: widget.channel,
-              conversationInfo: newConversationInfo, // Pass the object here
-            ),
-          ),
-        );
-      } else if (response.statusCode == 409) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('A group with this name already exists.'),
-            backgroundColor: Colors.orange,
-          ),
-        );
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        error = 'Please sign in again before creating a group.';
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to create group: ${response.body}'),
-            backgroundColor: Colors.red,
-          ),
+        final token = await user.getIdToken();
+        final response = await http.post(
+          Uri.parse('${AppConfig.baseUrl}/conversations/create-group'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+          body: json.encode({
+            'groupName': _groupNameController.text.trim(),
+            'description': description,
+            'memberUsernames': _selectedFriends.toList(),
+          }),
         );
+        if (response.statusCode == 201) {
+          final data = json.decode(response.body) as Map<String, dynamic>;
+          conversation = ConversationInfo(
+            conversationId: data['conversationId'] as int,
+            chatTitle: data['groupName'] as String,
+            isGroup: true,
+            creatorUid: data['creatorUid'] as String,
+            partnerUid: null,
+          );
+        } else if (response.statusCode == 409) {
+          error = 'A group with this name already exists. Choose another name.';
+        } else {
+          error =
+              'Your name and selected members are still here. Please try again in a moment.';
+        }
       }
-    } catch (e) {
-      if (mounted) {
-        Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error creating group: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+    } catch (_) {
+      error =
+          'We couldn’t confirm whether the group was created. Check your conversations before trying again.';
     } finally {
-      if (mounted) {
-        setState(() {
-          _isCreatingGroup = false;
-        });
-      }
+      if (mounted) setState(() => _isCreatingGroup = false);
+    }
+    if (!mounted) return;
+    if (conversation != null) {
+      // Keep the existing callback and direct transition to the new group chat.
+      widget.onGroupCreated();
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => ChatScreen(
+            channel: widget.channel,
+            conversationInfo: conversation!,
+          ),
+        ),
+      );
+    } else {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => NotesDialog(
+          title: 'Couldn’t create group',
+          icon: Icons.group_outlined,
+          body: Text(
+            error ?? 'Please try again.',
+            style: NotesColors(ctx).text(12, muted: true).copyWith(height: 1.8),
+          ),
+          actions: [
+            NotesButton(
+              label: 'Back to editing',
+              primary: true,
+              onPressed: () => Navigator.pop(ctx),
+            ),
+          ],
+        ),
+      );
     }
   }
 
-  Widget _buildAvatar(Friend friend) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final avatarRadius = (screenWidth * 0.06).clamp(20.0, 28.0);
-    final avatarFontSize = (screenWidth * 0.06).clamp(20.0, 28.0);
-    final progressSize = (screenWidth * 0.05).clamp(18.0, 24.0);
-
-    final hasImage = friend.avatarUrl != null && friend.avatarUrl!.isNotEmpty;
-    final displayText = friend.displayNameOrUsername;
-    final initial = displayText.isNotEmpty
-        ? displayText[0].toUpperCase()
-        : '?';
-    final color = Color(displayText.hashCode | 0xFF000000).withOpacity(1.0);
-
-    if (hasImage) {
-      return CachedNetworkImage(
-        imageUrl: friend.avatarUrl!,
-        imageBuilder: (context, imageProvider) => CircleAvatar(
-          radius: avatarRadius,
-          backgroundImage: imageProvider,
-          backgroundColor: Colors.transparent,
-        ),
-        placeholder: (context, url) => CircleAvatar(
-          radius: avatarRadius,
-          backgroundColor: color,
-          child: SizedBox(
-            width: progressSize,
-            height: progressSize,
-            child: const CircularProgressIndicator(
-              strokeWidth: 2,
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-            ),
-          ),
-        ),
-        errorWidget: (context, url, error) => CircleAvatar(
-          radius: avatarRadius,
-          backgroundColor: color,
-          child: Text(
-            initial,
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: avatarFontSize,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
-      );
-    }
-
-    return CircleAvatar(
-      radius: avatarRadius,
-      backgroundColor: color,
+  Widget _avatar(Friend friend, NotesColors c) {
+    final name = friend.displayNameOrUsername;
+    final initials = name
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((s) => s.isNotEmpty)
+        .take(2)
+        .map((s) => s.characters.first.toUpperCase())
+        .join();
+    final fallback = Center(
       child: Text(
-        initial,
-        style: TextStyle(
-          color: Colors.white,
-          fontSize: avatarFontSize,
-          fontWeight: FontWeight.bold,
-        ),
+        initials.isEmpty ? '?' : initials,
+        style: c.text(12, muted: true),
       ),
+    );
+    return Container(
+      width: 38,
+      height: 38,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(shape: BoxShape.circle, color: c.soft),
+      child: friend.avatarUrl?.isNotEmpty == true
+          ? CachedNetworkImage(
+              imageUrl: friend.avatarUrl!,
+              fit: BoxFit.cover,
+              placeholder: (_, __) => fallback,
+              errorWidget: (_, __, ___) => fallback,
+            )
+          : fallback,
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final filteredFriends = _friendsList.where((friend) {
-      final queryLower = _searchQuery.toLowerCase();
-      return friend.displayNameOrUsername.toLowerCase().contains(queryLower) ||
-             friend.username.toLowerCase().contains(queryLower);
-    }).toList();
-
-    return Consumer<UserSettingsProvider>(
-      builder: (context, userSettings, child) {
-        final groupScreenStyle = userSettings.groupScreenStyle;
-
-        if (groupScreenStyle == 'static') {
-          return _buildStaticVersion(filteredFriends);
-        } else {
-          return _buildDynamicVersion(filteredFriends);
-        }
+    context.watch<UserSettingsProvider>();
+    final c = NotesColors(context);
+    final query = _searchController.text.trim().toLowerCase();
+    final filtered = _friendsList
+        .where(
+          (f) => '${f.displayNameOrUsername} ${f.username}'
+              .toLowerCase()
+              .contains(query),
+        )
+        .toList();
+    final selected = _friendsList
+        .where((f) => _selectedFriends.contains(f.username))
+        .toList();
+    return PopScope(
+      canPop: _leaving,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _leave();
       },
-    );
-  }
-
-  Widget _buildDynamicVersion(List<Friend> filteredFriends) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-
-    // Responsive sizing
-    final appBarTitleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
-    final textFieldPadding = EdgeInsets.symmetric(
-      horizontal: screenWidth * 0.04,
-      vertical: screenHeight * 0.01,
-    );
-    final textFieldFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final iconSize = (screenWidth * 0.06).clamp(20.0, 26.0);
-    final labelFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final listItemMargin = EdgeInsets.symmetric(
-      horizontal: screenWidth * 0.04,
-      vertical: screenHeight * 0.008,
-    );
-    final listItemPadding = EdgeInsets.all(screenWidth * 0.03);
-    final nameFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final usernameFontSize = (screenWidth * 0.0325).clamp(12.0, 15.0);
-    final checkIconSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final spacing1 = (screenWidth * 0.04).clamp(12.0, 18.0);
-    final treeImageHeight = (screenHeight * 0.18).clamp(120.0, 180.0);
-
-    return CallAwareScreen(
-      screenName: 'CreateGroupScreen',
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        extendBodyBehindAppBar: true,
-        appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+      child: CallAwareScreen(
+        screenName: 'CreateGroupScreen',
+        child: Stack(
           children: [
-            Text(
-              'Create New Group',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: appBarTitleSize,
-              ),
-            ),
-            Text(
-              '${_selectedFriends.length + 1}/100 members',
-              style: TextStyle(
-                color: Colors.white70,
-                fontSize: appBarTitleSize * 0.6,
-              ),
-            ),
-          ],
-        ),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
-        actions: [
-          Padding(
-            padding: EdgeInsets.only(right: screenWidth * 0.02),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 300),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: (_groupNameController.text.trim().isNotEmpty &&
-                        _selectedFriends.isNotEmpty &&
-                        !_isCreatingGroup)
-                    ? Colors.lightGreenAccent
-                    : Colors.transparent,
-                boxShadow: (_groupNameController.text.trim().isNotEmpty &&
-                           _selectedFriends.isNotEmpty &&
-                           !_isCreatingGroup)
-                    ? [
-                        BoxShadow(
-                          color: Colors.lightGreenAccent.withOpacity(0.5),
-                          blurRadius: 8,
-                          spreadRadius: 2,
-                        ),
-                      ]
-                    : null,
-              ),
-              child: IconButton(
-                icon: Icon(
-                  Icons.check,
-                  color: (_groupNameController.text.trim().isNotEmpty &&
-                          _selectedFriends.isNotEmpty &&
-                          !_isCreatingGroup)
-                      ? Colors.green[900]
-                      : Colors.white,
-                ),
-                tooltip: 'Create Group',
-                onPressed: (_isCreatingGroup ||
-                            _groupNameController.text.trim().isEmpty ||
-                            _selectedFriends.isEmpty)
-                    ? null
-                    : _createGroup,
-              ),
-            ),
-          ),
-        ],
-      ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: Colors.white))
-          : Stack(
-              children: [
-                AnimatedBuilder(
-                  animation: _colorAnimation,
-                  builder: (BuildContext context, Widget? child) {
-                    return Container(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            _colorAnimation.value!,
-                            const Color(0xFF0F380F),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-
-                AnimatedBuilder(
-                  animation: _animationController,
-                  builder: (context, child) {
-                    return CustomPaint(
-                      painter: LeafPainter(_leaves),
-                      child: Container(),
-                    );
-                  },
-                ),
-
-                Positioned.fill(
-                  child: Align(
-                    alignment: Alignment.bottomCenter,
-                    child: Image.network(
-                      'https://placehold.co/1000x200/0F380F/0F380F?text=Trees',
-                      fit: BoxFit.cover,
-                      height: treeImageHeight,
-                      width: double.infinity,
-                      errorBuilder: (context, error, stackTrace) => Container(),
-                    ),
-                  ),
-                ),
-
-                SafeArea(
-                  child: Column(
-                    children: [
-                      Padding(
-                        padding: textFieldPadding,
-                        child: TextField(
-                          controller: _groupNameController,
-                          style: TextStyle(color: Colors.white, fontSize: textFieldFontSize),
-                          decoration: InputDecoration(
-                            labelText: 'Group Name',
-                            labelStyle: TextStyle(
-                              color: Colors.white.withOpacity(0.7),
-                              fontSize: labelFontSize,
+            Scaffold(
+              backgroundColor: c.surface,
+              appBar: const BackupHeader(),
+              body: SafeArea(
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(22, 22, 22, 0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Create group',
+                              style: c
+                                  .text(22, bold: true)
+                                  .copyWith(letterSpacing: -.6),
                             ),
-                            hintText: 'e.g., The Avengers',
-                            hintStyle: TextStyle(
-                              color: Colors.white.withOpacity(0.5),
-                              fontSize: textFieldFontSize,
+                            const SizedBox(height: 5),
+                            Text(
+                              'Bring your people together.',
+                              style: c.text(12, muted: true),
                             ),
-                            filled: true,
-                            fillColor: const Color(0xFF2E8B57).withOpacity(0.2),
-                            prefixIcon: Icon(
-                              Icons.title,
-                              color: Colors.white54,
-                              size: iconSize,
+                            const SizedBox(height: 24),
+                            Text(
+                              'GROUP NAME',
+                              style: c
+                                  .text(9, muted: true)
+                                  .copyWith(letterSpacing: 1.2),
                             ),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(30.0),
-                              borderSide: BorderSide.none,
-                            ),
-                            enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(30.0),
-                              borderSide: const BorderSide(
-                                color: Colors.white24,
-                                width: 1.0,
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: _groupNameController,
+                              enabled: !_isCreatingGroup,
+                              style: c.text(19).copyWith(letterSpacing: -.35),
+                              decoration: InputDecoration(
+                                hintText: 'Give your group a name',
+                                hintStyle: c.text(19, muted: true),
+                                isDense: true,
+                                contentPadding: const EdgeInsets.only(
+                                  bottom: 12,
+                                ),
+                                enabledBorder: UnderlineInputBorder(
+                                  borderSide: BorderSide(color: c.line),
+                                ),
+                                focusedBorder: UnderlineInputBorder(
+                                  borderSide: BorderSide(color: c.blue),
+                                ),
                               ),
                             ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(30.0),
-                              borderSide: const BorderSide(
-                                color: Colors.lightGreenAccent,
-                                width: 2.0,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      Padding(
-                        padding: textFieldPadding,
-                        child: TextField(
-                          controller: _searchController,
-                          style: TextStyle(color: Colors.white, fontSize: textFieldFontSize),
-                          decoration: InputDecoration(
-                            labelText: 'Search friends',
-                            labelStyle: TextStyle(
-                              color: Colors.white.withOpacity(0.7),
-                              fontSize: labelFontSize,
-                            ),
-                            hintText: 'Enter a username...',
-                            hintStyle: TextStyle(
-                              color: Colors.white.withOpacity(0.5),
-                              fontSize: textFieldFontSize,
-                            ),
-                            prefixIcon: Icon(
-                              Icons.search,
-                              color: Colors.white54,
-                              size: iconSize,
-                            ),
-                            suffixIcon: _searchController.text.isNotEmpty
-                                ? IconButton(
-                                    icon: Icon(
-                                      Icons.clear,
-                                      color: Colors.white54,
-                                      size: iconSize,
-                                    ),
-                                    onPressed: () {
-                                      _searchController.clear();
-                                    },
-                                  )
-                                : null,
-                            filled: true,
-                            fillColor: const Color(0xFF2E8B57).withOpacity(0.2),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(30.0),
-                              borderSide: BorderSide.none,
-                            ),
-                            enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(30.0),
-                              borderSide: const BorderSide(
-                                color: Colors.white24,
-                                width: 1.0,
-                              ),
-                            ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(30.0),
-                              borderSide: const BorderSide(
-                                color: Colors.lightGreenAccent,
-                                width: 2.0,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      Padding(
-                        padding: EdgeInsets.symmetric(
-                          horizontal: screenWidth * 0.04,
-                          vertical: screenHeight * 0.015,
-                        ),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: Text(
-                            'Select Members:',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: labelFontSize,
-                            ),
-                          ),
-                        ),
-                      ),
-                      Expanded(
-                        child: filteredFriends.isEmpty
-                            ? Center(
-                                child: Text(
-                                  _searchQuery.isNotEmpty
-                                      ? "No friends found matching your search."
-                                      : "You don't have any friends to add.",
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    color: Colors.white.withOpacity(0.7),
-                                    fontSize: textFieldFontSize,
+                            const SizedBox(height: 18),
+                            SizedBox(
+                              height: 36,
+                              child: TextField(
+                                controller: _searchController,
+                                enabled: !_isCreatingGroup,
+                                style: c.text(12),
+                                decoration: InputDecoration(
+                                  hintText: 'Search friends',
+                                  hintStyle: c.text(12, muted: true),
+                                  filled: true,
+                                  fillColor: c.soft,
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                  ),
+                                  prefixIcon: Icon(
+                                    Icons.search,
+                                    size: 16,
+                                    color: c.muted,
+                                  ),
+                                  suffixIcon: query.isEmpty
+                                      ? null
+                                      : IconButton(
+                                          tooltip: 'Clear search',
+                                          onPressed: _searchController.clear,
+                                          icon: Icon(
+                                            Icons.close,
+                                            size: 16,
+                                            color: c.muted,
+                                          ),
+                                        ),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(19),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(19),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(19),
+                                    borderSide: BorderSide(color: c.blue),
                                   ),
                                 ),
-                              )
-                            : ListView.builder(
-                                itemCount: filteredFriends.length,
-                                itemBuilder: (context, index) {
-                                  final friend = filteredFriends[index];
-                                  final isSelected = _selectedFriends.contains(
-                                    friend.username,
-                                  );
-
-                                  return GestureDetector(
-                                    onTap: () {
-                                      setState(() {
-                                        if (isSelected) {
-                                          _selectedFriends.remove(
-                                            friend.username,
-                                          );
-                                        } else {
-                                          _selectedFriends.add(friend.username);
-                                        }
-                                      });
-                                    },
-                                    child: AnimatedContainer(
-                                      duration: const Duration(
-                                        milliseconds: 200,
-                                      ),
-                                      margin: listItemMargin,
-                                      decoration: BoxDecoration(
-                                        color: isSelected
-                                            ? const Color(
-                                                0xFF2E8B57,
-                                              ).withOpacity(0.2)
-                                            : Colors.transparent,
-                                        borderRadius: BorderRadius.circular(
-                                          12.0,
-                                        ),
-                                        border: Border.all(
-                                          color: isSelected
-                                              ? Colors.lightGreenAccent
-                                              : Colors.white12,
-                                          width: 2.0,
-                                        ),
-                                        boxShadow: [
-                                          BoxShadow(
-                                            color: Colors.black.withOpacity(
-                                              0.3,
+                              ),
+                            ),
+                            if (selected.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 12),
+                                child: SingleChildScrollView(
+                                  scrollDirection: Axis.horizontal,
+                                  child: Row(
+                                    children: [
+                                      for (final friend in selected)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            right: 6,
+                                          ),
+                                          child: Semantics(
+                                            label:
+                                                'Remove ${friend.displayNameOrUsername}',
+                                            button: true,
+                                            child: InkWell(
+                                              onTap: () =>
+                                                  _toggleFriend(friend),
+                                              borderRadius:
+                                                  BorderRadius.circular(12),
+                                              child: Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 9,
+                                                      vertical: 5,
+                                                    ),
+                                                decoration: BoxDecoration(
+                                                  color: c.soft,
+                                                  borderRadius:
+                                                      BorderRadius.circular(12),
+                                                ),
+                                                child: Row(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    Text(
+                                                      friend
+                                                          .displayNameOrUsername
+                                                          .split(' ')
+                                                          .first,
+                                                      style: c
+                                                          .text(10)
+                                                          .copyWith(
+                                                            color: c.blue,
+                                                          ),
+                                                    ),
+                                                    const SizedBox(width: 6),
+                                                    Icon(
+                                                      Icons.close,
+                                                      size: 11,
+                                                      color: c.blue,
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
                                             ),
-                                            blurRadius: 5,
-                                            spreadRadius: 1,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                top: 21,
+                                bottom: 8,
+                              ),
+                              child: Row(
+                                children: [
+                                  Text(
+                                    'ADD MEMBERS',
+                                    style: c
+                                        .text(9, muted: true)
+                                        .copyWith(letterSpacing: 1.2),
+                                  ),
+                                  const Spacer(),
+                                  Text(
+                                    '${_selectedFriends.length + 1} / 100 · including you',
+                                    style: c.text(10, muted: true),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Expanded(
+                              child: _isLoading
+                                  ? Center(
+                                      child: CircularProgressIndicator(
+                                        color: c.blue,
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : _loadError != null
+                                  ? Center(
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Text(
+                                            _loadError!,
+                                            textAlign: TextAlign.center,
+                                            style: c.text(12, muted: true),
+                                          ),
+                                          const SizedBox(height: 12),
+                                          NotesButton(
+                                            label: 'Try again',
+                                            onPressed: _fetchFriendsList,
                                           ),
                                         ],
                                       ),
-                                      child: Padding(
-                                        padding: listItemPadding,
-                                        child: Row(
-                                          children: [
-                                            Stack(
-                                              alignment: Alignment.bottomRight,
-                                              children: [
-                                                _buildAvatar(friend),
-                                                if (isSelected)
-                                                  Container(
-                                                    decoration: BoxDecoration(
-                                                      color: Colors
-                                                          .lightGreenAccent,
-                                                      shape: BoxShape.circle,
-                                                      border: Border.all(
-                                                        color:
-                                                            Colors.green[800]!,
-                                                        width: 2,
-                                                      ),
-                                                    ),
-                                                    child: Icon(
-                                                      Icons.check,
-                                                      color: Colors.black,
-                                                      size: checkIconSize,
-                                                    ),
+                                    )
+                                  : filtered.isEmpty
+                                  ? Center(
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const BackupSymbol(
+                                            icon: Icons.group_outlined,
+                                          ),
+                                          const SizedBox(height: 15),
+                                          Text(
+                                            _friendsList.isEmpty
+                                                ? 'A group starts with friends'
+                                                : 'No matching friends',
+                                            style: c.text(14, bold: true),
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            _friendsList.isEmpty
+                                                ? 'Add friends first, then choose who\nyou’d like to bring together.'
+                                                : 'Try a different name or username.',
+                                            textAlign: TextAlign.center,
+                                            style: c
+                                                .text(12, muted: true)
+                                                .copyWith(height: 1.8),
+                                          ),
+                                        ],
+                                      ),
+                                    )
+                                  : ListView.builder(
+                                      itemCount: filtered.length,
+                                      itemBuilder: (_, index) {
+                                        final friend = filtered[index];
+                                        final checked = _selectedFriends
+                                            .contains(friend.username);
+                                        return Semantics(
+                                          button: true,
+                                          selected: checked,
+                                          child: InkWell(
+                                            onTap: () => _toggleFriend(friend),
+                                            child: Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    vertical: 14,
                                                   ),
-                                              ],
-                                            ),
-                                            SizedBox(width: spacing1),
-                                            Expanded(
-                                              child: Column(
-                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                              decoration: BoxDecoration(
+                                                border: Border(
+                                                  bottom: BorderSide(
+                                                    color: c.line,
+                                                  ),
+                                                ),
+                                              ),
+                                              child: Row(
                                                 children: [
-                                                  Text(
-                                                    friend.displayName ?? friend.username,
-                                                    style: TextStyle(
-                                                      color: Colors.white,
-                                                      fontSize: nameFontSize,
-                                                      fontWeight: FontWeight.w600,
+                                                  _avatar(friend, c),
+                                                  const SizedBox(width: 11),
+                                                  Expanded(
+                                                    child: Column(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
+                                                      children: [
+                                                        Text(
+                                                          friend
+                                                              .displayNameOrUsername,
+                                                          style: c.text(12),
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                        ),
+                                                        const SizedBox(
+                                                          height: 3,
+                                                        ),
+                                                        Text(
+                                                          '@${friend.username}',
+                                                          style: c.text(
+                                                            10,
+                                                            muted: true,
+                                                          ),
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                        ),
+                                                      ],
                                                     ),
                                                   ),
-                                                  if (friend.displayName != null)
-                                                    Text(
-                                                      '@${friend.username}',
-                                                      style: TextStyle(
-                                                        color: Colors.white.withOpacity(0.7),
-                                                        fontSize: usernameFontSize,
+                                                  const SizedBox(width: 8),
+                                                  Container(
+                                                    width: 17,
+                                                    height: 17,
+                                                    decoration: BoxDecoration(
+                                                      shape: BoxShape.circle,
+                                                      color: checked
+                                                          ? const Color(
+                                                              0xFF507FC3,
+                                                            )
+                                                          : Colors.transparent,
+                                                      border: Border.all(
+                                                        color: checked
+                                                            ? const Color(
+                                                                0xFF507FC3,
+                                                              )
+                                                            : c.line,
+                                                        width: 1.3,
                                                       ),
                                                     ),
+                                                    child: checked
+                                                        ? const Icon(
+                                                            Icons.check,
+                                                            color: Colors.white,
+                                                            size: 11,
+                                                          )
+                                                        : null,
+                                                  ),
                                                 ],
                                               ),
                                             ),
-                                          ],
-                                        ),
-                                      ),
+                                          ),
+                                        );
+                                      },
                                     ),
-                                  );
-                                },
-                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-      ),
-    );
-  }
-
-  Widget _buildStaticVersion(List<Friend> filteredFriends) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-
-    // Responsive sizing
-    final appBarTitleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
-    final textFieldFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final iconSize = (screenWidth * 0.06).clamp(20.0, 26.0);
-    final labelFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final listItemMargin = EdgeInsets.symmetric(
-      horizontal: screenWidth * 0.04,
-      vertical: screenHeight * 0.008,
-    );
-    final listItemPadding = EdgeInsets.all(screenWidth * 0.03);
-    final nameFontSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final usernameFontSize = (screenWidth * 0.0325).clamp(12.0, 15.0);
-    final checkIconSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final spacing1 = (screenWidth * 0.04).clamp(12.0, 18.0);
-    final spacing2 = (screenWidth * 0.03).clamp(10.0, 14.0);
-    final cardPadding = EdgeInsets.symmetric(
-      horizontal: screenWidth * 0.04,
-      vertical: screenHeight * 0.015,
-    );
-    final cardIconSize = (screenWidth * 0.05).clamp(18.0, 24.0);
-
-    return CallAwareScreen(
-      screenName: 'CreateGroupScreen',
-      child: Scaffold(
-        backgroundColor: Colors.lightBlue[50],
-        appBar: AppBar(
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Create New Group',
-                style: TextStyle(
-                  color: Colors.black,
-                  fontWeight: FontWeight.bold,
-                  fontSize: appBarTitleSize,
-                ),
-              ),
-              Text(
-                '${_selectedFriends.length + 1}/100 members',
-                style: TextStyle(
-                  color: Colors.black54,
-                  fontSize: appBarTitleSize * 0.6,
-                ),
-              ),
-            ],
-          ),
-          backgroundColor: Colors.lightBlue[50],
-          elevation: 0,
-          iconTheme: const IconThemeData(color: Colors.black),
-          actions: [
-            Padding(
-              padding: EdgeInsets.only(right: screenWidth * 0.02),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 300),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: (_groupNameController.text.trim().isNotEmpty &&
-                          _selectedFriends.isNotEmpty &&
-                          !_isCreatingGroup)
-                      ? Colors.green
-                      : Colors.transparent,
-                  boxShadow: (_groupNameController.text.trim().isNotEmpty &&
-                             _selectedFriends.isNotEmpty &&
-                             !_isCreatingGroup)
-                      ? [
-                          BoxShadow(
-                            color: Colors.green.withOpacity(0.4),
-                            blurRadius: 8,
-                            spreadRadius: 2,
-                          ),
-                        ]
-                      : null,
-                ),
-                child: IconButton(
-                  icon: Icon(
-                    Icons.check,
-                    color: (_groupNameController.text.trim().isNotEmpty &&
-                            _selectedFriends.isNotEmpty &&
-                            !_isCreatingGroup)
-                        ? Colors.white
-                        : Colors.black45,
-                  ),
-                  tooltip: 'Create Group',
-                  onPressed: (_isCreatingGroup ||
-                              _groupNameController.text.trim().isEmpty ||
-                              _selectedFriends.isEmpty)
-                      ? null
-                      : _createGroup,
-                ),
-              ),
-            ),
-          ],
-        ),
-        body: _isLoading
-            ? const Center(child: CircularProgressIndicator())
-            : SafeArea(
-                child: Column(
-                  children: [
-                    Padding(
-                      padding: EdgeInsets.only(
-                        left: 16.0,
-                        right: 16.0,
-                        top: 8.0,
-                        bottom: MediaQuery.of(context).padding.bottom + 8.0,
+                    ),
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(22, 14, 22, 10),
+                      decoration: BoxDecoration(
+                        border: Border(top: BorderSide(color: c.line)),
                       ),
                       child: Column(
                         children: [
-                          // Group Name Field - PURPLE
-                          TextField(
-                            controller: _groupNameController,
-                            style: TextStyle(color: Colors.black87, fontSize: textFieldFontSize),
-                            decoration: InputDecoration(
-                              labelText: 'Group Name',
-                              labelStyle: TextStyle(color: Colors.black54, fontSize: labelFontSize),
-                              hintText: 'e.g., The Avengers',
-                              hintStyle: TextStyle(color: Colors.black38, fontSize: textFieldFontSize),
-                              filled: true,
-                              fillColor: Colors.purple[50],
-                              prefixIcon: Icon(Icons.title, color: Colors.purple[700], size: iconSize),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12.0),
-                                borderSide: BorderSide.none,
-                              ),
-                              enabledBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12.0),
-                                borderSide: BorderSide(color: Colors.purple[200]!, width: 1.0),
-                              ),
-                              focusedBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12.0),
-                                borderSide: BorderSide(color: Colors.purple[400]!, width: 2.0),
-                              ),
+                          SizedBox(
+                            width: double.infinity,
+                            child: NotesButton(
+                              label: 'Create group',
+                              primary: true,
+                              onPressed: _canCreate ? _createGroup : null,
                             ),
                           ),
-                          SizedBox(height: spacing2),
-                          // Search Field - ORANGE
-                          TextField(
-                            controller: _searchController,
-                            style: TextStyle(color: Colors.black87, fontSize: textFieldFontSize),
-                            decoration: InputDecoration(
-                              labelText: 'Search friends',
-                              labelStyle: TextStyle(color: Colors.black54, fontSize: labelFontSize),
-                              hintText: 'Enter a username...',
-                              hintStyle: TextStyle(color: Colors.black38, fontSize: textFieldFontSize),
-                              prefixIcon: Icon(Icons.search, color: Colors.orange[700], size: iconSize),
-                              suffixIcon: _searchController.text.isNotEmpty
-                                  ? IconButton(
-                                      icon: Icon(Icons.clear, color: Colors.black54, size: iconSize),
-                                      onPressed: () {
-                                        _searchController.clear();
-                                      },
-                                    )
-                                  : null,
-                              filled: true,
-                              fillColor: Colors.orange[50],
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12.0),
-                                borderSide: BorderSide.none,
-                              ),
-                              enabledBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12.0),
-                                borderSide: BorderSide(color: Colors.orange[200]!, width: 1.0),
-                              ),
-                              focusedBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12.0),
-                                borderSide: BorderSide(color: Colors.orange[400]!, width: 2.0),
-                              ),
-                            ),
+                          const SizedBox(height: 8),
+                          Text(
+                            _groupNameController.text.trim().isNotEmpty &&
+                                    _selectedFriends.isNotEmpty
+                                ? '${_selectedFriends.length + 1} members · You’ll be the group admin.'
+                                : 'Add a name and choose at least one friend.',
+                            textAlign: TextAlign.center,
+                            style: c.text(10, muted: true),
                           ),
-                          SizedBox(height: spacing1),
-                          // "Select Members" Card
-                          Align(
-                            alignment: Alignment.centerLeft,
-                            child: Container(
-                              padding: cardPadding,
-                              decoration: BoxDecoration(
-                                color: Colors.amber[50],
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: Colors.amber[200]!, width: 1),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.amber.withOpacity(0.2),
-                                    blurRadius: 4,
-                                    offset: const Offset(0, 2),
-                                  ),
-                                ],
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.people, color: Colors.amber[800], size: cardIconSize),
-                                  SizedBox(width: spacing2),
-                                  Text(
-                                    'Select Members:',
-                                    style: TextStyle(
-                                      color: Colors.amber[900],
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: labelFontSize,
-                                    ),
-                                  ),
-                                ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (_isCreatingGroup) ...[
+              const Positioned.fill(
+                child: ModalBarrier(
+                  dismissible: false,
+                  color: Color(0x55101826),
+                ),
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Material(
+                  color: Colors.transparent,
+                  child: Container(
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: c.surface,
+                      borderRadius: const BorderRadius.vertical(
+                        top: Radius.circular(24),
+                      ),
+                    ),
+                    child: SafeArea(
+                      top: false,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const BackupSymbol(icon: Icons.group_outlined),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Creating your group…',
+                            style: c.text(20, bold: true),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Bringing everyone together.',
+                            style: c.text(12, muted: true),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.all(25),
+                            child: Center(
+                              child: SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(
+                                  color: c.blue,
+                                  strokeWidth: 2,
+                                ),
                               ),
                             ),
                           ),
                         ],
                       ),
                     ),
-                    Expanded(
-                      child: filteredFriends.isEmpty
-                          ? Center(
-                              child: Text(
-                                _searchQuery.isNotEmpty
-                                    ? "No friends found matching your search."
-                                    : "You don't have any friends to add.",
-                                textAlign: TextAlign.center,
-                                style: TextStyle(color: Colors.black54, fontSize: textFieldFontSize),
-                              ),
-                            )
-                          : ListView.builder(
-                              itemCount: filteredFriends.length,
-                              itemBuilder: (context, index) {
-                                final friend = filteredFriends[index];
-                                final isSelected = _selectedFriends.contains(friend.username);
-
-                                return GestureDetector(
-                                  onTap: () {
-                                    setState(() {
-                                      if (isSelected) {
-                                        _selectedFriends.remove(friend.username);
-                                      } else {
-                                        // Check limit: 99 friends + 1 creator = 100 total
-                                        if (_selectedFriends.length >= 99) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            const SnackBar(
-                                              content: Text('Maximum 100 members allowed (including you)'),
-                                              backgroundColor: Colors.orange,
-                                            ),
-                                          );
-                                          return;
-                                        }
-                                        _selectedFriends.add(friend.username);
-                                      }
-                                    });
-                                  },
-                                  child: Container(
-                                    margin: listItemMargin,
-                                    decoration: BoxDecoration(
-                                      color: isSelected ? Colors.green[100] : Colors.green[50],
-                                      borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(
-                                        color: isSelected ? Colors.green[400]! : Colors.green[200]!,
-                                        width: 1,
-                                      ),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.green.withOpacity(0.2),
-                                          blurRadius: 4,
-                                          offset: const Offset(0, 2),
-                                        ),
-                                      ],
-                                    ),
-                                    child: Padding(
-                                      padding: listItemPadding,
-                                      child: Row(
-                                        children: [
-                                          Stack(
-                                            alignment: Alignment.bottomRight,
-                                            children: [
-                                              Container(
-                                                decoration: BoxDecoration(
-                                                  shape: BoxShape.circle,
-                                                  border: Border.all(
-                                                    color: Colors.black,
-                                                    width: 2.0,
-                                                  ),
-                                                ),
-                                                child: _buildAvatar(friend),
-                                              ),
-                                              if (isSelected)
-                                                Container(
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.green,
-                                                    shape: BoxShape.circle,
-                                                    border: Border.all(
-                                                      color: Colors.black,
-                                                      width: 2,
-                                                    ),
-                                                  ),
-                                                  child: Icon(
-                                                    Icons.check,
-                                                    color: Colors.white,
-                                                    size: checkIconSize,
-                                                  ),
-                                                ),
-                                            ],
-                                          ),
-                                          SizedBox(width: spacing1),
-                                          Expanded(
-                                            child: Column(
-                                              crossAxisAlignment: CrossAxisAlignment.start,
-                                              children: [
-                                                Text(
-                                                  friend.displayName ?? friend.username,
-                                                  style: TextStyle(
-                                                    color: isSelected ? Colors.green[900] : Colors.black87,
-                                                    fontSize: nameFontSize,
-                                                    fontWeight: FontWeight.w600,
-                                                  ),
-                                                ),
-                                                if (friend.displayName != null)
-                                                  Text(
-                                                    '@${friend.username}',
-                                                    style: TextStyle(
-                                                      color: isSelected ? Colors.green[700] : Colors.black54,
-                                                      fontSize: usernameFontSize,
-                                                    ),
-                                                  ),
-                                              ],
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
+            ],
+          ],
+        ),
       ),
     );
   }
