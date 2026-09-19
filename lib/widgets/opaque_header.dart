@@ -91,8 +91,23 @@ class OpaqueHeader extends StatelessWidget implements PreferredSizeWidget {
                   tooltip: 'More options',
                   icon: Icon(Icons.more_vert_rounded, size: 22, color: ink),
                   color: surface,
+                  surfaceTintColor: Colors.transparent,
+                  elevation: 8,
+                  shadowColor: const Color(0x24121A28),
+                  position: PopupMenuPosition.under,
+                  offset: const Offset(0, 4),
+                  constraints: const BoxConstraints(
+                    minWidth: 246,
+                    maxWidth: 246,
+                  ),
+                  menuPadding: const EdgeInsets.all(7),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
+                    borderRadius: BorderRadius.circular(18),
+                    side: BorderSide(
+                      color: isDark
+                          ? const Color(0xFF303B4B)
+                          : const Color(0xFFE8EAEE),
+                    ),
                   ),
                   itemBuilder: (_) => menuItems,
                   onSelected: onMenuSelected,

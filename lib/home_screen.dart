@@ -1,5 +1,6 @@
 import 'package:zarq_messenger/screens/backup_management_screen.dart';
 import 'widgets/opaque_navigation.dart';
+import 'widgets/home_logout_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -272,62 +273,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   // ─── Logout ────────────────────────────────────────────────────────────────
 
-  void _showLogoutDialog(BuildContext context) {
-    showDialog(
+  void _showLogoutDialog(BuildContext context) async {
+    final isDark = context.read<UserSettingsProvider>().isDarkMode;
+    final confirmed = await showDialog<bool>(
       context: context,
-      builder: (BuildContext dialogContext) {
-        return AlertDialog(
-          backgroundColor: _kWhite,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          title: Row(
-            children: [
-              const Icon(Icons.logout_rounded, color: Colors.orange),
-              const SizedBox(width: 10),
-              Text(
-                'Logout',
-                style: GoogleFonts.poppins(
-                  fontWeight: FontWeight.w600,
-                  color: _kTextDark,
-                ),
-              ),
-            ],
-          ),
-          content: Text(
-            'You will be logged out but your messages will stay on this phone.\n\nYou can login again anytime.',
-            style: GoogleFonts.inter(
-              color: _kTextGrey,
-              fontSize: 14,
-              height: 1.5,
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: Text(
-                'Cancel',
-                style: GoogleFonts.inter(color: _kTextGrey),
-              ),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.of(dialogContext).pop();
-                _performLogout(clearData: false);
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.orange,
-                foregroundColor: _kWhite,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-              child: Text('Logout', style: GoogleFonts.inter()),
-            ),
-          ],
-        );
-      },
+      barrierColor: const Color(0x650B101A),
+      builder: (_) => HomeLogoutDialog(isDark: isDark),
     );
+    if (confirmed == true && mounted) {
+      await _performLogout(clearData: false);
+    }
   }
 
   Future<void> _performLogout({required bool clearData}) async {
@@ -657,31 +612,31 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         _popupItem(
           textColor: textColor,
           value: 'settings',
-          icon: Icons.settings_outlined,
+          icon: Icons.tune_rounded,
           label: 'Settings',
-          color: textColor,
+          color: isDark ? const Color(0xFFA0ADBF) : const Color(0xFF7B808B),
         ),
         _popupItem(
           textColor: textColor,
           value: 'backup_restore',
           icon: Icons.backup_outlined,
           label: 'Backup / Restore',
-          color: Colors.green,
+          color: isDark ? const Color(0xFFA0ADBF) : const Color(0xFF7B808B),
         ),
         _popupItem(
           textColor: textColor,
           value: 'about',
           icon: Icons.info_outline_rounded,
           label: 'About',
-          color: Colors.cyan,
+          color: isDark ? const Color(0xFFA0ADBF) : const Color(0xFF7B808B),
         ),
         const PopupMenuDivider(),
         _popupItem(
-          textColor: textColor,
+          textColor: isDark ? const Color(0xFFE09A9D) : const Color(0xFFB54D52),
           value: 'logout',
           icon: Icons.logout_rounded,
-          label: 'Logout',
-          color: Colors.orange,
+          label: 'Log out',
+          color: isDark ? const Color(0xFFE09A9D) : const Color(0xFFB54D52),
         ),
       ],
       onMenuSelected: (result) async {
@@ -735,14 +690,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }) {
     return PopupMenuItem<String>(
       value: value,
+      height: 52,
+      padding: const EdgeInsets.symmetric(horizontal: 11),
       child: Row(
         children: [
-          Icon(icon, color: color, size: 20),
+          Icon(icon, color: color, size: 19),
           const SizedBox(width: 12),
-          Text(
+          Expanded(child: Text(
             label,
-            style: GoogleFonts.inter(color: textColor, fontSize: 14),
-          ),
+            style: GoogleFonts.inter(color: textColor, fontSize: 13, fontWeight: FontWeight.w500),
+          )),
         ],
       ),
     );
