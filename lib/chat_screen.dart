@@ -4315,10 +4315,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
             constraints: BoxConstraints(
               maxWidth: MediaQuery.of(context).size.width * 0.85,
             ),
-            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+            padding: contactCard ? EdgeInsets.zero : const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+            clipBehavior: contactCard ? Clip.antiAlias : Clip.none,
             decoration: structured ? BoxDecoration(
-              color: isSelected ? (dark ? const Color(0xFF35465E) : const Color(0xFFDCE8F8)) : contactCard ? (dark ? const Color(0xFF253348) : const Color(0xFFF3F7FD)) : (dark ? const Color(0xFF19202A) : Colors.white),
-              border: Border.all(color: dark ? const Color(0xFF35465E) : const Color(0xFFDFE7F1)),
+              color: isSelected ? (dark ? const Color(0xFF35465E) : const Color(0xFFDCE8F8)) : contactCard ? (isMe ? (dark ? const Color(0xFF2A3544) : const Color(0xFFF0F2F5)) : (dark ? const Color(0xFF222C39) : Colors.white)) : (dark ? const Color(0xFF19202A) : Colors.white),
+              border: Border.all(color: contactCard ? (dark ? const Color(0xFF3C4655) : const Color(0xFFDFE3E8)) : (dark ? const Color(0xFF35465E) : const Color(0xFFDFE7F1))),
               borderRadius: messageBubbleRadius(isMe, styleKey, screenWidth),
             ) : styleKey == 'modern_card'
               ? messageCardDecoration(isMe, isSelected, cardBubbleColor, screenWidth)
@@ -4357,7 +4358,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
               children: [
                 if (!isMe && widget.conversationInfo.isGroup)
                   Padding(
-                    padding: EdgeInsets.only(bottom: spacing1),
+                    padding: contactCard ? EdgeInsets.fromLTRB(14, 10, 14, spacing1) : EdgeInsets.only(bottom: spacing1),
                     child: Text(
                       message.username,
                       style: TextStyle(
@@ -4372,7 +4373,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                 // Display replied message if this is a reply
                 if (message.replyToMessageId != null && message.repliedMessageContent != null)
                   Container(
-                    margin: EdgeInsets.only(bottom: spacing1),
+                    margin: contactCard ? EdgeInsets.fromLTRB(14, 9, 14, spacing1) : EdgeInsets.only(bottom: spacing1),
                     padding: EdgeInsets.all(spacing1),
                     decoration: BoxDecoration(
                       color: (isMe ? Colors.white : Colors.grey[300])?.withOpacity(0.3),
@@ -4431,6 +4432,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                   ChatContactBubble(
                     payload: ContactPayload.tryParse(message.content)!,
                     isMe: isMe,
+                    metadata: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Text(DateFormat('HH:mm').format(message.timestamp.toLocal()), style: TextStyle(fontSize: 9, color: dark ? const Color(0xFF9DA7B6) : const Color(0xFF858A94))),
+                      if (isMe) ...[const SizedBox(width: 4), _buildMessageStatusIcon(message, 'modern_card')],
+                    ]),
                   ),
                 // Display Poll payload (hide if message is deleted)
                 if (message.content != 'This message was deleted' && PollPayload.tryParse(message.content) != null)
@@ -4456,8 +4461,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                         : (isMe ? Colors.white70 : Colors.grey[600]),
                     ),
                   ),
-                SizedBox(height: spacing1),
-                Row(
+                if (!contactCard) SizedBox(height: spacing1),
+                if (!contactCard) Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
