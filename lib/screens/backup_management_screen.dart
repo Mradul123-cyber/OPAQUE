@@ -21,7 +21,7 @@ import 'backup_info_screen.dart';
 import 'package:provider/provider.dart';
 
 class BackupManagementScreen extends StatefulWidget {
-  BackupManagementScreen({super.key});
+  const BackupManagementScreen({super.key});
 
   @override
   State<BackupManagementScreen> createState() => _BackupManagementScreenState();
