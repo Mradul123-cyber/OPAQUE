@@ -21,6 +21,8 @@ import '../widgets/backup_design.dart';
 import '../widgets/call_aware_screen.dart';
 import '../widgets/notes_design.dart';
 import '../widgets/opaque_toast.dart';
+import '../widgets/group_join_requests_sheet.dart';
+import 'group_permissions_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MODELS
@@ -66,6 +68,10 @@ class GroupInfo {
   final String? avatarUrl;
   final DateTime createdAt;
   final DateTime updatedAt;
+  final String editGroupInfoPermission;
+  final String sendMessagesPermission;
+  final String addMembersPermission;
+  final bool requireAdminApproval;
   final List<GroupMember> members;
 
   GroupInfo({
@@ -76,6 +82,10 @@ class GroupInfo {
     this.avatarUrl,
     required this.createdAt,
     required this.updatedAt,
+    this.editGroupInfoPermission = 'all_members',
+    this.sendMessagesPermission = 'all_members',
+    this.addMembersPermission = 'all_members',
+    this.requireAdminApproval = false,
     required this.members,
   });
 
@@ -88,6 +98,10 @@ class GroupInfo {
       avatarUrl: json['avatarUrl'],
       createdAt: DateTime.tryParse(json['createdAt'] ?? '') ?? DateTime.now(),
       updatedAt: DateTime.tryParse(json['updatedAt'] ?? '') ?? DateTime.now(),
+      editGroupInfoPermission: json['editGroupInfoPermission'] ?? 'all_members',
+      sendMessagesPermission: json['sendMessagesPermission'] ?? 'all_members',
+      addMembersPermission: json['addMembersPermission'] ?? 'all_members',
+      requireAdminApproval: json['requireAdminApproval'] ?? false,
       members: (json['members'] as List?)
               ?.map((m) => GroupMember.fromJson(m as Map<String, dynamic>))
               .toList() ??
@@ -120,13 +134,39 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
   final TextEditingController _memberSearchController = TextEditingController();
   final FocusNode _memberSearchFocusNode = FocusNode();
   String _memberSearchQuery = '';
+  Set<String> _friendUsernames = {};
 
   @override
   void initState() {
     super.initState();
     _currentUserUid = FirebaseAuth.instance.currentUser?.uid;
     _fetchGroupInfo();
+    _fetchFriends();
     _memberSearchController.addListener(_onSearchChanged);
+  }
+
+  Future<void> _fetchFriends() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+      final token = await user.getIdToken();
+      final url = Uri.parse('${AppConfig.baseUrl}/friends/list');
+      final response = await http.get(
+        url,
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      if (response.statusCode == 200 && mounted) {
+        final List<dynamic> friendsJson = json.decode(response.body);
+        final Set<String> friends = {};
+        for (final f in friendsJson) {
+          final u = f['username'] as String?;
+          if (u != null) friends.add(u.toLowerCase());
+        }
+        setState(() {
+          _friendUsernames = friends;
+        });
+      }
+    } catch (_) {}
   }
 
   void _onSearchChanged() {
@@ -193,11 +233,17 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     }
   }
 
-  bool _canManageMembers() =>
+  bool get _isAdminOrOwner =>
       _currentUserRole == 'owner' || _currentUserRole == 'admin';
 
+  bool _canManageMembers() =>
+      _isAdminOrOwner || _groupInfo?.addMembersPermission == 'all_members';
+
+  bool _canEditGroupInfo() =>
+      _isAdminOrOwner || _groupInfo?.editGroupInfoPermission == 'all_members';
+
   bool _canRemoveMember(GroupMember member) {
-    if (!_canManageMembers()) return false;
+    if (!_isAdminOrOwner) return false;
     if (member.uid == _currentUserUid) return false;
     if (member.role == 'owner') return false;
     if (member.role == 'admin' && _currentUserRole != 'owner') return false;
@@ -205,10 +251,76 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
   }
 
   bool _canChangeRole(GroupMember member) {
-    if (_currentUserRole != 'owner') return false;
+    if (!_isAdminOrOwner) return false;
     if (member.uid == _currentUserUid) return false;
     if (member.role == 'owner') return false;
+    if (member.role == 'admin' && _currentUserRole != 'owner') return false;
     return true;
+  }
+
+  Future<void> _transferOwnership(GroupMember member) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final token = await user.getIdToken();
+      final url = Uri.parse(
+          '${AppConfig.baseUrl}/groups/${widget.groupId}/transfer-ownership');
+
+      final response = await http.post(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: json.encode({'newOwnerUid': member.uid}),
+      );
+
+      if (response.statusCode == 200) {
+        if (mounted) {
+          OpaqueToast.success(context, 'Group ownership transferred to @${member.username}');
+          _fetchGroupInfo();
+        }
+      } else {
+        if (mounted) {
+          OpaqueToast.error(context, 'Failed to transfer ownership');
+        }
+      }
+    } catch (_) {
+      if (mounted) OpaqueToast.error(context, 'Error transferring ownership');
+    }
+  }
+
+  void _confirmTransferOwnership(GroupMember member) {
+    final c = NotesColors(context);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: c.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: c.line),
+        ),
+        title: Text('Transfer ownership?', style: c.text(16, bold: true)),
+        content: Text(
+          'Are you sure you want to transfer primary group ownership to @${member.username}? You will remain an admin.',
+          style: c.text(13, muted: true),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Cancel', style: c.text(13, muted: true)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _transferOwnership(member);
+            },
+            child: Text('Transfer', style: c.text(13, bold: true).copyWith(color: c.blue)),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _removeMember(String memberUid, String memberUsername) async {
@@ -391,16 +503,26 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     try {
       final token = await user.getIdToken();
       final url = Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}');
-      final response = await http.delete(
+      var response = await http.delete(
         url,
         headers: {'Authorization': 'Bearer $token'},
       );
 
+      if (response.statusCode != 200) {
+        final postUrl = Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/delete');
+        response = await http.post(
+          postUrl,
+          headers: {'Authorization': 'Bearer $token'},
+        );
+      }
+
       if (mounted) {
         if (response.statusCode == 200) {
+          OpaqueToast.success(context, 'Group deleted');
           Navigator.of(context).popUntil((route) => route.isFirst);
         } else {
-          OpaqueToast.error(context, 'Failed to delete group');
+          final body = response.body.trim();
+          OpaqueToast.error(context, body.isNotEmpty ? body : 'Failed to delete group');
         }
       }
     } catch (_) {
@@ -749,9 +871,11 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
   void _showMemberActionsBottomSheet(GroupMember member) {
     final isCurrentUser = member.uid == _currentUserUid;
     final c = NotesColors(context);
-    final canPromote = _currentUserRole == 'owner' && member.role == 'member';
+    final canPromote = _isAdminOrOwner && member.role == 'member';
     final canDemote = _currentUserRole == 'owner' && member.role == 'admin';
+    final canTransferOwnership = _currentUserRole == 'owner' && !isCurrentUser;
     final canRemove = _canRemoveMember(member);
+    final isFriend = _friendUsernames.contains(member.username.toLowerCase());
 
     showModalBottomSheet<void>(
       context: context,
@@ -824,14 +948,15 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                     _openConversation(member);
                   },
                 ),
-                ListTile(
-                  leading: Icon(Icons.person_add_outlined, color: c.blue),
-                  title: Text('Add friend', style: c.text(14)),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _sendFriendRequest(member);
-                  },
-                ),
+                if (!isFriend)
+                  ListTile(
+                    leading: Icon(Icons.person_add_outlined, color: c.blue),
+                    title: Text('Add friend', style: c.text(14)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _sendFriendRequest(member);
+                    },
+                  ),
               ],
               if (canPromote)
                 ListTile(
@@ -849,6 +974,15 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   onTap: () {
                     Navigator.pop(ctx);
                     _changeRole(member.uid, 'member', member.username);
+                  },
+                ),
+              if (canTransferOwnership)
+                ListTile(
+                  leading: Icon(Icons.swap_horiz_rounded, color: c.blue),
+                  title: Text('Transfer group ownership', style: c.text(14)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _confirmTransferOwnership(member);
                   },
                 ),
               if (canRemove)
@@ -1067,6 +1201,30 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                     _showEditGroupDialog();
                   } else if (value == 'add') {
                     _showAddMembersSheet();
+                  } else if (value == 'permissions') {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => GroupPermissionsScreen(
+                          groupId: widget.groupId,
+                          groupName: _groupInfo!.groupName,
+                          isOwner: _currentUserRole == 'owner',
+                        ),
+                      ),
+                    ).then((val) {
+                      if (val == true && mounted) _fetchGroupInfo();
+                    });
+                  } else if (value == 'join_requests') {
+                    showModalBottomSheet(
+                      context: context,
+                      backgroundColor: Colors.transparent,
+                      isScrollControlled: true,
+                      builder: (_) => GroupJoinRequestsSheet(
+                        groupId: widget.groupId,
+                        groupName: _groupInfo!.groupName,
+                        onRequestsUpdated: _fetchGroupInfo,
+                      ),
+                    );
                   } else if (value == 'leave') {
                     _leaveGroup();
                   } else if (value == 'delete') {
@@ -1074,7 +1232,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   }
                 },
                 itemBuilder: (context) => [
-                  if (_canManageMembers())
+                  if (_canEditGroupInfo())
                     PopupMenuItem(
                       value: 'edit',
                       child: Row(
@@ -1093,6 +1251,28 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                           Icon(Icons.person_add_outlined, size: 16, color: c.ink),
                           const SizedBox(width: 10),
                           Text('Add members', style: c.text(13)),
+                        ],
+                      ),
+                    ),
+                  if (_isAdminOrOwner)
+                    PopupMenuItem(
+                      value: 'permissions',
+                      child: Row(
+                        children: [
+                          Icon(Icons.shield_outlined, size: 16, color: c.ink),
+                          const SizedBox(width: 10),
+                          Text('Group permissions', style: c.text(13)),
+                        ],
+                      ),
+                    ),
+                  if (_isAdminOrOwner && _groupInfo?.requireAdminApproval == true)
+                    PopupMenuItem(
+                      value: 'join_requests',
+                      child: Row(
+                        children: [
+                          Icon(Icons.person_pin_outlined, size: 16, color: c.ink),
+                          const SizedBox(width: 10),
+                          Text('Pending requests', style: c.text(13)),
                         ],
                       ),
                     ),
@@ -1178,7 +1358,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                                         radius: 46,
                                         c: c,
                                       ),
-                                      if (_currentUserRole == 'owner')
+                                      if (_canEditGroupInfo())
                                         Positioned(
                                           bottom: 0,
                                           right: 0,
@@ -1279,7 +1459,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                                             ),
                                           ),
                                         ),
-                                      if (_canManageMembers())
+                                      if (_canEditGroupInfo())
                                         OutlinedButton.icon(
                                           onPressed: _showEditGroupDialog,
                                           icon: Icon(Icons.edit_outlined,
@@ -1300,9 +1480,70 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                                         ),
                                     ],
                                   ),
-                                ],
-                              ),
-                            ),
+                                  if (_isAdminOrOwner) ...[
+                                    const SizedBox(height: 16),
+                                    Container(
+                                      decoration: BoxDecoration(
+                                        color: c.surface,
+                                        borderRadius: BorderRadius.circular(14),
+                                        border: Border.all(color: c.line),
+                                      ),
+                                      child: Column(
+                                        children: [
+                                          ListTile(
+                                            leading: Icon(Icons.shield_outlined, color: c.blue, size: 20),
+                                            title: Text('Group permissions', style: c.text(13, bold: true)),
+                                            subtitle: Text(
+                                              _groupInfo?.sendMessagesPermission == 'only_admins'
+                                                  ? 'Announcement mode active'
+                                                  : 'Configure member & admin controls',
+                                              style: c.text(11, muted: true),
+                                            ),
+                                            trailing: Icon(Icons.chevron_right_rounded, color: c.muted, size: 18),
+                                            onTap: () async {
+                                              final updated = await Navigator.push<bool>(
+                                                context,
+                                                MaterialPageRoute(
+                                                  builder: (_) => GroupPermissionsScreen(
+                                                    groupId: widget.groupId,
+                                                    groupName: _groupInfo!.groupName,
+                                                    isOwner: _currentUserRole == 'owner',
+                                                  ),
+                                                ),
+                                              );
+                                              if (updated == true && mounted) {
+                                                _fetchGroupInfo();
+                                              }
+                                            },
+                                          ),
+                                          if (_groupInfo?.requireAdminApproval == true) ...[
+                                            Divider(height: 1, color: c.line, indent: 16, endIndent: 16),
+                                            ListTile(
+                                              leading: Icon(Icons.person_pin_outlined, color: c.blue, size: 20),
+                                              title: Text('Pending join requests', style: c.text(13, bold: true)),
+                                              subtitle: Text('Review requests to join this group', style: c.text(11, muted: true)),
+                                              trailing: Icon(Icons.chevron_right_rounded, color: c.muted, size: 18),
+                                              onTap: () {
+                                                showModalBottomSheet(
+                                                  context: context,
+                                                  backgroundColor: Colors.transparent,
+                                                  isScrollControlled: true,
+                                                  builder: (_) => GroupJoinRequestsSheet(
+                                                    groupId: widget.groupId,
+                                                    groupName: _groupInfo!.groupName,
+                                                    onRequestsUpdated: _fetchGroupInfo,
+                                                  ),
+                                                );
+                                              },
+                                            ),
+                                          ],
+                                        ],
+                                       ),
+                                     ),
+                                   ],
+                                 ],
+                               ),
+                             ),
                             Divider(height: 1, color: c.line),
 
                             // ─── MEMBERS SEARCH & LIST ───

@@ -130,6 +130,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
   // Group member count state
   int? _groupMemberCount;
+  String _sendMessagesPermission = 'all_members';
+  String? _myGroupRole;
+  bool _isGroupAnnouncementOnly = false;
 
   // Typing indicator state
   bool _isOtherUserTyping = false;
@@ -373,6 +376,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
           if (messageId != null && userUid != null && emoji != null) {
             _handleReactionRemoved(messageId, userUid, emoji);
+          }
+        } else if (type == 'group_permissions_updated' || type == 'conversation_update') {
+          final conversationId = data['conversation_id'] as int?;
+          if (widget.conversationInfo.isGroup &&
+              (conversationId == null || conversationId == widget.conversationInfo.conversationId)) {
+            _fetchGroupMemberCount();
           }
         }
         // Note: Call signaling (call_offer, call_answer, ice_candidate, call_rejected, call_ended)
@@ -727,6 +736,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     // Prevent sending messages to blocked users
     if (_isUserBlocked) {
       OpaqueToast.warning(context, 'Unblock this user to send messages');
+      return;
+    }
+
+    // Prevent sending messages if group announcement mode is active
+    if (widget.conversationInfo.isGroup && _isGroupAnnouncementOnly) {
+      OpaqueToast.warning(context, 'Only admins can send messages in this group');
       return;
     }
 
@@ -1202,6 +1217,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     // Prevent voice messages to blocked users
     if (_isUserBlocked) {
       OpaqueToast.warning(context, 'Unblock this user to send messages');
+      return;
+    }
+
+    // Prevent voice messages if group announcement mode is active
+    if (widget.conversationInfo.isGroup && _isGroupAnnouncementOnly) {
+      OpaqueToast.warning(context, 'Only admins can send messages in this group');
       return;
     }
 
@@ -2662,12 +2683,29 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       if (response.statusCode == 200 && mounted) {
         final data = json.decode(response.body);
         final members = data['members'] as List?;
+        final sendPerm = data['sendMessagesPermission'] as String? ?? 'all_members';
+        final creatorUid = data['creatorUid'] as String? ?? '';
+
+        String? myRole;
+        if (members != null) {
+          for (final m in members) {
+            if (m is Map && m['profileUid'] == user.uid) {
+              myRole = m['role'] as String?;
+              break;
+            }
+          }
+        }
+        final isOwnerOrAdmin = (myRole == 'owner' || myRole == 'admin' || creatorUid == user.uid);
+        final isAnnouncementOnly = (sendPerm == 'only_admins' && !isOwnerOrAdmin);
 
         setState(() {
           _groupMemberCount = members?.length ?? 0;
+          _sendMessagesPermission = sendPerm;
+          _myGroupRole = myRole;
+          _isGroupAnnouncementOnly = isAnnouncementOnly;
         });
 
-        // print('[ChatScreen] ✅ Fetched group member count: $_groupMemberCount');
+        // print('[ChatScreen] ✅ Fetched group member count: $_groupMemberCount, perm: $sendPerm, role: $myRole, announcementOnly: $isAnnouncementOnly');
       }
     } catch (e) {
       // print('[ChatScreen] Error fetching group member count: $e');
@@ -3626,7 +3664,36 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     );
     return Material(color: surface, child: Padding(
       padding: const EdgeInsets.fromLTRB(11, 7, 11, 5),
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
+      child: widget.conversationInfo.isGroup && _isGroupAnnouncementOnly
+          ? SafeArea(
+              top: false,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                margin: const EdgeInsets.symmetric(vertical: 4),
+                decoration: BoxDecoration(
+                  color: dark ? const Color(0xFF283241) : const Color(0xFFF2F3F6),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: dark ? const Color(0xFF354256) : const Color(0xFFE9EBEF)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.lock_outline_rounded, size: 16, color: ink.withOpacity(0.7)),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Only admins can send messages',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                        color: ink.withOpacity(0.7),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          : Column(mainAxisSize: MainAxisSize.min, children: [
         if (_replyingToMessage != null)
           Container(margin: const EdgeInsets.only(bottom: 7), padding: const EdgeInsets.only(left: 10),
             decoration: BoxDecoration(border: Border(left: BorderSide(color: const Color(0xFF537BCA), width: 3))),
