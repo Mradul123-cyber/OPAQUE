@@ -55,6 +55,10 @@ class Message {
   // Reactions
   final List<dynamic>? reactions; // List of MessageReaction objects
 
+  // Edit metadata
+  final bool isEdited;
+  final DateTime? editedAt;
+
   Message({
     required this.id,
     required this.conversationId,
@@ -87,6 +91,8 @@ class Message {
     this.repliedMessageContent,
     this.repliedMessageSenderName,
     this.reactions,
+    this.isEdited = false,
+    this.editedAt,
   });
 
   factory Message.fromJson(Map<String, dynamic> json) {
@@ -174,6 +180,15 @@ class Message {
       repliedMessageContent: json['replied_message_content'] as String?,
       repliedMessageSenderName: json['replied_message_sender_name'] as String?,
       reactions: json['reactions'] as List<dynamic>?,
+      isEdited: (json['is_edited'] == 1 ||
+          json['is_edited'] == '1' ||
+          json['is_edited'] == true ||
+          json['isEdited'] == true),
+      editedAt: (json['edited_at'] ?? json['editedAt']) is DateTime
+          ? ((json['edited_at'] ?? json['editedAt']) as DateTime).toUtc()
+          : (json['edited_at'] ?? json['editedAt']) is String
+              ? DateTime.tryParse((json['edited_at'] ?? json['editedAt']) as String)?.toUtc()
+              : null,
     );
   }
 
@@ -188,8 +203,10 @@ class Message {
       'status': status.toString().split('.').last,
       'isEncrypted': isEncrypted,
       'isQuickReply': isQuickReply,  // NEW
+      'is_edited': isEdited ? 1 : 0,
     };
 
+    if (editedAt != null) json['edited_at'] = editedAt!.toUtc().toIso8601String();
     if (encryptedContent != null) json['encryptedContent'] = encryptedContent;
     if (senderDeviceId != null) json['senderDeviceId'] = senderDeviceId;
     if (recipientDeviceId != null) json['recipientDeviceId'] = recipientDeviceId;
@@ -248,6 +265,8 @@ class Message {
     String? repliedMessageContent,
     String? repliedMessageSenderName,
     List<dynamic>? reactions,
+    bool? isEdited,
+    DateTime? editedAt,
   }) {
     return Message(
       id: id ?? this.id,
@@ -281,6 +300,8 @@ class Message {
       repliedMessageContent: repliedMessageContent ?? this.repliedMessageContent,
       repliedMessageSenderName: repliedMessageSenderName ?? this.repliedMessageSenderName,
       reactions: reactions ?? this.reactions,
+      isEdited: isEdited ?? this.isEdited,
+      editedAt: editedAt ?? this.editedAt,
     );
   }
 

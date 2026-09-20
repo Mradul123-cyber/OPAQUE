@@ -135,6 +135,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   String? _myGroupRole;
   bool _isGroupAnnouncementOnly = false;
 
+  // Editing message state
+  Message? _editingMessage;
+
   // Typing indicator state
   bool _isOtherUserTyping = false;
   String? _typingUserUid;
@@ -328,6 +331,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
               await _dbService.markMessageAsDeletedForMe(messageId);
               _chatProvider.removeMessage(messageId);
             }
+          }
+        } else if (type == 'message_edited') {
+          final messageId = data['message_id'] as int?;
+          final conversationId = data['conversation_id'] as int?;
+          final newContent = data['new_content'] as String?;
+          final editedAtStr = data['edited_at'] as String?;
+          final editedAt = editedAtStr != null ? DateTime.tryParse(editedAtStr) : DateTime.now().toUtc();
+
+          if (messageId != null && conversationId == widget.conversationInfo.conversationId) {
+            _handleMessageEditedInUI(messageId, newContent, editedAt ?? DateTime.now().toUtc());
           }
         } else if (type == 'attachment_uploaded') {
           final messageId = data['message_id'] as int?;
@@ -753,6 +766,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
     // Check conditions based on chat type
     if (messageText.isEmpty) return;
+
+    if (_editingMessage != null) {
+      final msgToEdit = _editingMessage!;
+      _cancelEditing();
+      await _sendEditedMessage(msgToEdit, messageText);
+      return;
+    }
+
     if (!widget.conversationInfo.isGroup && _recipientUid == null) return;
 
     _controller.clear();
@@ -873,6 +894,144 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
       if (mounted) {
         OpaqueToast.error(context, 'Failed to send message');
+      }
+    }
+  }
+
+  Future<void> _sendEditedMessage(Message originalMessage, String newText) async {
+    final trimmedText = newText.trim();
+    if (trimmedText.isEmpty) return;
+    if (trimmedText == originalMessage.content.trim()) {
+      return; // No change
+    }
+
+    final messageId = originalMessage.id;
+    final conversationId = widget.conversationInfo.conversationId;
+    final now = DateTime.now().toUtc();
+
+    // 1. Optimistically update local in-memory state and SQLite database
+    _chatProvider.editMessage(messageId, trimmedText, now);
+    await _dbService.updateMessageContent(messageId, trimmedText, editedAt: now);
+
+    try {
+      String? encryptedMessage;
+
+      if (widget.conversationInfo.isGroup) {
+        if (!_groupEncryptionSetup) {
+          throw Exception('Group encryption not setup');
+        }
+        encryptedMessage = await GroupEncryptionService.encryptGroupMessage(
+          groupId: conversationId.toString(),
+          plaintext: trimmedText,
+        );
+      } else {
+        final recipientDeviceId = await _getRecipientDeviceId(_recipientUid!);
+        if (recipientDeviceId == null) throw Exception('No recipient device ID');
+
+        bool hasValidSendingSession = await SignalService.isSessionValidForSending(
+          recipientUid: _recipientUid!,
+          deviceId: recipientDeviceId,
+        );
+
+        if (!hasValidSendingSession) {
+          final prekeyBundle = await DeviceService.fetchPrekeyBundle(
+            targetUid: _recipientUid!,
+            deviceId: recipientDeviceId,
+          );
+          if (prekeyBundle == null) throw Exception('No prekey bundle');
+
+          encryptedMessage = await SignalService.encryptMessageWithSessionSetup(
+            recipientUid: _recipientUid!,
+            plaintext: trimmedText,
+            prekeyBundle: prekeyBundle,
+            deviceId: recipientDeviceId,
+          );
+        } else {
+          encryptedMessage = await SignalService.encryptMessage(
+            recipientUid: _recipientUid!,
+            plaintext: trimmedText,
+            deviceId: recipientDeviceId,
+          );
+        }
+      }
+
+      if (encryptedMessage == null) throw Exception('Encryption failed');
+
+      // 2. Call backend edit endpoint
+      await DeviceService.editMessage(
+        messageId: messageId,
+        conversationId: conversationId,
+        contentB64: encryptedMessage,
+      );
+
+      // 3. Update SQLite with new ciphertext and edited timestamp
+      await _dbService.updateMessageContent(
+        messageId,
+        trimmedText,
+        encryptedContent: encryptedMessage,
+        editedAt: now,
+      );
+
+      if (mounted) {
+        OpaqueToast.success(context, 'Message edited');
+      }
+    } catch (e) {
+      debugPrint('[ChatScreen] Error editing message: $e');
+      if (mounted) {
+        OpaqueToast.error(context, 'Failed to edit message: $e');
+      }
+    }
+  }
+
+  void _startEditingMessage(Message message) {
+    setState(() {
+      _editingMessage = message;
+      _replyingToMessage = null; // cancel any active reply
+      _controller.text = message.content;
+      _controller.selection = TextSelection.fromPosition(
+        TextPosition(offset: _controller.text.length),
+      );
+    });
+    _focusNode.requestFocus();
+  }
+
+  void _cancelEditing() {
+    setState(() {
+      _editingMessage = null;
+      _controller.clear();
+    });
+  }
+
+  bool _isSingleSelectedMessageEditable() {
+    if (_selectedMessageIds.length != 1) return false;
+    final message = _chatProvider.messages.firstWhere(
+      (m) => m.id == _selectedMessageIds.first,
+      orElse: () => Message(
+        id: -1,
+        conversationId: -1,
+        username: '',
+        content: '',
+        timestamp: DateTime.now(),
+      ),
+    );
+    if (message.id == -1) return false;
+    final isMe = message.senderUid == _currentUserUid;
+    if (!isMe) return false;
+    if (message.hasAttachment || message.attachmentId != null) return false;
+    if (message.content == 'This message was deleted') return false;
+    if (ChatPayloadParser.isStructuredPayload(message.content)) return false;
+    final age = DateTime.now().toUtc().difference(message.timestamp.toUtc());
+    if (age.inMinutes > 15) return false;
+    return true;
+  }
+
+  void _handleMessageEditedInUI(int messageId, String? newContent, DateTime editedAt) async {
+    if (newContent != null && newContent.isNotEmpty) {
+      _chatProvider.editMessage(messageId, newContent, editedAt);
+    } else {
+      final msg = await _dbService.getMessageById(messageId);
+      if (msg != null && mounted) {
+        _chatProvider.editMessage(messageId, msg.content, msg.editedAt ?? editedAt);
       }
     }
   }
@@ -3633,6 +3792,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
             child: Icon(Icons.add_reaction_outlined, size: iconSize3),
           ),
           SizedBox(width: spacing1),
+          if (_isSingleSelectedMessageEditable()) ...[
+            FloatingActionButton(
+              heroTag: 'edit',
+              mini: true,
+              backgroundColor: const Color(0xFF4CAF50),
+              onPressed: () {
+                final selectedMessage = _chatProvider.messages.firstWhere((m) => m.id == _selectedMessageIds.first);
+                _clearSelection();
+                _startEditingMessage(selectedMessage);
+              },
+              child: Icon(Icons.edit_outlined, size: iconSize3),
+            ),
+            SizedBox(width: spacing1),
+          ],
           FloatingActionButton(
             heroTag: 'copy',
             mini: true,
@@ -3730,6 +3903,40 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
               ),
             )
           : Column(mainAxisSize: MainAxisSize.min, children: [
+        if (_editingMessage != null)
+          Container(
+            margin: const EdgeInsets.only(bottom: 7),
+            padding: const EdgeInsets.only(left: 10),
+            decoration: const BoxDecoration(
+              border: Border(left: BorderSide(color: Color(0xFF4CAF50), width: 3)),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Editing message',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF4CAF50),
+                        ),
+                      ),
+                      Text(
+                        _editingMessage!.content,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 13, color: ink),
+                      ),
+                    ],
+                  ),
+                ),
+                action('close', 'Cancel edit', _cancelEditing),
+              ],
+            ),
+          ),
         if (_replyingToMessage != null)
           Container(margin: const EdgeInsets.only(bottom: 7), padding: const EdgeInsets.only(left: 10),
             decoration: BoxDecoration(border: Border(left: BorderSide(color: const Color(0xFF537BCA), width: 3))),
@@ -3765,13 +3972,29 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
           const SizedBox(width: 7),
           Container(width: 42, height: 42,
             decoration: BoxDecoration(borderRadius: BorderRadius.circular(15),
-              gradient: const LinearGradient(colors: [Color(0xFF537BCA), Color(0xFF3C62AB)], begin: Alignment.topLeft, end: Alignment.bottomRight)),
-            child: IconButton(tooltip: _hasTextInput ? 'Send message' : 'Record voice message',
-              icon: OpaqueIcon(_hasTextInput ? 'arrow-up' : 'mic', size: 19, color: Colors.white),
+              gradient: LinearGradient(
+                colors: _editingMessage != null
+                    ? const [Color(0xFF4CAF50), Color(0xFF388E3C)]
+                    : const [Color(0xFF537BCA), Color(0xFF3C62AB)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              )),
+            child: IconButton(
+              tooltip: _editingMessage != null
+                  ? 'Save edit'
+                  : (_hasTextInput ? 'Send message' : 'Record voice message'),
+              icon: _editingMessage != null
+                  ? const Icon(Icons.check, size: 21, color: Colors.white)
+                  : OpaqueIcon(_hasTextInput ? 'arrow-up' : 'mic', size: 19, color: Colors.white),
               onPressed: () {
                 if (_attachmentsOpen) setState(() => _attachmentsOpen = false);
-                if (_hasTextInput) { _sendMessage(); } else { _startVoiceRecording(); }
-              })),
+                if (_editingMessage != null || _hasTextInput) {
+                  _sendMessage();
+                } else {
+                  _startVoiceRecording();
+                }
+              },
+            )),
         ]),
         AnimatedSize(duration: const Duration(milliseconds: 220), alignment: Alignment.topCenter,
           child: !_attachmentsOpen ? const SizedBox.shrink() : Container(
@@ -4076,6 +4299,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                 if (!contactCard) Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    if (message.isEdited) ...[
+                      Text(
+                        'edited',
+                        style: TextStyle(
+                          fontSize: 9.5,
+                          fontStyle: FontStyle.italic,
+                          color: structured
+                              ? (dark ? const Color(0xFF9CA8BB) : const Color(0xFF8B929F))
+                              : styleKey == 'modern_card'
+                                  ? Colors.grey[600]
+                                  : (isMe ? Colors.white70 : Colors.grey[600]),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                    ],
                     Text(
                       DateFormat('HH:mm').format(message.timestamp.toLocal()),
                       style: TextStyle(
@@ -6052,6 +6290,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                   'Read',
                   DateFormat('MMM dd, yyyy').format(message.timestamp.add(const Duration(minutes: 2)).toLocal()),
                   DateFormat('hh:mm a').format(message.timestamp.add(const Duration(minutes: 2)).toLocal()),
+                ),
+              if (message.isEdited && message.editedAt != null)
+                _buildInfoItem(
+                  Icons.edit_outlined,
+                  'Edited',
+                  DateFormat('MMM dd, yyyy').format(message.editedAt!.toLocal()),
+                  DateFormat('hh:mm a').format(message.editedAt!.toLocal()),
                 ),
 
       ]),

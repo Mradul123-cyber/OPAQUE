@@ -145,6 +145,40 @@ class DeviceService {
     }
   }
 
+  static Future<Map<String, dynamic>> editMessage({
+    required int messageId,
+    required int conversationId,
+    required String contentB64,
+    String baseUrl = baseUrl,
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) throw Exception('Not authenticated');
+
+    final idToken = await user.getIdToken(true);
+
+    final requestBody = {
+      'conversation_id': conversationId,
+      'content_b64': contentB64,
+    };
+
+    final response = await http.post(
+      Uri.parse('$baseUrl/v1/messages/$messageId/edit'),
+      headers: {
+        'Authorization': 'Bearer $idToken',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode(requestBody),
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception(
+        'Failed to edit message: ${response.body.isNotEmpty ? response.body : response.statusCode.toString()}',
+      );
+    }
+  }
+
   static Future<bool> uploadRotatedKeys({
     required int deviceId,
     Map<String, dynamic>? signedPreKey,

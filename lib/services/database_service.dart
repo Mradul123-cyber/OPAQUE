@@ -96,7 +96,7 @@ class DatabaseService {
       // print("[DatabaseService] Attempting to open encrypted database with SQLCipher...");
       return await openDatabase(
         path,
-        version: 20, // Added flowchart support to Notes
+        version: 21, // Added message editing support (is_edited, edited_at)
         password: encryptionKey, // ← ENABLE DATABASE ENCRYPTION
         onCreate: _createDB,
         onUpgrade: _onUpgradeDB,
@@ -109,7 +109,7 @@ class DatabaseService {
 
       return await openDatabase(
         path,
-        version: 20, // Added flowchart support to Notes
+        version: 21, // Added message editing support (is_edited, edited_at)
         password: encryptionKey, // ← ENABLE DATABASE ENCRYPTION
         onCreate: _createDB,
       );
@@ -151,7 +151,9 @@ class DatabaseService {
         media_sender_device_id INTEGER,
         reply_to_message_id INTEGER,
         replied_message_content TEXT,
-        replied_message_sender_name TEXT
+        replied_message_sender_name TEXT,
+        is_edited INTEGER DEFAULT 0,
+        edited_at TEXT
       )
     ''');
 
@@ -469,6 +471,15 @@ class DatabaseService {
       // print("[DatabaseService] ✅ Flowchart support added to Notes!");
     }
 
+    if (oldVersion < 21) {
+      try {
+        await db.execute('ALTER TABLE messages ADD COLUMN is_edited INTEGER DEFAULT 0');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE messages ADD COLUMN edited_at TEXT');
+      } catch (_) {}
+    }
+
     // print("[DatabaseService] Database schema upgraded to v$newVersion.");
   }
 
@@ -527,6 +538,8 @@ class DatabaseService {
       'reply_to_message_id': message.replyToMessageId,
       'replied_message_content': message.repliedMessageContent,
       'replied_message_sender_name': message.repliedMessageSenderName,
+      'is_edited': message.isEdited ? 1 : 0,
+      'edited_at': message.editedAt?.toIso8601String(),
     };
 
     await db.insert(
@@ -663,10 +676,35 @@ class DatabaseService {
           attachmentId: map['attachment_id'] as int?,
           attachmentType: map['attachment_type'] as String?,
           hasAttachment: (map['has_attachment'] as int?) == 1,
+          videoDuration: map['video_duration'] as int?,
+          mediaEncryptionKey: map['media_encryption_key'] as String?,
+          mediaEncryptionIv: map['media_encryption_iv'] as String?,
+          senderMediaEncryptionKey:
+              map['sender_media_encryption_key'] as String?,
+          encryptedMediaKey: map['encrypted_media_key'] as String?,
+          mediaEncryptionType: map['media_encryption_type'] as String?,
+          mediaRecipientUid: map['media_recipient_uid'] as String?,
+          mediaRecipientDeviceId: map['media_recipient_device_id'] as int?,
+          mediaGroupId: map['media_group_id'] as String?,
+          mediaSenderUid: map['media_sender_uid'] as String?,
+          mediaSenderDeviceId: map['media_sender_device_id'] as int?,
           replyToMessageId: map['reply_to_message_id'] as int?,
           repliedMessageContent: map['replied_message_content'] as String?,
           repliedMessageSenderName:
               map['replied_message_sender_name'] as String?,
+          isEdited: (map['is_edited'] == 1 ||
+              map['is_edited'] == true ||
+              map['is_edited'] == '1' ||
+              map['isEdited'] == true),
+          editedAt: map['edited_at'] != null
+              ? (map['edited_at'] is DateTime
+                  ? (map['edited_at'] as DateTime).toUtc()
+                  : DateTime.tryParse(map['edited_at'] as String)?.toUtc())
+              : (map['editedAt'] != null
+                  ? (map['editedAt'] is DateTime
+                      ? (map['editedAt'] as DateTime).toUtc()
+                      : DateTime.tryParse(map['editedAt'] as String)?.toUtc())
+                  : null),
         ),
       );
     }
@@ -900,15 +938,45 @@ class DatabaseService {
     return result.isNotEmpty;
   }
 
-  Future<void> updateMessageContent(int messageId, String newContent) async {
+  Future<void> updateMessageContent(
+    int messageId,
+    String newContent, {
+    String? encryptedContent,
+    DateTime? editedAt,
+  }) async {
     final db = database;
+    final values = <String, dynamic>{
+      'content': newContent,
+      'is_edited': 1,
+      'edited_at': (editedAt ?? DateTime.now().toUtc()).toIso8601String(),
+    };
+    if (encryptedContent != null) {
+      values['encrypted_content'] = encryptedContent;
+    }
     await db.update(
       'messages',
-      {'content': newContent},
+      values,
       where: 'id = ?',
       whereArgs: [messageId],
     );
+    // Invalidate cache
+    _cachedMessages = null;
+    _cachedConversationId = null;
     // print("[DatabaseService] Updated content for message $messageId");
+  }
+
+  Future<Message?> getMessageById(int messageId) async {
+    final db = database;
+    final maps = await db.query(
+      'messages',
+      where: 'id = ?',
+      whereArgs: [messageId],
+      limit: 1,
+    );
+    if (maps.isNotEmpty) {
+      return Message.fromJson(maps.first);
+    }
+    return null;
   }
 
   Future<List<Message>> getAllMessagesInConversation(int conversationId) async {
@@ -1232,6 +1300,19 @@ class DatabaseService {
         attachmentId: map['attachment_id'] as int?,
         attachmentType: map['attachment_type'] as String?,
         hasAttachment: (map['has_attachment'] as int?) == 1,
+        isEdited: (map['is_edited'] == 1 ||
+            map['is_edited'] == true ||
+            map['is_edited'] == '1' ||
+            map['isEdited'] == true),
+        editedAt: map['edited_at'] != null
+            ? (map['edited_at'] is DateTime
+                ? (map['edited_at'] as DateTime).toUtc()
+                : DateTime.tryParse(map['edited_at'] as String)?.toUtc())
+            : (map['editedAt'] != null
+                ? (map['editedAt'] is DateTime
+                    ? (map['editedAt'] as DateTime).toUtc()
+                    : DateTime.tryParse(map['editedAt'] as String)?.toUtc())
+                : null),
       );
     }
     return null;

@@ -514,6 +514,9 @@ class WebSocketService with ChangeNotifier {
             messageData,
           ); // Fire and forget - async processing
           break;
+        case 'message_edited':
+          _handleMessageEdited(messageData);
+          break;
         case 'attachment_uploaded':
           _handleAttachmentUploaded(messageData);
           break;
@@ -595,6 +598,84 @@ class WebSocketService with ChangeNotifier {
       });
     } catch (e) {
       // print('[WebSocketService] Error handling message deletion: $e');
+    }
+  }
+
+  Future<void> _handleMessageEdited(Map<String, dynamic> editData) async {
+    try {
+      final messageId = editData['message_id'] is int
+          ? editData['message_id'] as int
+          : int.tryParse(editData['message_id']?.toString() ?? '');
+      final conversationId = editData['conversation_id'] is int
+          ? editData['conversation_id'] as int
+          : int.tryParse(editData['conversation_id']?.toString() ?? '');
+      final senderUid = editData['sender_uid'] as String?;
+      final contentB64 = editData['content_b64'] as String?;
+      final editedAtStr = editData['edited_at'] as String?;
+      final editedAt = (editedAtStr != null ? DateTime.tryParse(editedAtStr)?.toUtc() : null) ??
+          DateTime.now().toUtc();
+
+      if (messageId == null || conversationId == null || contentB64 == null) {
+        return;
+      }
+
+      final dbService = DatabaseService.instance;
+      final existingMessage = await dbService.getMessageById(messageId);
+
+      String? decryptedText;
+      final currentUser = FirebaseAuth.instance.currentUser;
+      final isMe = currentUser != null && currentUser.uid == senderUid;
+
+      if (!isMe && senderUid != null) {
+        // Try decrypting with group encryption first if group, then Signal Protocol (1-on-1)
+        try {
+          decryptedText = await GroupEncryptionService.decryptGroupMessage(
+            groupId: conversationId.toString(),
+            ciphertext: contentB64,
+            senderUid: senderUid,
+            senderDeviceId: existingMessage?.senderDeviceId ?? 1,
+          );
+        } catch (_) {
+          try {
+            decryptedText = await SignalService.decryptMessage(
+              senderUid: senderUid,
+              ciphertextB64: contentB64,
+              deviceId: existingMessage?.senderDeviceId ?? 1,
+            );
+          } catch (e) {
+            debugPrint('[WebSocketService] Could not decrypt edited message $messageId: $e');
+          }
+        }
+      }
+
+      if (decryptedText != null && decryptedText.isNotEmpty) {
+        await dbService.updateMessageContent(
+          messageId,
+          decryptedText,
+          encryptedContent: contentB64,
+          editedAt: editedAt,
+        );
+      } else if (existingMessage != null) {
+        await dbService.updateMessageContent(
+          messageId,
+          existingMessage.content,
+          encryptedContent: contentB64,
+          editedAt: editedAt,
+        );
+      }
+
+      // Forward to UI stream
+      _streamController.add({
+        'type': 'message_edited',
+        'message_id': messageId,
+        'conversation_id': conversationId,
+        'sender_uid': senderUid,
+        'new_content': decryptedText ?? (isMe ? existingMessage?.content : null),
+        'content_b64': contentB64,
+        'edited_at': editedAtStr ?? editedAt.toIso8601String(),
+      });
+    } catch (e) {
+      debugPrint('[WebSocketService] Error handling message_edited: $e');
     }
   }
 

@@ -222,4 +222,36 @@ class ChatProvider with ChangeNotifier {
       notifyListeners();
     }
   }
+
+  void editMessage(int messageId, String newContent, DateTime editedAt) {
+    bool changed = false;
+    final index = _messages.indexWhere((m) => m.id == messageId);
+    if (index != -1) {
+      final updated = _messages[index].copyWith(
+        content: newContent,
+        isEdited: true,
+        editedAt: editedAt,
+      );
+      final newMessages = List<Message>.from(_messages);
+      newMessages[index] = updated;
+      _messages = newMessages;
+      changed = true;
+    }
+
+    // Always update persistent message cache across all cached conversations
+    for (final cachedList in _messageCache.values) {
+      final cacheIndex = cachedList.indexWhere((m) => m.id == messageId);
+      if (cacheIndex != -1) {
+        cachedList[cacheIndex] = cachedList[cacheIndex].copyWith(
+          content: newContent,
+          isEdited: true,
+          editedAt: editedAt,
+        );
+      }
+    }
+
+    if (changed) {
+      notifyListeners();
+    }
+  }
 }

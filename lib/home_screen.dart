@@ -1,3 +1,4 @@
+import 'widgets/opaque_chat_surfaces.dart';
 import 'package:zarq_messenger/screens/backup_management_screen.dart';
 import 'widgets/opaque_navigation.dart';
 import 'widgets/opaque_toast.dart';
@@ -102,6 +103,10 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _isGroupSelectionMode = false;
+  Set<String> _pinnedChats = {};
+  Map<String, int> _hiddenChats = {};
+  bool _selectionBusy = false;
+  String get _homePreferenceKey => 'opaque_home_${FirebaseAuth.instance.currentUser?.uid}';
   ConversationInfo? _selectedConversation;
 
   final TextEditingController _searchController = TextEditingController();
@@ -126,6 +131,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _initializeUser();
     _loadBlockedUsers();
+    _loadHomeSelectionPreferences();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -327,6 +333,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   void _exitGroupSelectionMode() {
+    if (!mounted) return;
     setState(() {
       _isGroupSelectionMode = false;
       _selectedConversation = null;
@@ -334,64 +341,122 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _showGroupActionDialog({required String action}) async {
-    if (_selectedConversation == null) return;
-    final conversationId = _selectedConversation!.conversationId;
-    final chatTitle = _selectedConversation!.chatTitle;
+    final conversation = _selectedConversation;
+    if (conversation == null || _selectionBusy) return;
+    final deleting = action == 'delete';
+    final confirmed = await _confirmHomeAction(
+      deleting ? 'Delete group?' : 'Leave group?',
+      deleting ? 'Permanently delete “${conversation.chatTitle}” for all members.'
+        : 'Leave “${conversation.chatTitle}” and stop participating in this group.',
+      deleting ? 'This cannot be undone.' : 'You will need an invitation to join again.',
+      deleting ? 'Delete group' : 'Leave group',
+      deleting ? Icons.delete_outline : Icons.logout_rounded);
+    if (!mounted || !confirmed) return;
+    setState(() => _selectionBusy = true);
+    try {
+      if (deleting) { await _deleteGroup(conversation.conversationId); }
+      else { await _leaveGroup(conversation.conversationId); }
+    } finally {
+      if (mounted) { setState(() => _selectionBusy = false); _exitGroupSelectionMode(); }
+    }
+  }
 
-    final title = action == 'delete' ? 'Delete Group?' : 'Leave Group?';
-    final content = action == 'delete'
-        ? 'Are you sure you want to permanently delete "$chatTitle"? This cannot be undone.'
-        : 'Are you sure you want to leave "$chatTitle"?';
+  Future<bool> _confirmHomeAction(String title, String description, String note,
+      String label, IconData icon) async => await showDialog<bool>(context: context,
+    builder: (ctx) => OpaqueChatConfirmation(icon: icon, title: title,
+      description: description, note: note, actionLabel: label,
+      onConfirm: () => Navigator.pop(ctx, true))) ?? false;
 
-    return showDialog<void>(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: _kWhite,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          title: Text(
-            title,
-            style: GoogleFonts.poppins(
-              fontWeight: FontWeight.w600,
-              color: _kTextDark,
-            ),
-          ),
-          content: Text(
-            content,
-            style: GoogleFonts.inter(color: _kTextGrey, fontSize: 14),
-          ),
-          actions: [
-            TextButton(
-              child: Text(
-                'Cancel',
-                style: GoogleFonts.inter(color: _kTextGrey),
-              ),
-              onPressed: () => Navigator.of(context).pop(),
-            ),
-            TextButton(
-              child: Text(
-                action == 'delete' ? 'Delete' : 'Leave',
-                style: GoogleFonts.inter(
-                  color: action == 'delete' ? Colors.red : Colors.orange,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              onPressed: () async {
-                Navigator.of(context).pop();
-                if (action == 'delete') {
-                  await _deleteGroup(conversationId);
-                } else {
-                  await _leaveGroup(conversationId);
-                }
-                _exitGroupSelectionMode();
-              },
-            ),
-          ],
-        );
-      },
-    );
+  Future<void> _loadHomeSelectionPreferences() async {
+    final key = _homePreferenceKey;
+    final prefs = await SharedPreferences.getInstance();
+    try {
+      final hidden = jsonDecode(prefs.getString('${key}_hidden') ?? '{}') as Map<String, dynamic>;
+      if (!mounted || key != _homePreferenceKey) return;
+      setState(() {
+        _pinnedChats = (prefs.getStringList('${key}_pins') ?? []).toSet();
+        _hiddenChats = hidden.map((k, v) => MapEntry(k, (v as num).toInt()));
+      });
+    } catch (_) { /* Ignore malformed local preferences. */ }
+  }
+
+  Future<void> _toggleSelectedPin() async {
+    final conversation = _selectedConversation;
+    if (conversation == null || _selectionBusy) return;
+    final id = '${conversation.conversationId}';
+    final pins = {..._pinnedChats};
+    if (!pins.remove(id)) pins.add(id);
+    setState(() => _selectionBusy = true);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList('${_homePreferenceKey}_pins', pins.toList());
+      if (!mounted) return;
+      setState(() => _pinnedChats = pins);
+      _showSnack(pins.contains(id) ? 'Chat pinned' : 'Chat unpinned');
+      _exitGroupSelectionMode();
+    } catch (_) { if (mounted) _showSnack('Could not update pin', isError: true); }
+    finally { if (mounted) setState(() => _selectionBusy = false); }
+  }
+
+  Future<void> _deleteSelectedChat() async {
+    final conversation = _selectedConversation;
+    if (conversation == null || _selectionBusy) return;
+    if (!await _confirmHomeAction('Delete chat?',
+      'Delete the saved message history for “${conversation.chatTitle}” on this device.',
+      'Your friend keeps their copies. The chat returns when a newer message arrives. This does not remove your friend.',
+      'Delete chat', Icons.delete_outline)) return;
+    if (!mounted) return;
+    setState(() => _selectionBusy = true);
+    try {
+      await DatabaseService.deleteAllMessagesInConversation(conversation.conversationId);
+      final hidden = {..._hiddenChats, '${conversation.conversationId}':
+        (conversation.lastMessageTimestamp ?? DateTime.fromMillisecondsSinceEpoch(0)).millisecondsSinceEpoch};
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('${_homePreferenceKey}_hidden', jsonEncode(hidden));
+      if (!mounted) return;
+      setState(() => _hiddenChats = hidden);
+      _exitGroupSelectionMode();
+      _showSnack('Chat deleted from this device');
+    } catch (_) { if (mounted) _showSnack('Could not delete chat', isError: true); }
+    finally { if (mounted) setState(() => _selectionBusy = false); }
+  }
+
+  Future<void> _removeSelectedFriend() async {
+    if (_selectionBusy) return;
+    // Home has a display name/UID, while removal requires a username.
+    // Ask for the exact friend instead of guessing from non-unique display names.
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    setState(() => _selectionBusy = true);
+    try {
+      final token = await user.getIdToken();
+      final response = await http.get(Uri.parse('${AppConfig.baseUrl}/friends/list'),
+        headers: {'Authorization': 'Bearer $token'});
+      if (response.statusCode != 200) throw Exception();
+      final friends = (jsonDecode(response.body) as List).cast<Map<String, dynamic>>();
+      if (!mounted) return;
+      if (friends.isEmpty) { _showSnack('No friends to remove'); return; }
+      final username = await showDialog<String>(context: context, builder: (ctx) => OpaqueChatDialog(
+        title: const Text('Choose friend to remove'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('Confirm the username of the friend you want to remove.'),
+          for (final friend in friends) ListTile(
+            title: Text('@${friend['username']}'),
+            subtitle: friend['displayName'] == null ? null : Text('${friend['displayName']}'),
+            onTap: () => Navigator.pop(ctx, friend['username'] as String)),
+        ]), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel'))]));
+      if (!mounted || username == null) return;
+      if (!await _confirmHomeAction('Remove friend?', 'Remove @$username from your friends?',
+        'This does not delete saved messages or block this person.', 'Remove friend', Icons.person_remove_outlined)) return;
+      final result = await http.post(Uri.parse('${AppConfig.baseUrl}/friends/remove'),
+        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+        body: jsonEncode({'targetUsername': username}));
+      if (result.statusCode != 200) throw Exception();
+      if (!mounted) return;
+      _showSnack('Friend removed'); _exitGroupSelectionMode();
+      context.read<HomeProvider>().fetchInitialConversations();
+    } catch (_) { if (mounted) _showSnack('Could not remove friend', isError: true); }
+    finally { if (mounted) setState(() => _selectionBusy = false); }
   }
 
   Future<void> _deleteGroup(int conversationId) async {
@@ -549,31 +614,48 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         _selectedConversation!.creatorUid == user?.uid;
 
     if (_isGroupSelectionMode) {
+      final selected = _selectedConversation!;
+      final pinned = _pinnedChats.contains('${selected.conversationId}');
       return AppBar(
-        backgroundColor: _kIndigo,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.close_rounded, color: _kWhite),
-          onPressed: _exitGroupSelectionMode,
-        ),
-        title: Text(
-          _selectedConversation!.chatTitle,
-          style: GoogleFonts.poppins(
-            color: _kWhite,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        backgroundColor: isDark ? const Color(0xFF19202A) : Colors.white,
+        foregroundColor: textColor, surfaceTintColor: Colors.transparent,
+        elevation: 0, toolbarHeight: 60, titleSpacing: 0,
+        leading: IconButton(tooltip: 'Cancel selection', icon: const Icon(Icons.close_rounded, size: 21),
+          onPressed: _selectionBusy ? null : _exitGroupSelectionMode),
+        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('1 selected', style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600)),
+          Text(selected.chatTitle, maxLines: 1, overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.inter(fontSize: 11, color: isDark ? const Color(0xFF97A3B6) : const Color(0xFF73747C))),
+        ]),
         actions: [
-          if (isCreatorOfSelectedGroup)
-            IconButton(
-              icon: const Icon(Icons.delete_outline_rounded, color: _kWhite),
-              onPressed: () => _showGroupActionDialog(action: 'delete'),
-            )
-          else
-            IconButton(
-              icon: const Icon(Icons.exit_to_app_rounded, color: _kWhite),
-              onPressed: () => _showGroupActionDialog(action: 'leave'),
-            ),
+          if (_selectionBusy) const Padding(padding: EdgeInsets.all(16),
+            child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)))
+          else ...[
+            IconButton(tooltip: pinned ? 'Unpin chat' : 'Pin chat',
+              icon: Icon(pinned ? Icons.push_pin : Icons.push_pin_outlined, size: 20), onPressed: _toggleSelectedPin),
+            PopupMenuButton<String>(tooltip: 'Selected chat actions',
+              color: isDark ? const Color(0xFF19202A) : Colors.white,
+              surfaceTintColor: Colors.transparent,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              icon: const Icon(Icons.more_vert_rounded, size: 21),
+              onSelected: (action) {
+                if (action == 'open') { _exitGroupSelectionMode(); _navigateToChat(selected); }
+                if (action == 'remove') _removeSelectedFriend();
+                if (action == 'chat_delete') _deleteSelectedChat();
+                if (action == 'delete' || action == 'leave') _showGroupActionDialog(action: action);
+              },
+              itemBuilder: (_) => [
+                _popupItem(value: 'open', icon: Icons.chat_bubble_outline, label: 'Open chat', color: textColor, textColor: textColor),
+                if (!selected.isGroup) ...[
+                  _popupItem(value: 'remove', icon: Icons.person_remove_outlined, label: 'Remove friend', color: textColor, textColor: textColor),
+                  _popupItem(value: 'chat_delete', icon: Icons.delete_outline, label: 'Delete chat', color: const Color(0xFFCE7480), textColor: textColor),
+                ] else
+                  _popupItem(value: isCreatorOfSelectedGroup ? 'delete' : 'leave',
+                    icon: isCreatorOfSelectedGroup ? Icons.delete_outline : Icons.logout_rounded,
+                    label: isCreatorOfSelectedGroup ? 'Delete group' : 'Leave group',
+                    color: const Color(0xFFCE7480), textColor: textColor),
+              ]),
+          ],
         ],
       );
     }
@@ -728,9 +810,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Widget _buildConversationList(List<ConversationInfo> conversations, bool isReady, bool isDark, Color cardColor, Color textColor, Color textGreyColor, Color dividerColor) {
     final query = _searchController.text.trim().toLowerCase();
-    final visible = conversations.where((convo) => convo.chatTitle.toLowerCase().contains(query)
+    final visible = conversations.where((convo) => (!_hiddenChats.containsKey('${convo.conversationId}') ||
+      (convo.lastMessageTimestamp?.millisecondsSinceEpoch ?? 0) > _hiddenChats['${convo.conversationId}']!) && convo.chatTitle.toLowerCase().contains(query)
       && (_conversationFilter == 'All' || (_conversationFilter == 'Unread' && (convo.unreadCount > 0 || convo.hasUnreadMessages)) || (_conversationFilter == 'Groups' && convo.isGroup))).toList();
     visible.sort((a, b) {
+      final pinOrder = (_pinnedChats.contains('${b.conversationId}') ? 1 : 0)
+        - (_pinnedChats.contains('${a.conversationId}') ? 1 : 0);
+      if (pinOrder != 0) return pinOrder;
       final comparison = (b.lastMessageTimestamp ?? DateTime(1970)).compareTo(a.lastMessageTimestamp ?? DateTime(1970));
       return comparison != 0 ? comparison : b.conversationId.compareTo(a.conversationId);
     });
@@ -782,10 +868,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     return Material(color: _isGroupSelectionMode && _selectedConversation?.conversationId == convo.conversationId
       ? (isDark ? const Color(0xFF283241) : const Color(0xFFF1F2F5)) : Colors.transparent,
       borderRadius: BorderRadius.circular(12), child: InkWell(
-        borderRadius: BorderRadius.circular(12), onTap: () { setState(() => _addMenuOpen = false); _navigateToChat(convo); },
-        onLongPress: convo.isGroup ? () { setState(() => _addMenuOpen = false); _enterGroupSelectionMode(convo); } : null,
+        borderRadius: BorderRadius.circular(12), onTap: () { setState(() => _addMenuOpen = false); if (_isGroupSelectionMode) { if (!_selectionBusy) _enterGroupSelectionMode(convo); } else { _navigateToChat(convo); } },
+        onLongPress: _selectionBusy ? null : () { _searchFocusNode.unfocus(); setState(() => _addMenuOpen = false); _enterGroupSelectionMode(convo); },
         child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16), child: Row(children: [
-          _buildAvatar(convo, isDark, cardColor), SizedBox(width: MediaQuery.sizeOf(context).width < 350 ? 9 : 12),
+          Stack(children: [_buildAvatar(convo, isDark, cardColor),
+            if (_isGroupSelectionMode && _selectedConversation?.conversationId == convo.conversationId)
+              const Positioned(right: 0, bottom: 0, child: Icon(Icons.check_circle, size: 18, color: Color(0xFF88BCA8))),
+          ]), SizedBox(width: MediaQuery.sizeOf(context).width < 350 ? 9 : 12),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(convo.chatTitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: GoogleFonts.inter(fontSize: 14, letterSpacing: -.15, fontWeight: unread ? FontWeight.w600 : FontWeight.w500, color: textColor)),
             const SizedBox(height: 5),
@@ -794,6 +883,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ])),
           const SizedBox(width: 8),
           Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            if (_pinnedChats.contains('${convo.conversationId}')) Padding(
+              padding: const EdgeInsets.only(bottom: 5), child: Icon(Icons.push_pin_rounded, size: 12, color: textGreyColor)),
             if (convo.lastMessageTimestamp != null) Text(_formatTimestamp(convo.lastMessageTimestamp!.toLocal()), style: GoogleFonts.inter(fontSize: 10, color: textGreyColor)),
             if (unread) ...[const SizedBox(height: 12), Semantics(label: '${convo.unreadCount > 0 ? convo.unreadCount : ''} unread messages', child: Container(width: 7, height: 7, decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xFF335FE8))))],
           ]),
@@ -880,7 +971,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         final Color textGreyColor = isDark ? const Color(0xFF97A3B6) : const Color(0xFF7C7D85);
         final Color dividerColor = isDark ? Colors.white10 : _kDivider;
 
-        return CallAwareScreen(
+        return PopScope(canPop: !_isGroupSelectionMode, onPopInvokedWithResult: (didPop, result) {
+          if (!didPop && !_selectionBusy) _exitGroupSelectionMode();
+        }, child: CallAwareScreen(
           screenName: 'HomeScreen',
           child: Scaffold(
             backgroundColor: bgColor,
@@ -940,7 +1033,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     textColor,
                   ),
           ),
-        );
+        ));
       },
     );
   }
