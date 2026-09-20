@@ -1,3 +1,4 @@
+import 'opaque_info_design.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:provider/provider.dart';
@@ -121,6 +122,7 @@ class ReactionPicker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = OpaqueInfoColors(Theme.of(context).brightness == Brightness.dark);
     final screenWidth = MediaQuery.of(context).size.width;
     final screenHeight = MediaQuery.of(context).size.height;
     final bottomPadding = MediaQuery.of(context).viewInsets.bottom + MediaQuery.of(context).padding.bottom;
@@ -139,7 +141,7 @@ class ReactionPicker extends StatelessWidget {
         bottomPadding + spacing,
       ),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: colors.surface,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
         boxShadow: [
           BoxShadow(
@@ -157,7 +159,7 @@ class ReactionPicker extends StatelessWidget {
             width: 40,
             height: 4,
             decoration: BoxDecoration(
-              color: Colors.grey[300],
+              color: colors.line,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
@@ -168,7 +170,7 @@ class ReactionPicker extends StatelessWidget {
             style: TextStyle(
               fontSize: titleSize,
               fontWeight: FontWeight.w600,
-              color: Colors.grey[800],
+              color: colors.ink,
             ),
           ),
           SizedBox(height: spacing),
@@ -185,10 +187,10 @@ class ReactionPicker extends StatelessWidget {
                   width: emojiSize,
                   height: emojiSize,
                   decoration: BoxDecoration(
-                    color: Colors.grey[100],
+                    color: colors.soft,
                     borderRadius: BorderRadius.circular(emojiSize / 2),
                     border: Border.all(
-                      color: Colors.grey[300]!,
+                      color: colors.line,
                       width: 1,
                     ),
                   ),

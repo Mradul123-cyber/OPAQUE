@@ -7,6 +7,7 @@ import 'package:zarq_messenger/starfield_background.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
 import 'screens/phone_otp_verification_screen.dart';
 import 'package:zarq_messenger/app_config.dart';
+import 'widgets/opaque_toast.dart';
 
 
 class RegisterScreen extends StatefulWidget {
@@ -184,17 +185,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
   // Navigate to Phone OTP Verification
   void _proceedToOTPVerification() {
     if (_completePhoneNumber.isEmpty || !_isPhoneValid) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a valid phone number.'), backgroundColor: Colors.red),
-      );
+      OpaqueToast.error(context, 'Please enter a valid phone number.');
       return;
     }
 
     // ✅ Validate username for Google users
     if (_isGoogleSignIn() && (_isUsernameAvailable != true || _usernameController.text.trim().isEmpty)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please choose an available username.'), backgroundColor: Colors.red),
-      );
+      OpaqueToast.error(context, 'Please choose an available username.');
       return;
     }
 
@@ -307,9 +304,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         } else {
           // For username or other errors, still use SnackBar
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Registration failed: $errorMessage'), backgroundColor: Colors.red),
-            );
+            OpaqueToast.error(context, 'Registration failed: $errorMessage');
           }
         }
       }
@@ -326,9 +321,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
           friendlyMessage = 'Connection timeout. Please try again.';
         }
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(friendlyMessage), backgroundColor: Colors.red),
-        );
+        OpaqueToast.error(context, friendlyMessage);
       }
     }
 
@@ -378,12 +371,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       } catch (e) {
         // print("Error deleting user: $e");
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Could not cancel registration: $e'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          OpaqueToast.error(context, 'Could not cancel registration: $e');
           setState(() { _isLoading = false; });
         }
       }

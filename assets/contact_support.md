@@ -1,6 +1,6 @@
 # Contact & Support
 
-**Zarq Messenger - We're Here to Help!** 💬
+**OPAQUE - We're Here to Help!** 💬
 
 ---
 
@@ -69,7 +69,7 @@ For legal matters:
 ### General Inquiries
 
 Feel free to ask about:
-- How Zarq Messenger works
+- How OPAQUE works
 - End-to-end encryption
 - Server locations
 - Future plans
@@ -153,7 +153,7 @@ When contacting us:
 - Email: opaquelabs.in@gmail.com
 - Subject: "SECURITY: Vulnerability Report"
 - Please report responsibly (don't publicly disclose until fixed)
-- We appreciate your help keeping Zarq secure!
+- We appreciate your help keeping OPAQUE secure!
 
 ---
 
@@ -167,7 +167,7 @@ When contacting us:
 - Restart the app
 - Check your internet connection
 - Update to the latest version
-- Clear app cache (Settings → Apps → Zarq → Clear Cache)
+- Clear app cache (Settings → Apps → OPAQUE → Clear Cache)
 - Restart your phone
 
 **2. Messages Not Sending?**
@@ -177,8 +177,8 @@ When contacting us:
 - Check if recipient blocked you
 
 **3. Not Receiving Notifications?**
-- Check notification permissions (Settings → Apps → Zarq → Notifications)
-- Ensure battery optimization is off for Zarq
+- Check notification permissions (Settings → Apps → OPAQUE → Notifications)
+- Ensure battery optimization is off for OPAQUE
 - Check "Do Not Disturb" mode
 - Verify notification settings in-app
 
@@ -199,14 +199,14 @@ When contacting us:
 
 ## 🌟 Feedback & Suggestions
 
-We're constantly improving Zarq Messenger!
+We're constantly improving OPAQUE!
 
 ### We'd Love to Hear:
 
 **What's Working Well:**
 - Features you love
-- What makes Zarq useful for you
-- Why you chose Zarq
+- What makes OPAQUE useful for you
+- Why you chose OPAQUE
 
 **What Could Be Better:**
 - Features you'd like to see
@@ -260,9 +260,9 @@ We're planning to add more support channels:
 ## 🌍 Social Media
 
 **Coming Soon:**
-- Twitter/X: @ZarqMessenger (planned)
-- Instagram: @zarqmessenger (planned)
-- GitHub: github.com/zarq-messenger (planned)
+- Twitter/X: Official handle to be announced.
+- Instagram: Official handle to be announced.
+- GitHub: https://github.com/Mradul123-cyber/OPAQUE
 
 *We'll update this page once social media channels are active.*
 
@@ -275,7 +275,7 @@ We're planning to add more support channels:
 - Response time: Within 7 business days
 - Priority given to critical issues
 
-**Note:** As Zarq Messenger is developed by an independent developer, response times may vary. We appreciate your patience!
+**Note:** As OPAQUE is developed by an independent developer, response times may vary. We appreciate your patience!
 
 ---
 
@@ -340,13 +340,13 @@ Currently, we don't have a status page. If you suspect a service outage:
 - Email us: opaquelabs.in@gmail.com
 - We'll respond if there's a known issue
 
-**Planned:** Status page at status.zarqmessenger.com
+**Planned:** A service status page. The address will be announced when available.
 
 ---
 
 ## 🙏 Thank You
 
-Thank you for using Zarq Messenger! Your trust in our secure messaging platform means everything to us.
+Thank you for using OPAQUE! Your trust in our secure messaging platform means everything to us.
 
 We're committed to:
 - 🔒 Protecting your privacy
@@ -355,6 +355,12 @@ We're committed to:
 - 🛡️ Keeping your messages secure
 
 **Your feedback helps us build a better app!**
+
+---
+
+## Request Account Deletion
+
+Email **opaquelabs.in@gmail.com** with the subject **Account deletion** and your OPAQUE username. We will guide you through ownership verification. There is currently no in-app account-deletion button. Never email your password or one-time verification codes. Deleting your account does not remove copies of messages or media that other people have already saved.
 
 ---
 
@@ -372,7 +378,7 @@ We're committed to:
 
 ---
 
-**Zarq Messenger - Zero-access Authenticated Real-time Query**
+**OPAQUE**
 
 *Your messages. Zero access. Total privacy.*
 
@@ -380,4 +386,4 @@ We're committed to:
 
 ---
 
-**Last Updated:** October 7, 2025
+**Last Updated:** September 20, 2026

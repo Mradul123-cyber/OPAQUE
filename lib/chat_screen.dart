@@ -1,3 +1,6 @@
+import 'widgets/opaque_toast.dart';
+import 'widgets/opaque_chat_surfaces.dart';
+import 'widgets/opaque_info_design.dart';
 import 'widgets/share_contact_page.dart';
 import 'widgets/share_location_page.dart';
 import 'widgets/opaque_navigation.dart';
@@ -123,6 +126,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   bool _isSearching = false;
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
+  bool _isNotificationsMuted = false;
 
   // Group member count state
   int? _groupMemberCount;
@@ -207,7 +211,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     _markMessagesAsRead();
 
     _initializeChat();
+    if (widget.conversationInfo.isGroup) {
+      _fetchGroupMemberCount();
+    }
     _loadWallpaper();
+    _loadMutePreference();
     _loadEncryptionBannerPreference();
 
     // Load failed media IDs from persistent storage
@@ -712,25 +720,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   Future<void> _sendMessage() async {
     // 🚀 OFFLINE MODE: Prevent sending when no internet connection
     if (widget.channel == null || !_websocketService.isConnected) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('📴 No internet connection. Please connect to send messages.'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 2),
-        ),
-      );
+      OpaqueToast.warning(context, 'No internet connection');
       return;
     }
 
     // Prevent sending messages to blocked users
     if (_isUserBlocked) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Cannot send messages to blocked users. Unblock them first.'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 2),
-        ),
-      );
+      OpaqueToast.warning(context, 'Unblock this user to send messages');
       return;
     }
 
@@ -857,9 +853,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       _chatProvider.updateMessageStatus(tempMessageId, failedMessage);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to send: $e'), backgroundColor: Colors.red),
-        );
+        OpaqueToast.error(context, 'Failed to send message');
       }
     }
   }
@@ -869,33 +863,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   Future<void> _sendPayloadMessage(String rawPayload, {bool isPollVote = false}) async {
     if (widget.channel == null || !_websocketService.isConnected) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('📴 No internet connection. Please connect to send messages.'),
-            backgroundColor: Colors.orange,
-            duration: Duration(seconds: 2),
-          ),
-        );
+        OpaqueToast.warning(context, 'No internet connection');
       }
       return;
     }
 
     if (_isUserBlocked) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Cannot send messages to blocked users. Unblock them first.'),
-            backgroundColor: Colors.orange,
-            duration: Duration(seconds: 2),
-          ),
-        );
+        OpaqueToast.warning(context, 'Unblock this user to send messages');
       }
       return;
     }
 
     if (!mounted) return;
     if (!widget.conversationInfo.isGroup && _recipientUid == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Chat is still connecting. Please try again.')));
+      OpaqueToast.info(context, 'Connecting... Please wait a moment.');
       return;
     }
 
@@ -994,9 +976,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       final failedMessage = optimisticMessage.copyWith(status: MessageStatus.failed);
       _chatProvider.updateMessageStatus(tempMessageId, failedMessage);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to send: $e'), backgroundColor: Colors.red),
-        );
+        OpaqueToast.error(context, 'Failed to send message');
       }
     }
   }
@@ -1013,10 +993,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       });
       final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
       if (!opened && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open Google Maps. Please try again.')));
+        OpaqueToast.error(context, 'Could not open Google Maps');
       }
     } catch (_) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open Google Maps. Please try again.')));
+      if (mounted) OpaqueToast.error(context, 'Could not open Google Maps');
     } finally {
       _openingSharedLocation = false;
     }
@@ -1031,9 +1011,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Location services are disabled. Please enable GPS.')),
-          );
+          OpaqueToast.warning(context, 'Enable GPS to share location');
         }
         return;
       }
@@ -1043,9 +1021,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Location permission was denied.')),
-            );
+            OpaqueToast.warning(context, 'Location permission denied');
           }
           return;
         }
@@ -1053,26 +1029,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
       if (permission == LocationPermission.deniedForever) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Location permission is permanently denied. Please enable in App Settings.')),
-          );
+          OpaqueToast.warning(context, 'Location permission denied in settings');
         }
         return;
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Row(
-              children: [
-                SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
-                SizedBox(width: 12),
-                Text('Fetching location...'),
-              ],
-            ),
-            duration: Duration(seconds: 4),
-          ),
-        );
+        OpaqueToast.info(context, 'Fetching location...');
       }
 
       final position = await Geolocator.getCurrentPosition(
@@ -1080,15 +1043,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       );
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).hideCurrentSnackBar();
 
       final payload = await Navigator.of(context).push<LocationPayload>(MaterialPageRoute(builder: (_) => ShareLocationPage(latitude: position.latitude, longitude: position.longitude)));
       if (mounted && payload != null) await _sendPayloadMessage(payload.serialize());
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not get location: $e')),
-        );
+        OpaqueToast.error(context, 'Could not get location');
       }
     } finally {
       _sharingBusy = false;
@@ -1105,9 +1065,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     try {
       if (!await FlutterContacts.requestPermission(readonly: true)) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Contacts permission denied')),
-          );
+          OpaqueToast.warning(context, 'Contacts permission denied');
         }
         return;
       }
@@ -1119,7 +1077,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       final fullContact = await FlutterContacts.getContact(picked.id, withProperties: true);
       if (!mounted) return;
       if (fullContact == null) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This contact is no longer available. Please choose it again.')));
+        OpaqueToast.warning(context, 'Contact is no longer available');
         return;
       }
       final seenNumbers = <String>{};
@@ -1131,9 +1089,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       if (mounted && payload != null) await _sendPayloadMessage(payload.serialize());
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not share contact: $e')),
-        );
+        OpaqueToast.error(context, 'Could not share contact');
       }
     } finally {
       _sharingBusy = false;
@@ -1239,25 +1195,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   void _startVoiceRecording() {
     // 🚀 OFFLINE MODE: Prevent voice messages when no internet connection
     if (widget.channel == null || !_websocketService.isConnected) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('📴 No internet connection. Please connect to send voice messages.'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 2),
-        ),
-      );
+      OpaqueToast.warning(context, 'No internet connection');
       return;
     }
 
     // Prevent voice messages to blocked users
     if (_isUserBlocked) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Cannot send voice messages to blocked users. Unblock them first.'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 2),
-        ),
-      );
+      OpaqueToast.warning(context, 'Unblock this user to send messages');
       return;
     }
 
@@ -1278,9 +1222,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     });
 
     if (!widget.conversationInfo.isGroup && _recipientUid == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Recipient not found'), backgroundColor: Colors.red),
-      );
+      OpaqueToast.error(context, 'Recipient not found');
       return;
     }
 
@@ -1306,13 +1248,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
       _chatProvider.addMessage(optimisticMessage);
       _scrollToBottom();
-
-      // Show loading indicator
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Sending voice message...'), duration: Duration(seconds: 2)),
-        );
-      }
 
       final myDeviceId = await SignalService.getDeviceId();
       if (myDeviceId == null) throw Exception('No device ID');
@@ -1517,9 +1452,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to send voice message: $e'), backgroundColor: Colors.red),
-        );
+        OpaqueToast.error(context, 'Failed to send voice message: $e');
       }
     }
   }
@@ -1528,20 +1461,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   Future<void> _sendImageMessage(ImageSource source) async {
     // 🚀 OFFLINE MODE: Prevent image sending when no internet connection
     if (widget.channel == null || !_websocketService.isConnected) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('📴 No internet connection. Please connect to send images.'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 2),
-        ),
-      );
+      OpaqueToast.warning(context, 'No internet connection');
       return;
     }
 
     if (!widget.conversationInfo.isGroup && _recipientUid == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Recipient not found'), backgroundColor: Colors.red),
-      );
+      OpaqueToast.error(context, 'Recipient not found');
       return;
     }
 
@@ -1571,13 +1496,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
       _chatProvider.addMessage(optimisticMessage);
       _scrollToBottom();
-
-      // Show loading indicator
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Preparing image...'), duration: Duration(seconds: 2)),
-        );
-      }
 
       final myDeviceId = await SignalService.getDeviceId();
       if (myDeviceId == null) throw Exception('No device ID');
@@ -1775,9 +1693,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       await _dbService.insertMessage(messageWithEncryption);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Image sent!'), backgroundColor: Colors.green),
-        );
+        OpaqueToast.success(context, 'Image sent');
       }
 
       // The attachment_uploaded WebSocket event will update the message with attachment info
@@ -1792,9 +1708,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
       // Show error
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to send image: $e'), backgroundColor: Colors.red),
-        );
+        OpaqueToast.error(context, 'Failed to send image: $e');
       }
     }
   }
@@ -1803,20 +1717,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   Future<void> _sendVideoMessage(ImageSource source) async {
     // 🚀 OFFLINE MODE: Prevent video sending when no internet connection
     if (widget.channel == null || !_websocketService.isConnected) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('📴 No internet connection. Please connect to send videos.'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 2),
-        ),
-      );
+      OpaqueToast.warning(context, 'No internet connection');
       return;
     }
 
     if (!widget.conversationInfo.isGroup && _recipientUid == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Recipient not found'), backgroundColor: Colors.red),
-      );
+      OpaqueToast.error(context, 'Recipient not found');
       return;
     }
 
@@ -1858,12 +1764,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
           _chatProvider.notifyListeners();
         }
       });
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Preparing video...'), duration: Duration(seconds: 3)),
-        );
-      }
 
       final myDeviceId = await SignalService.getDeviceId();
       if (myDeviceId == null) throw Exception('No device ID');
@@ -2080,9 +1980,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       _chatProvider.updateMessageStatus(messageId, completedMessage);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Video sent!'), backgroundColor: Colors.green),
-        );
+        OpaqueToast.success(context, 'Video sent');
       }
     } catch (e) {
       // print('[ChatScreen] Error sending video: $e');
@@ -2092,9 +1990,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to send video: $e'), backgroundColor: Colors.red),
-        );
+        OpaqueToast.error(context, 'Failed to send video: $e');
       }
     }
   }
@@ -2103,20 +1999,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   Future<void> _sendDocumentMessage() async {
     // 🚀 OFFLINE MODE: Prevent document sending when no internet connection
     if (widget.channel == null || !_websocketService.isConnected) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('📴 No internet connection. Please connect to send documents.'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 2),
-        ),
-      );
+      OpaqueToast.warning(context, 'No internet connection');
       return;
     }
 
     if (!widget.conversationInfo.isGroup && _recipientUid == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Recipient not found'), backgroundColor: Colors.red),
-      );
+      OpaqueToast.error(context, 'Recipient not found');
       return;
     }
 
@@ -2170,12 +2058,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
       _chatProvider.addMessage(optimisticMessage);
       _scrollToBottom();
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Preparing document...'), duration: Duration(seconds: 2)),
-        );
-      }
 
       final myDeviceId = await SignalService.getDeviceId();
       if (myDeviceId == null) throw Exception('No device ID');
@@ -2329,9 +2211,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       _chatProvider.updateMessageStatus(messageId, completedMessage);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Document sent!'), backgroundColor: Colors.green),
-        );
+        OpaqueToast.success(context, 'Document sent');
       }
     } catch (e) {
       // print('[ChatScreen] Error sending document: $e');
@@ -2341,9 +2221,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to send document: $e'), backgroundColor: Colors.red),
-        );
+        OpaqueToast.error(context, 'Failed to send document: $e');
       }
     }
   }
@@ -2410,13 +2288,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       // Check for internet connection
       if (widget.channel == null || !_websocketService.isConnected) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('📴 No internet connection. Please connect to share content.'),
-              backgroundColor: Colors.orange,
-              duration: Duration(seconds: 3),
-            ),
-          );
+          OpaqueToast.warning(context, 'No internet connection');
         }
         return;
       }
@@ -2474,13 +2346,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     } catch (e) {
       debugPrint('[ChatScreen] Error processing shared content: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to share content: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 3),
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to share content: $e');
       }
     }
   }
@@ -2516,12 +2382,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
       _chatProvider.addMessage(optimisticMessage);
       _scrollToBottom();
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Sharing image...'), duration: Duration(seconds: 2)),
-        );
-      }
 
       final myDeviceId = await SignalService.getDeviceId();
       if (myDeviceId == null) throw Exception('No device ID');
@@ -2696,9 +2556,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       await _dbService.insertMessage(messageWithEncryption);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Image shared successfully!'), backgroundColor: Colors.green),
-        );
+        OpaqueToast.success(context, 'Image shared successfully');
       }
     } catch (e) {
       if (tempMessageId != null) {
@@ -2717,9 +2575,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to share image: $e'), backgroundColor: Colors.red),
-        );
+        OpaqueToast.error(context, 'Failed to share image: $e');
       }
     }
   }
@@ -2754,12 +2610,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       _chatProvider.addMessage(optimisticMessage);
       _scrollToBottom();
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Sharing video... This may take a while.'), duration: Duration(seconds: 3)),
-        );
-      }
-
       // Use the same logic as _sendVideoMessage but with the shared file path
       // For brevity, showing simplified version - you would need full encryption logic here
       // similar to _sendSharedImageMessage
@@ -2782,9 +2632,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Video sharing not yet implemented: $e'), backgroundColor: Colors.orange),
-        );
+        OpaqueToast.warning(context, 'Video sharing not yet implemented');
       }
     }
   }
@@ -2793,12 +2641,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   Future<void> _sendSharedDocumentMessage(String uriString) async {
     // Similar logic for documents
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Document sharing not yet implemented'),
-          backgroundColor: Colors.orange,
-        ),
-      );
+      OpaqueToast.warning(context, 'Document sharing not yet implemented');
     }
   }
 
@@ -2863,9 +2706,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
   Future<void> _startVoiceCall() async {
     if (_recipientUid == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cannot start call: recipient not found')),
-      );
+      OpaqueToast.error(context, 'Cannot start call: recipient not found');
       return;
     }
 
@@ -2873,12 +2714,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     final sessionEstablished = await _isSessionEstablished();
     if (!sessionEstablished) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('You must exchange messages with this user before calling'),
-            duration: Duration(seconds: 3),
-          ),
-        );
+        OpaqueToast.warning(context, 'You must exchange messages with this user before calling');
       }
       return;
     }
@@ -2887,9 +2723,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     final micStatus = await Permission.microphone.request();
     if (!micStatus.isGranted) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Microphone permission is required for voice calls')),
-        );
+        OpaqueToast.warning(context, 'Microphone permission is required for voice calls');
       }
       return;
     }
@@ -2909,18 +2743,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       // print('[ChatScreen] Error starting voice call: $e');
       // print('[ChatScreen] Stack trace: $stackTrace');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to start call: $e')),
-        );
+        OpaqueToast.error(context, 'Failed to start call: $e');
       }
     }
   }
 
   Future<void> _startVideoCall() async {
     if (_recipientUid == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cannot start call: recipient not found')),
-      );
+      OpaqueToast.error(context, 'Cannot start call: recipient not found');
       return;
     }
 
@@ -2928,12 +2758,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     final sessionEstablished = await _isSessionEstablished();
     if (!sessionEstablished) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('You must exchange messages with this user before calling'),
-            duration: Duration(seconds: 3),
-          ),
-        );
+        OpaqueToast.warning(context, 'You must exchange messages with this user before calling');
       }
       return;
     }
@@ -2946,18 +2771,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
     if (!permissions[Permission.camera]!.isGranted) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Camera permission is required for video calls')),
-        );
+        OpaqueToast.warning(context, 'Camera permission is required for video calls');
       }
       return;
     }
 
     if (!permissions[Permission.microphone]!.isGranted) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Microphone permission is required for video calls')),
-        );
+        OpaqueToast.warning(context, 'Microphone permission is required for video calls');
       }
       return;
     }
@@ -2977,9 +2798,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       // print('[ChatScreen] Error starting video call: $e');
       // print('[ChatScreen] Stack trace: $stackTrace');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to start call: $e')),
-        );
+        OpaqueToast.error(context, 'Failed to start call: $e');
       }
     }
   }
@@ -3274,48 +3093,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                         }
 
                         if (messages.isEmpty && _isSearching) {
-                          return Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Container(
-                                  width: 120,
-                                  height: 120,
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF00ACC1).withOpacity(0.1),
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: Icon(
-                                    Icons.search_off_rounded,
-                                    size: 60,
-                                    color: const Color(0xFF00ACC1).withOpacity(0.6),
-                                  ),
-                                ),
-                                const SizedBox(height: 24),
-                                Text(
-                                  'No messages found',
-                                  style: TextStyle(
-                                    color: Colors.grey[800],
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const SizedBox(height: 12),
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 40),
-                                  child: Text(
-                                    'Try using different keywords or check your spelling',
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
-                                      color: Colors.grey[600],
-                                      fontSize: 14,
-                                      height: 1.4,
-                                    ),
-                                  ),
-                                ),
+                          final c = _chatColors;
+                          return Center(child: SingleChildScrollView(padding: const EdgeInsets.all(32),
+                            child: Column(mainAxisSize: MainAxisSize.min, children: [
+                              Container(width: 52, height: 52,
+                                decoration: BoxDecoration(color: c.soft, borderRadius: BorderRadius.circular(18)),
+                                child: Icon(Icons.manage_search_rounded, size: 27, color: c.accent)),
+                              const SizedBox(height: 16),
+                              Text(_searchQuery.isEmpty ? 'No messages to search' : 'No matches yet',
+                                textAlign: TextAlign.center, style: c.text(17, bold: true)),
+                              const SizedBox(height: 8),
+                              Text(_searchQuery.isEmpty ? 'Messages in this chat will appear here.'
+                                : 'Try a shorter word or a different spelling.', textAlign: TextAlign.center,
+                                style: c.text(13, muted: true).copyWith(height: 1.6)),
+                              if (_searchQuery.isNotEmpty) ...[
+                                const SizedBox(height: 16),
+                                TextButton(onPressed: () => setState(() { _searchController.clear(); _searchQuery = ''; }),
+                                  style: TextButton.styleFrom(foregroundColor: c.accent), child: const Text('Clear search')),
                               ],
-                            ),
-                          );
+                            ])));
                         }
 
                         // Show search results count
@@ -3456,12 +3252,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     final appBarTitleSize = 14.0;
     final smallTextSize = 11.0;
     final iconSize2 = 20.0;
-    final iconSize3 = 14.0;
     final padding2 = (screenWidth * 0.03).clamp(10.0, 16.0);
-    final spacing2 = (screenWidth * 0.04).clamp(12.0, 20.0);
-    final borderRadius2 = (screenWidth * 0.03).clamp(10.0, 14.0);
     final avatarRadius = 19.0;
-    final menuItemHeight = (screenWidth * 0.12).clamp(44.0, 52.0);
     final titleSpacing = (screenWidth * 0.025).clamp(8.0, 12.0);
     final verticalSpacing = (screenWidth * 0.01).clamp(3.0, 5.0);
 
@@ -3480,8 +3272,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       leadingWidth: iconSize2 + padding2,
       titleSpacing: titleSpacing,
       title: GestureDetector(
-        onTap: widget.conversationInfo.isGroup ? () {
-          Navigator.push(
+        onTap: widget.conversationInfo.isGroup ? () async {
+          await Navigator.push(
             context,
             MaterialPageRoute(
               builder: (context) => GroupInfoScreen(
@@ -3489,6 +3281,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
               ),
             ),
           );
+          if (mounted) _fetchGroupMemberCount();
         } : null,
         child: Row(
           children: [
@@ -3519,21 +3312,34 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Text(
-                    widget.conversationInfo.chatTitle,
-                    maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: appBarTitleSize,
-                      fontWeight: FontWeight.w600,
-                      color: ink,
-                    ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          widget.conversationInfo.chatTitle,
+                          maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: appBarTitleSize,
+                            fontWeight: FontWeight.w600,
+                            color: ink,
+                          ),
+                        ),
+                      ),
+                      if (_isNotificationsMuted) ...[
+                        const SizedBox(width: 4),
+                        Icon(
+                          Icons.notifications_off_rounded,
+                          size: appBarTitleSize * 0.75,
+                          color: dark ? Colors.grey[400] : const Color(0xFF858C9C),
+                        ),
+                      ],
+                    ],
                   ),
-                  if (widget.conversationInfo.isGroup) ...[
+                  if (widget.conversationInfo.isGroup && _groupMemberCount != null) ...[
                     SizedBox(height: verticalSpacing),
                     Text(
-                      _groupMemberCount != null
-                          ? '$_groupMemberCount ${_groupMemberCount == 1 ? "member" : "members"}'
-                          : 'Tap for info',
+                      '$_groupMemberCount ${_groupMemberCount == 1 ? "member" : "members"}',
                       style: TextStyle(fontSize: smallTextSize, color: dark ? Colors.grey[400] : const Color(0xFF858C9C)),
                     ),
                   ] else if (!widget.conversationInfo.isGroup && _recipientUid != null && _getStatusText().isNotEmpty) ...[
@@ -3570,9 +3376,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         PopupMenuButton<String>(
           icon: OpaqueIcon('more', color: ink, size: 20),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(borderRadius2),
+            borderRadius: BorderRadius.circular(18),
+            side: BorderSide(color: _chatColors.line),
           ),
-          elevation: 8,
+          elevation: 4,
+          tooltip: 'Chat options',
+          position: PopupMenuPosition.under,
+          offset: const Offset(-8, 6),
+          surfaceTintColor: Colors.transparent,
+          constraints: const BoxConstraints(minWidth: 228, maxWidth: 280),
           color: dark ? const Color(0xFF19202A) : Colors.white,
           onSelected: (value) {
             if (value == 'search') {
@@ -3592,253 +3404,68 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
             }
           },
           itemBuilder: (context) => [
-            PopupMenuItem(
-              value: 'search',
-              height: menuItemHeight,
-              child: Row(
-                children: [
-                  Icon(Icons.search, size: iconSize3, color: ink),
-                  SizedBox(width: spacing2),
-                  Text(
-                    'Search',
-                    style: TextStyle(
-                      fontSize: appBarTitleSize * 0.9,
-                      fontWeight: FontWeight.w500,
-                      color: ink,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            PopupMenuItem(
-              value: 'mute',
-              height: menuItemHeight,
-              child: Row(
-                children: [
-                  Icon(Icons.notifications_off_outlined, size: iconSize3, color: ink),
-                  SizedBox(width: spacing2),
-                  Text(
-                    'Mute notifications',
-                    style: TextStyle(
-                      fontSize: appBarTitleSize * 0.9,
-                      fontWeight: FontWeight.w500,
-                      color: ink,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            PopupMenuItem(
-              value: 'wallpaper',
-              height: menuItemHeight,
-              child: Row(
-                children: [
-                  Icon(Icons.wallpaper_outlined, size: iconSize3, color: ink),
-                  SizedBox(width: spacing2),
-                  Text(
-                    'Change wallpaper',
-                    style: TextStyle(
-                      fontSize: appBarTitleSize * 0.9,
-                      fontWeight: FontWeight.w500,
-                      color: ink,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            PopupMenuItem(
-              value: 'clear',
-              height: menuItemHeight,
-              child: Row(
-                children: [
-                  Icon(Icons.delete_sweep_outlined, size: iconSize3, color: Colors.orange[700]),
-                  SizedBox(width: spacing2),
-                  Text(
-                    'Clear chat',
-                    style: TextStyle(
-                      fontSize: appBarTitleSize * 0.9,
-                      fontWeight: FontWeight.w500,
-                      color: ink,
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            _chatMenuItem('search', 'Search', Icons.search),
+            _chatMenuItem('mute', _isNotificationsMuted ? 'Unmute notifications' : 'Mute notifications',
+              _isNotificationsMuted ? Icons.notifications_active_outlined : Icons.notifications_off_outlined),
+            _chatMenuItem('wallpaper', 'Change wallpaper', Icons.wallpaper_outlined),
+            const PopupMenuDivider(height: 9),
+            _chatMenuItem('clear', 'Clear chat', Icons.delete_sweep_outlined, destructive: true),
             if (!widget.conversationInfo.isGroup)
-              PopupMenuItem(
-                value: _isUserBlocked ? 'unblock' : 'block',
-                height: menuItemHeight,
-                child: Row(
-                  children: [
-                    Icon(
-                      _isUserBlocked ? Icons.check_circle_outline : Icons.block,
-                      size: iconSize3,
-                      color: _isUserBlocked ? Colors.green[700] : Colors.red[700],
-                    ),
-                    SizedBox(width: spacing2),
-                    Text(
-                      _isUserBlocked ? 'Unblock user' : 'Block user',
-                      style: TextStyle(
-                        fontSize: appBarTitleSize * 0.9,
-                        fontWeight: FontWeight.w500,
-                        color: ink,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              _chatMenuItem(_isUserBlocked ? 'unblock' : 'block',
+                _isUserBlocked ? 'Unblock user' : 'Block user',
+                _isUserBlocked ? Icons.check_circle_outline : Icons.block,
+                destructive: !_isUserBlocked),
           ],
         ),
       ],
     );
   }
 
-  PreferredSizeWidget _buildSearchAppBar() {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final bodyTextSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final smallTextSize = (screenWidth * 0.0325).clamp(12.0, 15.0);
-    final tinyTextSize = (screenWidth * 0.03).clamp(11.0, 14.0);
-    final iconSize2 = (screenWidth * 0.05).clamp(18.0, 24.0);
-    final iconSize3 = (screenWidth * 0.045).clamp(16.0, 20.0);
-    final padding1 = (screenWidth * 0.04).clamp(12.0, 20.0);
-    final padding2 = (screenWidth * 0.03).clamp(10.0, 16.0);
-    final borderRadius1 = (screenWidth * 0.04).clamp(12.0, 18.0);
-    final borderRadius2 = (screenWidth * 0.03).clamp(10.0, 14.0);
-    final spacing1 = (screenWidth * 0.02).clamp(6.0, 10.0);
-    final searchBarHeight = (screenWidth * 0.1).clamp(36.0, 44.0);
-    final bottomBarHeight = (screenWidth * 0.1).clamp(36.0, 44.0);
+  PopupMenuItem<String> _chatMenuItem(String value, String label, IconData icon,
+      {bool destructive = false}) {
+    final color = destructive ? _chatDanger : _chatColors.ink;
+    return PopupMenuItem<String>(value: value, height: 48,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(children: [
+        Icon(icon, size: 19, color: destructive ? color : _chatColors.muted),
+        const SizedBox(width: 12),
+        Flexible(child: Text(label, style: _chatColors.text(13).copyWith(color: color))),
+      ]));
+  }
 
-    return AppBar(
-      backgroundColor: Colors.white,
-      elevation: 0,
-      leading: IconButton(
-        icon: Icon(Icons.arrow_back, color: const Color(0xFF00ACC1), size: iconSize2),
-        onPressed: () {
-          setState(() {
-            _isSearching = false;
-            _searchQuery = '';
-            _searchController.clear();
-          });
-        },
-      ),
-      title: Container(
-        height: searchBarHeight,
-        decoration: BoxDecoration(
-          color: const Color(0xFFF5F5F5),
-          borderRadius: BorderRadius.circular(searchBarHeight / 2),
-          border: Border.all(
-            color: _searchQuery.isNotEmpty
-                ? const Color(0xFF00ACC1).withOpacity(0.3)
-                : Colors.transparent,
-            width: 1.5,
-          ),
-        ),
-        child: Row(
-          children: [
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: padding2),
-              child: Icon(Icons.search, color: const Color(0xFF00ACC1), size: iconSize3),
-            ),
-            Expanded(
-              child: TextField(
-                controller: _searchController,
-                autofocus: true,
-                style: TextStyle(
-                  color: Colors.black87,
-                  fontSize: bodyTextSize,
-                ),
-                decoration: InputDecoration(
-                  hintText: 'Search in conversation...',
-                  hintStyle: TextStyle(
-                    color: Colors.black38,
-                    fontSize: bodyTextSize,
-                  ),
-                  border: InputBorder.none,
-                  isDense: true,
-                  contentPadding: EdgeInsets.symmetric(vertical: padding2),
-                ),
-                onChanged: (value) {
-                  setState(() {
-                    _searchQuery = value.toLowerCase();
-                  });
-                },
-              ),
-            ),
-            if (_searchController.text.isNotEmpty)
-              Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(searchBarHeight / 2),
-                  onTap: () {
-                    setState(() {
-                      _searchController.clear();
-                      _searchQuery = '';
-                    });
-                  },
-                  child: Padding(
-                    padding: EdgeInsets.all(spacing1),
-                    child: Icon(Icons.close, color: Colors.black45, size: iconSize3),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-      bottom: _searchQuery.isNotEmpty
-          ? PreferredSize(
-              preferredSize: Size.fromHeight(bottomBarHeight),
-              child: Container(
-                padding: EdgeInsets.symmetric(horizontal: padding1, vertical: spacing1),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.05),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Consumer<ChatProvider>(
-                  builder: (context, chatProvider, child) {
-                    final matchCount = chatProvider.messages
-                        .where((m) => m.content.toLowerCase().contains(_searchQuery))
-                        .length;
-                    return Row(
-                      children: [
-                        Container(
-                          padding: EdgeInsets.symmetric(horizontal: padding2, vertical: padding2 * 0.4),
-                          decoration: BoxDecoration(
-                            gradient: const LinearGradient(
-                              colors: [Color(0xFF00ACC1), Color(0xFF0097A7)],
-                            ),
-                            borderRadius: BorderRadius.circular(borderRadius2),
-                          ),
-                          child: Text(
-                            '$matchCount',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: tinyTextSize,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        SizedBox(width: spacing1),
-                        Text(
-                          matchCount == 1 ? 'message found' : 'messages found',
-                          style: TextStyle(
-                            color: Colors.grey[700],
-                            fontSize: tinyTextSize,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ),
-            )
-          : null,
+  PreferredSizeWidget _buildSearchAppBar() {
+    final c = _chatColors;
+    return AppBar(backgroundColor: c.surface, foregroundColor: c.ink,
+      surfaceTintColor: Colors.transparent, elevation: 0, scrolledUnderElevation: 0,
+      toolbarHeight: 64, titleSpacing: 0, leadingWidth: 48,
+      leading: IconButton(tooltip: 'Close search', icon: const Icon(Icons.arrow_back_rounded, size: 21),
+        onPressed: () => setState(() { _isSearching = false; _searchQuery = ''; _searchController.clear(); })),
+      title: Padding(padding: const EdgeInsets.only(right: 16), child: TextField(
+        controller: _searchController, autofocus: true, textInputAction: TextInputAction.search,
+        style: c.text(14), cursorColor: c.accent,
+        decoration: InputDecoration(hintText: 'Search this chat', hintStyle: c.text(13, muted: true),
+          filled: true, fillColor: c.soft, isDense: true,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          prefixIcon: Icon(Icons.search_rounded, size: 19, color: c.muted),
+          prefixIconConstraints: const BoxConstraints(minWidth: 40, minHeight: 44),
+          suffixIcon: _searchController.text.isEmpty ? null : IconButton(tooltip: 'Clear search',
+            icon: Icon(Icons.close_rounded, size: 18, color: c.muted),
+            onPressed: () => setState(() { _searchController.clear(); _searchQuery = ''; })),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: c.line)),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: c.line)),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: c.accent))),
+        onChanged: (value) => setState(() => _searchQuery = value.toLowerCase()))),
+      bottom: PreferredSize(preferredSize: const Size.fromHeight(32), child: Container(
+        width: double.infinity, padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+        decoration: BoxDecoration(border: Border(bottom: BorderSide(color: c.line))),
+        child: Consumer<ChatProvider>(builder: (context, provider, child) {
+          final count = provider.messages.where((m) => !_blockedUsers.contains(m.senderUid)
+            && !(m.hasAttachment && m.status == MessageStatus.decryptFailed)
+            && m.content.toLowerCase().contains(_searchQuery)).length;
+          return Text(_searchQuery.isEmpty ? 'Search messages in this conversation'
+            : '$count ${count == 1 ? 'matching message' : 'matching messages'}',
+            maxLines: 1, overflow: TextOverflow.ellipsis, style: c.text(11, muted: true));
+        }))),
     );
   }
 
@@ -3953,41 +3580,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   }
 
   void _showComingSoon() {
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-        content: Row(
-          mainAxisSize: MainAxisSize.min,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            OpaqueIcon('sparkles', size: 15, color: const Color(0xFFC4D1EE)),
-            const SizedBox(width: 8),
-            const Text(
-              'AI features coming soon',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-                color: Color(0xFFF5F7FC),
-              ),
-            ),
-          ],
-        ),
-        width: 215,
-        backgroundColor: dark ? const Color(0xFF303746) : const Color(0xFF202632),
-        duration: const Duration(seconds: 2),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        elevation: 6,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      ));
+    OpaqueToast.info(context, 'AI features coming soon');
   }
 
   Future<void> _chooseChatMedia(ImageSource source) async {
     setState(() => _attachmentsOpen = false);
     final video = await showModalBottomSheet<bool>(
       context: context,
-      builder: (context) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
+      backgroundColor: Colors.transparent,
+      builder: (context) => OpaqueChatSheet(title: 'Choose media', child: Column(mainAxisSize: MainAxisSize.min, children: [
         ListTile(leading: const Icon(Icons.photo_outlined), title: const Text('Photo'), onTap: () => Navigator.pop(context, false)),
         ListTile(leading: const Icon(Icons.videocam_outlined), title: const Text('Video'), onTap: () => Navigator.pop(context, true)),
       ])),
@@ -4101,74 +3702,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     return Color(int.parse('0xFF$hexColor'));
   }
 
-  Widget _buildEncryptionBanner() {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final bannerPadding = (screenWidth * 0.04).clamp(12.0, 20.0);
-    final fontSize = (screenWidth * 0.035).clamp(13.0, 16.0);
+  Widget _buildEncryptionBanner() => const OpaqueEncryptionNotice();
 
-    const title = 'End-to-End Encrypted';
-    const subtitle =
-        'Your messages stay private — only you and your chat partner can read them. Not even OPAQUE can.';
-
-    return Container(
-      margin: EdgeInsets.symmetric(
-        horizontal: bannerPadding,
-        vertical: bannerPadding * 0.5,
-      ),
-      padding: EdgeInsets.all(bannerPadding),
-      decoration: BoxDecoration(
-        color: Colors.black,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.3),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.2),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(
-              Icons.lock,
-              color: Colors.white,
-              size: 24,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: fontSize,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  subtitle,
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.9),
-                    fontSize: fontSize * 0.85,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  OpaqueInfoColors get _chatColors =>
+      OpaqueInfoColors(Theme.of(context).brightness == Brightness.dark);
+  Color get _chatDanger => _chatColors.dark
+      ? const Color(0xFFF19A9F) : const Color(0xFFBA4854);
 
   Widget _buildMessageBubble(Message message, int index, int itemCount) {
     if (ChatPayloadParser.getPayloadType(message.content) == ChatPayloadParser.typePollVote) {
@@ -5838,23 +5377,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   // Open document
   Future<void> _openDocument(Message message) async {
     if (message.attachmentId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Document not available'), backgroundColor: Colors.red),
-      );
+      OpaqueToast.error(context, 'Document not available');
       return;
     }
 
     try {
-      // Check if already downloaded
-      final isAlreadyDownloaded = _documentCache.containsKey(message.attachmentId!);
-
-      // Show loading only if not downloaded
-      if (!isAlreadyDownloaded && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Downloading document...'), duration: Duration(seconds: 3)),
-        );
-      }
-
       final documentPath = await _loadDocument(message);
       if (documentPath == null) {
         throw Exception('Failed to load document');
@@ -5874,186 +5401,42 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
           // Successfully opened
           // print('[ChatScreen] ✅ Document opened successfully');
         } else if (result.type == ResultType.noAppToOpen) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('No app found to open this file type'),
-              backgroundColor: Colors.orange,
-            ),
-          );
+          OpaqueToast.warning(context, 'No app found to open this file type');
         } else if (result.type == ResultType.fileNotFound) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('File not found'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          OpaqueToast.error(context, 'File not found');
         } else if (result.type == ResultType.permissionDenied) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Permission denied to open file'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          OpaqueToast.error(context, 'Permission denied to open file');
         }
       }
     } catch (e) {
       // print('[ChatScreen] Error opening document: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to open document: $e'), backgroundColor: Colors.red),
-        );
+        OpaqueToast.error(context, 'Failed to open document: $e');
       }
     }
   }
 
   // Show document options (Share, Open) on long press
   void _showDocumentOptions(Message message) {
-    final fileName = message.content.replaceFirst('📄 ', '');
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (BuildContext context) {
-        return Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(25)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.15),
-                blurRadius: 20,
-                offset: const Offset(0, -3),
-              ),
-            ],
-          ),
-          child: SafeArea(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Drag handle
-                Container(
-                  width: 45,
-                  height: 5,
-                  margin: const EdgeInsets.only(top: 14, bottom: 16),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[300],
-                    borderRadius: BorderRadius.circular(3),
-                  ),
-                ),
-                // File name with icon
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                  child: Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                            colors: [Color(0xFF667EEA), Color(0xFF764BA2)],
-                          ),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: const Icon(Icons.insert_drive_file_rounded, color: Colors.white, size: 20),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          fileName,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                            color: Color(0xFF2D3436),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                // Options with modern design
-                _buildCompactOption(
-                  icon: Icons.send_rounded,
-                  label: 'Forward to Contact',
-                  color: const Color(0xFF667EEA),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _forwardDocument(message);
-                  },
-                ),
-                _buildCompactOption(
-                  icon: Icons.share_rounded,
-                  label: 'Share Externally',
-                  color: const Color(0xFFFA709A),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _shareDocument(message);
-                  },
-                ),
-                _buildCompactOption(
-                  icon: Icons.open_in_new_rounded,
-                  label: 'Open Document',
-                  color: const Color(0xFF11998E),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _openDocument(message);
-                  },
-                ),
-                const SizedBox(height: 16),
-              ],
-            ),
-          ),
-        );
-      },
+    final fileName = message.content.replaceFirst('ðŸ“„ ', '');
+    showModalBottomSheet(context: context, backgroundColor: Colors.transparent,
+      builder: (context) => OpaqueChatSheet(title: fileName,
+        child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(leading: const Icon(Icons.forward_outlined), title: const Text('Forward to contact'),
+            onTap: () { Navigator.pop(context); _forwardDocument(message); }),
+          ListTile(leading: const Icon(Icons.share_outlined), title: const Text('Share externally'),
+            onTap: () { Navigator.pop(context); _shareDocument(message); }),
+          ListTile(leading: const Icon(Icons.open_in_new), title: const Text('Open document'),
+            onTap: () { Navigator.pop(context); _openDocument(message); }),
+        ]))),
     );
   }
 
-  Widget _buildCompactOption({
-    required IconData icon,
-    required String label,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-          child: Row(
-            children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(icon, color: color, size: 20),
-              ),
-              const SizedBox(width: 16),
-              Text(
-                label,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500,
-                  color: Color(0xFF2D3436),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 
   // Forward document to another contact
   Future<void> _forwardDocument(Message message) async {
     if (message.attachmentId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Document not available'), backgroundColor: Colors.red),
-      );
+      OpaqueToast.error(context, 'Document not available');
       return;
     }
 
@@ -6065,9 +5448,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       ).toList();
 
       if (conversations.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No other contacts available'), backgroundColor: Colors.orange),
-        );
+        OpaqueToast.warning(context, 'No other contacts available');
         return;
       }
 
@@ -6076,168 +5457,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         context: context,
         backgroundColor: Colors.transparent,
         isScrollControlled: true,
-        builder: (BuildContext context) {
-          return Container(
-            height: MediaQuery.of(context).size.height * 0.7,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Colors.white, const Color(0xFFF8F9FA)],
-              ),
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
-                  blurRadius: 20,
-                  offset: const Offset(0, -5),
-                ),
-              ],
-            ),
-            child: SafeArea(
-              child: Column(
-                children: [
-                  // Drag handle
-                  Container(
-                    width: 40,
-                    height: 4,
-                    margin: const EdgeInsets.only(top: 12, bottom: 20),
-                    decoration: BoxDecoration(
-                      color: Colors.grey[300],
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  // Header
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            gradient: const LinearGradient(
-                              colors: [Color(0xFF667EEA), Color(0xFF764BA2)],
-                            ),
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: [
-                              BoxShadow(
-                                color: const Color(0xFF667EEA).withOpacity(0.3),
-                                blurRadius: 8,
-                                offset: const Offset(0, 4),
-                              ),
-                            ],
-                          ),
-                          child: const Icon(Icons.send_rounded, color: Colors.white, size: 24),
-                        ),
-                        const SizedBox(width: 12),
-                        const Text(
-                          'Forward to Contact',
-                          style: TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.w700,
-                            color: Color(0xFF2D3436),
-                            letterSpacing: -0.5,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  // Contact list
-                  Expanded(
-                    child: ListView.builder(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      itemCount: conversations.length,
-                      itemBuilder: (context, index) {
-                        final conversation = conversations[index];
-                        return Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            onTap: () => Navigator.pop(context, conversation),
-                            borderRadius: BorderRadius.circular(16),
-                            child: Container(
-                              margin: const EdgeInsets.only(bottom: 12),
-                              padding: const EdgeInsets.all(16),
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  colors: [Colors.white, Colors.grey[50]!],
-                                ),
-                                borderRadius: BorderRadius.circular(16),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withOpacity(0.05),
-                                    blurRadius: 8,
-                                    offset: const Offset(0, 2),
-                                  ),
-                                ],
-                              ),
-                              child: Row(
-                                children: [
-                                  // Avatar
-                                  Container(
-                                    width: 50,
-                                    height: 50,
-                                    decoration: BoxDecoration(
-                                      gradient: const LinearGradient(
-                                        colors: [Color(0xFF667EEA), Color(0xFF764BA2)],
-                                      ),
-                                      shape: BoxShape.circle,
-                                    ),
-                                    child: Center(
-                                      child: Text(
-                                        conversation.chatTitle.isNotEmpty
-                                            ? conversation.chatTitle[0].toUpperCase()
-                                            : '?',
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 20,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 16),
-                                  // Name
-                                  Expanded(
-                                    child: Text(
-                                      conversation.chatTitle,
-                                      style: const TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w600,
-                                        color: Color(0xFF2D3436),
-                                      ),
-                                    ),
-                                  ),
-                                  // Forward icon
-                                  const Icon(
-                                    Icons.arrow_forward_ios_rounded,
-                                    color: Color(0xFF667EEA),
-                                    size: 18,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
+        builder: (context) => OpaqueChatSheet(title: 'Forward to contact',
+          child: SizedBox(height: MediaQuery.sizeOf(context).height * 0.55,
+            child: ListView.builder(itemCount: conversations.length,
+              itemBuilder: (context, index) {
+                final conversation = conversations[index];
+                return ListTile(
+                  leading: CircleAvatar(backgroundColor: _chatColors.soft,
+                    foregroundColor: _chatColors.accent,
+                    child: Text(conversation.chatTitle.isNotEmpty
+                      ? conversation.chatTitle[0].toUpperCase() : '?')),
+                  title: Text(conversation.chatTitle),
+                  trailing: const Icon(Icons.chevron_right, size: 18),
+                  onTap: () => Navigator.pop(context, conversation),
+                );
+              }))),
       );
 
       if (selectedConversation == null) {
         return; // User cancelled
-      }
-
-      // Show loading
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Forwarding document...'), duration: Duration(seconds: 3)),
-        );
       }
 
       // Load document (download and decrypt if needed)
@@ -6375,37 +5613,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       await _dbService.insertMessage(forwardedMessage);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Document forwarded to ${selectedConversation.chatTitle}'),
-            backgroundColor: Colors.green,
-            action: SnackBarAction(
-              label: 'VIEW',
-              textColor: Colors.white,
-              onPressed: () {
-                // Navigate to the conversation where document was forwarded
-                Navigator.pushReplacement(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => ChatScreen(
-                      channel: widget.channel,
-                      conversationInfo: selectedConversation,
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        );
+        OpaqueToast.success(context, 'Document forwarded to ${selectedConversation.chatTitle}');
       }
 
       // print('[ChatScreen] ✅ Document forwarded successfully');
     } catch (e) {
       // print('[ChatScreen] Error forwarding document: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to forward: $e'), backgroundColor: Colors.red),
-        );
+        OpaqueToast.error(context, 'Failed to forward: $e');
       }
     }
   }
@@ -6413,20 +5628,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   // Share document
   Future<void> _shareDocument(Message message) async {
     if (message.attachmentId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Document not available'), backgroundColor: Colors.red),
-      );
+      OpaqueToast.error(context, 'Document not available');
       return;
     }
 
     try {
-      // Show loading
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Preparing document...'), duration: Duration(seconds: 2)),
-        );
-      }
-
       // Load document first (download and decrypt if needed)
       final documentPath = await _loadDocument(message);
       if (documentPath == null) {
@@ -6443,9 +5649,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     } catch (e) {
       // print('[ChatScreen] Error sharing document: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to share: $e'), backgroundColor: Colors.red),
-        );
+        OpaqueToast.error(context, 'Failed to share: $e');
       }
     }
   }
@@ -6598,12 +5802,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     final targetIndex = messages.indexWhere((m) => m.id == targetMessageId);
     if (targetIndex == -1) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Original message not found in this chat'),
-            duration: Duration(seconds: 2),
-          ),
-        );
+        OpaqueToast.info(context, 'Original message not found in this chat');
       }
       return;
     }
@@ -6728,39 +5927,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
 
   void _showMessageInfo(Message message) {
-    showDialog(
-      context: context,
-      builder: (context) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        child: Container(
-          padding: const EdgeInsets.all(24),
-          decoration: BoxDecoration(
-            color: Colors.grey[50], // Changed from gradient to light gray
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF00ACC1), Color(0xFF0097A7)], // Cyan to match AppBar
-                      ),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(Icons.info_outline, color: Colors.white, size: 24),
-                  ),
-                  const SizedBox(width: 12),
-                  const Text(
-                    'Message Info',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 24),
+    showDialog(context: context, builder: (context) => OpaqueChatDialog(
+      title: const Text('Message info'),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
               _buildInfoItem(
                 Icons.send,
                 'Sent',
@@ -6781,81 +5950,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                   DateFormat('MMM dd, yyyy').format(message.timestamp.add(const Duration(minutes: 2)).toLocal()),
                   DateFormat('hh:mm a').format(message.timestamp.add(const Duration(minutes: 2)).toLocal()),
                 ),
-              const SizedBox(height: 16),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  style: TextButton.styleFrom(
-                    backgroundColor: const Color(0xFF667EEA),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: const Text('Close'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+
+      ]),
+      actions: [TextButton(onPressed: () => Navigator.pop(context),
+        child: const Text('Close'))],
+    ));
   }
 
   Widget _buildInfoItem(IconData icon, String label, String date, String time) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: const Color(0xFF667EEA).withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(icon, color: const Color(0xFF667EEA), size: 20),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black87,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  '$date at $time',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: Colors.grey[600],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
+    final c = _chatColors;
+    return Padding(padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(children: [
+        Icon(icon, size: 19, color: c.accent),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: c.text(13, bold: true)),
+          const SizedBox(height: 4),
+          Text('$date at $time', style: c.text(12, muted: true)),
+        ])),
+      ]));
   }
 
   Widget _infoRow(String label, String value) {
@@ -6880,20 +5993,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   void _showDeleteDialog(Message message) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      builder: (context) => OpaqueChatDialog(
         title: const Text(
-          'Delete message?',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.black87),
+          'Delete message?'
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
               contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.person_outline, color: Colors.orange),
-              title: const Text('Delete for me', style: TextStyle(color: Colors.black87)),
+              leading: Icon(Icons.person_outline, color: _chatColors.muted),
+              title: const Text('Delete for me'),
               onTap: () {
                 Navigator.pop(context);
                 _deleteMessage(message, 'delete_for_me');
@@ -6901,8 +6011,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
             ),
             ListTile(
               contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.group_outlined, color: Colors.red),
-              title: const Text('Delete for everyone', style: TextStyle(color: Colors.black87)),
+              leading: Icon(Icons.group_outlined, color: _chatDanger),
+              title: const Text('Delete for everyone'),
               onTap: () {
                 Navigator.pop(context);
                 _showDeleteForEveryoneConfirmation(message);
@@ -6913,7 +6023,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            style: TextButton.styleFrom(foregroundColor: Colors.grey[700]),
+            style: TextButton.styleFrom(foregroundColor: _chatColors.muted),
             child: const Text('Cancel'),
           ),
         ],
@@ -6924,21 +6034,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   void _showDeleteForEveryoneConfirmation(Message message) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      builder: (context) => OpaqueChatDialog(
         title: const Text(
-          'Delete for everyone?',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.black87),
+          'Delete for everyone?'
         ),
         content: const Text(
-          'This message will be deleted for all participants.',
-          style: TextStyle(color: Colors.black87),
+          'This message will be deleted for all participants.'
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            style: TextButton.styleFrom(foregroundColor: Colors.grey[700]),
+            style: TextButton.styleFrom(foregroundColor: _chatColors.muted),
             child: const Text('Cancel'),
           ),
           TextButton(
@@ -6946,7 +6052,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
               Navigator.pop(context);
               _deleteMessage(message, 'delete_for_everyone');
             },
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            style: TextButton.styleFrom(foregroundColor: _chatDanger, backgroundColor: _chatDanger.withValues(alpha: 0.10)),
             child: const Text('Delete'),
           ),
         ],
@@ -6970,9 +6076,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       }
     } else {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to delete message')),
-        );
+        OpaqueToast.error(context, 'Failed to delete message');
       }
     }
   }
@@ -7135,28 +6239,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
     final deletionType = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      builder: (context) => OpaqueChatDialog(
         title: Text(
-          'Delete ${_selectedMessageIds.length} messages?',
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.black87),
+          'Delete ${_selectedMessageIds.length} messages?'
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
               contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.person_outline, color: Colors.orange),
-              title: const Text('Delete for me', style: TextStyle(color: Colors.black87)),
+              leading: Icon(Icons.person_outline, color: _chatColors.muted),
+              title: const Text('Delete for me'),
               onTap: () => Navigator.of(context).pop('delete_for_me'),
             ),
             // Only show "Delete for everyone" if ALL selected messages are own messages
             if (allOwnMessages)
               ListTile(
                 contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.group_outlined, color: Colors.red),
-                title: const Text('Delete for everyone', style: TextStyle(color: Colors.black87)),
+                leading: Icon(Icons.group_outlined, color: _chatDanger),
+                title: const Text('Delete for everyone'),
                 onTap: () => Navigator.of(context).pop('delete_for_everyone'),
               ),
           ],
@@ -7164,7 +6265,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
-            style: TextButton.styleFrom(foregroundColor: Colors.grey[700]),
+            style: TextButton.styleFrom(foregroundColor: _chatColors.muted),
             child: const Text('Cancel'),
           ),
         ],
@@ -7176,26 +6277,22 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     if (deletionType == 'delete_for_everyone') {
       final confirmed = await showDialog<bool>(
         context: context,
-        builder: (context) => AlertDialog(
-          backgroundColor: Colors.white,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        builder: (context) => OpaqueChatDialog(
           title: const Text(
-            'Delete for everyone?',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.black87),
+            'Delete for everyone?'
           ),
           content: const Text(
-            'These messages will be deleted for all participants.',
-            style: TextStyle(color: Colors.black87),
+            'These messages will be deleted for all participants.'
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(false),
-              style: TextButton.styleFrom(foregroundColor: Colors.grey[700]),
+              style: TextButton.styleFrom(foregroundColor: _chatColors.muted),
               child: const Text('Cancel'),
             ),
             TextButton(
               onPressed: () => Navigator.of(context).pop(true),
-              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              style: TextButton.styleFrom(foregroundColor: _chatDanger, backgroundColor: _chatDanger.withValues(alpha: 0.10)),
               child: const Text('Delete'),
             ),
           ],
@@ -7226,33 +6323,28 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     _clearSelection();
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('$successCount of ${idsToDelete.length} messages deleted'),
-          backgroundColor: successCount == idsToDelete.length ? const Color(0xFF00ACC1) : Colors.orange,
-        ),
-      );
+      if (successCount == idsToDelete.length) {
+        OpaqueToast.success(context, '$successCount messages deleted');
+      } else {
+        OpaqueToast.warning(context, '$successCount of ${idsToDelete.length} messages deleted');
+      }
     }
   }
 
   void _showDeletedMessageOptions(Message message) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      builder: (context) => OpaqueChatDialog(
         title: const Text(
-          'Remove deleted message?',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.black87),
+          'Remove deleted message?'
         ),
         content: const Text(
-          'This will permanently remove this message from your view.',
-          style: TextStyle(color: Colors.black87),
+          'This will permanently remove this message from your view.'
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            style: TextButton.styleFrom(foregroundColor: Colors.grey[700]),
+            style: TextButton.styleFrom(foregroundColor: _chatColors.muted),
             child: const Text('Cancel'),
           ),
           TextButton(
@@ -7260,7 +6352,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
               Navigator.pop(context);
               _removeDeletedMessage(message.id);
             },
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            style: TextButton.styleFrom(foregroundColor: _chatDanger, backgroundColor: _chatDanger.withValues(alpha: 0.10)),
             child: const Text('Remove'),
           ),
         ],
@@ -7304,19 +6396,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   // Share media message (image/video/document)
   Future<void> _shareMediaMessage(Message message) async {
     if (!message.hasAttachment || message.attachmentId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No media to share'), backgroundColor: Colors.red),
-      );
+      OpaqueToast.error(context, 'No media to share');
       return;
     }
 
     try {
-      // Show loading
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Preparing to share...'), duration: Duration(seconds: 2)),
-        );
-      }
 
       if (message.attachmentType == 'image') {
         // Share image
@@ -7363,9 +6447,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     } catch (e) {
       // print('[ChatScreen] Error sharing media: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to share: $e'), backgroundColor: Colors.red),
-        );
+        OpaqueToast.error(context, 'Failed to share: $e');
       }
     }
   }
@@ -7384,12 +6466,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     _clearSelection();
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Message(s) copied'),
-          backgroundColor: Color(0xFF1976D2), // Changed to blue
-        ),
-      );
+      OpaqueToast.show(context, 'Message copied');
     }
   }
 
@@ -7432,7 +6509,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   Widget _buildHighlightedText(String text, bool isMe, String styleKey) {
     // Determine text color based on style
     final textColor = styleKey == 'modern_card'
-        ? Colors.black87
+        ? _chatColors.ink
         : (isMe ? Colors.white : Theme.of(context).brightness == Brightness.dark ? const Color(0xFFDCE3EF) : const Color(0xFF353943));
 
     // If not searching or no query, show text with clickable links
@@ -7495,8 +6572,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         text: text.substring(index, index + _searchQuery.length),
         style: TextStyle(
           fontSize: 13, height: 1.6,
-          color: textColor,
-          backgroundColor: Colors.yellow.withOpacity(0.7),
+          color: const Color(0xFF182C4B), backgroundColor: const Color(0xFFC6DDFB),
           fontWeight: FontWeight.bold,
         ),
       ));
@@ -7504,8 +6580,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       start = index + _searchQuery.length;
     }
 
-    return RichText(
-      text: TextSpan(children: spans),
+    return Text.rich(TextSpan(children: spans),
     );
   }
 
@@ -7543,23 +6618,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   // ============================================
 
   /// Toggle mute notifications
+  Future<void> _loadMutePreference() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() => _isNotificationsMuted = prefs.getBool('muted_${widget.conversationInfo.conversationId}') ?? false);
+  }
+
   Future<void> _toggleMuteNotifications() async {
-    // TODO: Implement proper mute state storage
     final prefs = await SharedPreferences.getInstance();
     final key = 'muted_${widget.conversationInfo.conversationId}';
-    final isMuted = prefs.getBool(key) ?? false;
-
-    await prefs.setBool(key, !isMuted);
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(isMuted ? 'Notifications unmuted' : 'Notifications muted'),
-          backgroundColor: isMuted ? Colors.green : Colors.orange,
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    }
+    final muted = !(prefs.getBool(key) ?? false);
+    await prefs.setBool(key, muted);
+    if (!mounted) return;
+    setState(() => _isNotificationsMuted = muted);
+    OpaqueToast.show(context, muted ? 'Notifications muted' : 'Notifications unmuted');
   }
 
   /// Load wallpaper from SharedPreferences
@@ -7679,104 +6751,44 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
   /// Show wallpaper picker dialog
   void _showWallpaperPicker() {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
+    showDialog(context: context, builder: (dialogContext) => OpaqueChatDialog(
+      title: const Text('Chat wallpaper'),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        ListTile(contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.photo_library_outlined, color: _chatColors.accent),
+          title: const Text('Choose from gallery'),
+          subtitle: const Text('Use a photo for this conversation'),
+          onTap: () { Navigator.pop(dialogContext); _pickWallpaperFromGallery(); }),
+        Divider(height: 20, color: _chatColors.line),
+        ListTile(contentPadding: EdgeInsets.zero,
+          leading: Container(width: 32, height: 32, decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(9), border: Border.all(color: _chatColors.line),
+            gradient: const LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight,
+              colors: [Color(0xFFFAFBFE), Color(0xFF141A23)], stops: [0.5, 0.5]))),
+          title: const Text('Default'), subtitle: const Text('Follows your app’s light or dark theme'),
+          trailing: _chatBackgroundImage == null && !_hasCustomWallpaperColor
+            ? Icon(Icons.check_rounded, size: 20, color: _chatColors.accent) : null,
+          onTap: () { Navigator.pop(dialogContext); _resetChatWallpaper(); }),
+      ]),
+      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel'))],
+    ));
+  }
 
-    final dialogPadding = (screenWidth * 0.04).clamp(12.0, 20.0);
-    final titleFontSize = (screenWidth * 0.045).clamp(16.0, 20.0);
-    final descFontSize = (screenWidth * 0.035).clamp(12.0, 16.0);
-    final galleryFontSize = (screenWidth * 0.038).clamp(14.0, 17.0);
-    final iconSize = (screenWidth * 0.055).clamp(20.0, 26.0);
-    final spacing1 = (screenHeight * 0.015).clamp(10.0, 16.0);
-    final spacing2 = (screenHeight * 0.01).clamp(8.0, 12.0);
-    final wrapSpacing = (screenWidth * 0.025).clamp(8.0, 12.0);
-    final optionSize = (screenWidth * 0.18).clamp(65.0, 85.0);
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(
-          'Change Wallpaper',
-          style: TextStyle(fontSize: titleFontSize),
-        ),
-        contentPadding: EdgeInsets.fromLTRB(dialogPadding, dialogPadding, dialogPadding, 0),
-        content: SingleChildScrollView(
-          child: SizedBox(
-            width: screenWidth * 0.85,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Choose a background for this chat',
-                  style: TextStyle(fontSize: descFontSize),
-                ),
-                SizedBox(height: spacing1),
-                // Gallery option
-                InkWell(
-                  onTap: () async {
-                    Navigator.pop(context);
-                    await _pickWallpaperFromGallery();
-                  },
-                  child: Container(
-                    padding: EdgeInsets.all(dialogPadding * 0.8),
-                    decoration: BoxDecoration(
-                      color: Colors.blue[50],
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.blue[200]!, width: 2),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.image, color: Colors.blue[700], size: iconSize),
-                        SizedBox(width: spacing2),
-                        Flexible(
-                          child: Text(
-                            'Choose from Gallery',
-                            style: TextStyle(
-                              fontSize: galleryFontSize,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.blue[900],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                SizedBox(height: spacing1),
-                Text(
-                  'Or choose a color:',
-                  style: TextStyle(fontSize: descFontSize * 0.9, color: Colors.grey),
-                ),
-                SizedBox(height: spacing2),
-                Wrap(
-                  spacing: wrapSpacing,
-                  runSpacing: wrapSpacing,
-                  children: [
-                    _buildWallpaperOption(const Color(0xFFECE5DD), 'Default', optionSize),
-                    _buildWallpaperOption(const Color(0xFF000000), 'Dark Black', optionSize),
-                    _buildWallpaperOption(const Color(0xFFE8F5E9), 'Green', optionSize),
-                    _buildWallpaperOption(const Color(0xFFE3F2FD), 'Blue', optionSize),
-                    _buildWallpaperOption(const Color(0xFFFFF3E0), 'Orange', optionSize),
-                    _buildWallpaperOption(const Color(0xFFF3E5F5), 'Purple', optionSize),
-                    _buildWallpaperOption(const Color(0xFFFFEBEE), 'Pink', optionSize),
-                  ],
-                ),
-                SizedBox(height: spacing2),
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-        ],
-      ),
-    );
+  Future<void> _resetChatWallpaper() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final id = widget.conversationInfo.conversationId;
+      await prefs.remove('wallpaper_image_$id');
+      await prefs.remove('wallpaper_$id');
+      if (!mounted) return;
+      setState(() {
+        _chatBackgroundImage = null; _hasCustomWallpaperColor = false;
+        _chatBackgroundColor = const Color(0xFFFAFBFE);
+      });
+      OpaqueToast.success(context, 'Wallpaper follows app theme');
+    } catch (_) {
+      if (mounted) OpaqueToast.error(context, 'Failed to reset wallpaper');
+    }
   }
 
   /// Pick wallpaper image from gallery
@@ -7798,104 +6810,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         setState(() {
           _chatBackgroundImage = pickedFile.path;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Wallpaper changed successfully'),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 2),
-          ),
-        );
+        OpaqueToast.success(context, 'Wallpaper changed successfully');
       }
     } catch (e) {
       // print('[ChatScreen] Error picking wallpaper: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to set wallpaper: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to set wallpaper: $e');
       }
     }
   }
 
-  Widget _buildWallpaperOption(Color color, String name, double size) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final nameFontSize = (screenWidth * 0.028).clamp(9.0, 13.0);
 
-    return InkWell(
-      onTap: () async {
-        final prefs = await SharedPreferences.getInstance();
-        final conversationId = widget.conversationInfo.conversationId;
-
-        // Save color and remove image
-        await prefs.setInt('wallpaper_$conversationId', color.value);
-        await prefs.remove('wallpaper_image_$conversationId');
-
-        if (mounted) {
-          setState(() {
-            _chatBackgroundColor = color; _hasCustomWallpaperColor = true;
-            _chatBackgroundImage = null;
-          });
-          Navigator.pop(context);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Wallpaper changed to $name'),
-              backgroundColor: Colors.green,
-              duration: const Duration(seconds: 2),
-            ),
-          );
-        }
-      },
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: color,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.grey[300]!, width: 2),
-        ),
-        child: Center(
-          child: Text(
-            name,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: nameFontSize,
-              fontWeight: FontWeight.w600,
-              color: color.computeLuminance() < 0.5 ? Colors.white : Colors.black87,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 
   /// Show clear chat confirmation dialog
   void _showClearChatDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Clear Chat'),
-        content: const Text(
-          'Are you sure you want to delete all messages in this chat? This action cannot be undone.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              await _clearChat();
-            },
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Clear'),
-          ),
-        ],
-      ),
-    );
+
+    showDialog(context: context, builder: (context) => OpaqueChatConfirmation(
+      icon: Icons.delete_sweep_outlined, title: 'Clear this chat?', description: 'Remove the message history for this conversation from this device.',
+      note: 'This cannot be undone. Other participants keep their copies.', actionLabel: 'Clear chat',
+      onConfirm: () async { Navigator.pop(context); await _clearChat(); },
+    ));
   }
 
   Future<void> _clearChat() async {
@@ -7910,23 +6844,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       chatProvider.clearMessages();
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Chat cleared successfully'),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 2),
-          ),
-        );
+        OpaqueToast.success(context, 'Chat cleared successfully');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to clear chat: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 3),
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to clear chat: $e');
       }
     }
   }
@@ -7934,31 +6856,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   /// Show block user confirmation dialog
   void _showBlockUserDialog() {
     if (_recipientUid == null) return;
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Block User'),
-        content: Text(
-          'Are you sure you want to block ${widget.conversationInfo.chatTitle}? You will no longer receive messages from this user.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              await _blockUser();
-            },
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Block'),
-          ),
-        ],
-      ),
-    );
+    showDialog(context: context, builder: (context) => OpaqueChatConfirmation(
+      icon: Icons.block_rounded, title: 'Block this person?', description: 'You will no longer receive messages from ${widget.conversationInfo.chatTitle}.',
+      note: 'You can unblock them anytime from the chat menu.', actionLabel: 'Block user',
+      onConfirm: () async { Navigator.pop(context); await _blockUser(); },
+    ));
   }
 
   Future<void> _blockUser() async {
@@ -7976,25 +6878,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       await _loadBlockedUsers();
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('${widget.conversationInfo.chatTitle} has been blocked. You can unblock from menu.'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 3),
-          ),
-        );
+        OpaqueToast.warning(context, '${widget.conversationInfo.chatTitle} has been blocked');
         // Don't navigate away - let user unblock if they want
         setState(() {}); // Force rebuild to update menu
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to block user: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 3),
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to block user: $e');
       }
     }
   }
@@ -8013,23 +6903,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       await _loadBlockedUsers();
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('${widget.conversationInfo.chatTitle} has been unblocked'),
-            backgroundColor: Colors.green,
-            duration: const Duration(seconds: 2),
-          ),
-        );
+        OpaqueToast.success(context, '${widget.conversationInfo.chatTitle} has been unblocked');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to unblock user: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 3),
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to unblock user: $e');
       }
     }
   }

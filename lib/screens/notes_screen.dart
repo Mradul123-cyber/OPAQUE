@@ -1,6 +1,7 @@
 import '../widgets/notes_design.dart';
 import '../widgets/notes_password_sheet.dart';
 import '../widgets/opaque_navigation.dart';
+import '../widgets/opaque_toast.dart';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -66,12 +67,9 @@ class _NotesScreenState extends State<NotesScreen> {
     } catch (_) {
       if (mounted) {
         setState(() => _isUnlocked = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Could not access Notes protection. Please try again.',
-            ),
-          ),
+        OpaqueToast.error(
+          context,
+          'Could not access Notes protection. Please try again.',
         );
       }
     }

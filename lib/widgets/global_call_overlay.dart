@@ -1,5 +1,6 @@
 // lib/widgets/global_call_overlay.dart
 import 'package:flutter/material.dart';
+import 'opaque_toast.dart';
 import 'package:provider/provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
@@ -507,18 +508,18 @@ class _GlobalCallOverlayState extends State<GlobalCallOverlay> with WidgetsBindi
     if (callType == CallType.video) {
       final permissions = await [Permission.camera, Permission.microphone].request();
       if (!permissions[Permission.camera]!.isGranted || !permissions[Permission.microphone]!.isGranted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Camera and microphone permissions required')),
-        );
+        if (context.mounted) {
+          OpaqueToast.warning(context, 'Camera and microphone permissions required');
+        }
         await callManager.rejectIncomingCall();
         return;
       }
     } else {
       final micStatus = await Permission.microphone.request();
       if (!micStatus.isGranted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Microphone permission required')),
-        );
+        if (context.mounted) {
+          OpaqueToast.warning(context, 'Microphone permission required');
+        }
         await callManager.rejectIncomingCall();
         return;
       }

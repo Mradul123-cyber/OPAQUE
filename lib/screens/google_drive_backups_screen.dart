@@ -7,6 +7,7 @@ import '../widgets/backup_design.dart';
 import '../widgets/notes_design.dart';
 import '../widgets/call_aware_screen.dart';
 import 'backup_info_screen.dart';
+import '../widgets/opaque_toast.dart';
 
 /// Full screen view for browsing and managing Google Drive backups.
 class GoogleDriveBackupsScreen extends StatefulWidget {
@@ -81,31 +82,13 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
         setState(() {
           _backups.removeWhere((b) => b.id == fileId);
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Backup deleted from Google Drive'),
-            behavior: SnackBarBehavior.floating,
-            backgroundColor: Color(0xFF283241),
-          ),
-        );
+        OpaqueToast.success(context, 'Backup deleted from Google Drive');
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Failed to delete backup. Please try again.'),
-            behavior: SnackBarBehavior.floating,
-            backgroundColor: Color(0xFFBF6974),
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to delete backup');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Delete failed: $e'),
-            behavior: SnackBarBehavior.floating,
-            backgroundColor: const Color(0xFFBF6974),
-          ),
-        );
+        OpaqueToast.error(context, 'Delete failed: $e');
       }
     }
   }

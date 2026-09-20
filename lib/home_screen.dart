@@ -1,5 +1,6 @@
 import 'package:zarq_messenger/screens/backup_management_screen.dart';
 import 'widgets/opaque_navigation.dart';
+import 'widgets/opaque_toast.dart';
 import 'widgets/home_logout_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -32,7 +33,6 @@ import 'package:zarq_messenger/about_screen.dart';
 import 'package:zarq_messenger/screens/call_history_screen.dart';
 import 'package:zarq_messenger/screens/style_screen.dart';
 import 'package:zarq_messenger/widgets/call_aware_screen.dart';
-import 'package:zarq_messenger/services/overlay_permission_helper.dart';
 
 import 'package:zarq_messenger/app_config.dart';
 import 'package:zarq_messenger/widgets/opaque_header.dart';
@@ -136,8 +136,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         homeProvider.fetchInitialConversations();
       }
 
-      OverlayPermissionHelper.checkAndRequestPermission(context);
-
       final websocketService = Provider.of<WebSocketService>(
         context,
         listen: false,
@@ -220,11 +218,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
       if (!websocketService.isConnected || websocketService.channel == null) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Still connecting… Please wait a moment.'),
-            ),
-          );
+          OpaqueToast.info(context, 'Still connecting… Please wait a moment.');
         }
         return;
       }
@@ -249,12 +243,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           if (mounted) _navigateToChat(refreshedConvo);
         } catch (_) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Conversation not found or no longer exists'),
-                backgroundColor: Colors.orange,
-              ),
-            );
+            OpaqueToast.warning(context, 'Conversation not found or no longer exists');
           }
         }
       }
@@ -456,14 +445,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   void _showSnack(String msg, {bool isError = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg, style: GoogleFonts.inter()),
-        backgroundColor: isError ? Colors.red[700] : _kIndigo,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-    );
+    if (isError) {
+      OpaqueToast.error(context, msg);
+    } else {
+      OpaqueToast.info(context, msg);
+    }
   }
 
   // ─── Chat navigation ───────────────────────────────────────────────────────
@@ -719,6 +705,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
     child: SizedBox(height: 36, child: TextField(
       key: const ValueKey('home_search_bar'), controller: _searchController, focusNode: _searchFocusNode,
+      onTapOutside: (_) => _searchFocusNode.unfocus(),
+      onTap: () {
+        if (!_searchFocusNode.hasFocus) {
+          _searchFocusNode.requestFocus();
+        }
+      },
       cursorColor: const Color(0xFF73747C), style: GoogleFonts.inter(color: textColor, fontSize: 16),
       decoration: InputDecoration(
         hintText: 'Search conversations', hintStyle: GoogleFonts.inter(color: textGreyColor, fontSize: 12),
@@ -742,37 +734,47 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final comparison = (b.lastMessageTimestamp ?? DateTime(1970)).compareTo(a.lastMessageTimestamp ?? DateTime(1970));
       return comparison != 0 ? comparison : b.conversationId.compareTo(a.conversationId);
     });
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      _buildSearchBar(isDark, cardColor, textColor, textGreyColor),
-      Container(margin: const EdgeInsets.fromLTRB(20, 12, 20, 8), padding: const EdgeInsets.all(2),
-        decoration: BoxDecoration(color: isDark ? const Color(0xFF283241) : const Color(0xFFF1F2F5), borderRadius: BorderRadius.circular(16)),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [for (final filter in ['All', 'Unread', 'Groups']) Padding(
-          padding: const EdgeInsets.symmetric(horizontal: .5), child: Semantics(selected: _conversationFilter == filter, button: true,
-            child: InkWell(borderRadius: BorderRadius.circular(14), onTap: () => setState(() { _conversationFilter = filter; _addMenuOpen = false; }),
-              child: Container(constraints: const BoxConstraints(minHeight: 27, minWidth: 47), padding: const EdgeInsets.symmetric(horizontal: 12), alignment: Alignment.center,
-                decoration: BoxDecoration(color: _conversationFilter == filter ? (isDark ? const Color(0xFF354256) : Colors.white) : null, borderRadius: BorderRadius.circular(14)),
-                child: Text(filter, style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w500, color: _conversationFilter == filter ? textColor : textGreyColor))),
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onTap: () {
+        if (_searchFocusNode.hasFocus) {
+          _searchFocusNode.unfocus();
+        }
+      },
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _buildSearchBar(isDark, cardColor, textColor, textGreyColor),
+        Container(margin: const EdgeInsets.fromLTRB(20, 12, 20, 8), padding: const EdgeInsets.all(2),
+          decoration: BoxDecoration(color: isDark ? const Color(0xFF283241) : const Color(0xFFF1F2F5), borderRadius: BorderRadius.circular(16)),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [for (final filter in ['All', 'Unread', 'Groups']) Padding(
+            padding: const EdgeInsets.symmetric(horizontal: .5), child: Semantics(selected: _conversationFilter == filter, button: true,
+              child: InkWell(borderRadius: BorderRadius.circular(14), onTap: () => setState(() { _conversationFilter = filter; _addMenuOpen = false; }),
+                child: Container(constraints: const BoxConstraints(minHeight: 27, minWidth: 47), padding: const EdgeInsets.symmetric(horizontal: 12), alignment: Alignment.center,
+                  decoration: BoxDecoration(color: _conversationFilter == filter ? (isDark ? const Color(0xFF354256) : Colors.white) : null, borderRadius: BorderRadius.circular(14)),
+                  child: Text(filter, style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w500, color: _conversationFilter == filter ? textColor : textGreyColor))),
+              ),
             ),
-          ),
-        )]),
-      ),
-      Expanded(child: Stack(children: [
-        Positioned.fill(child: visible.isEmpty
-          ? Center(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 32), child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(query.isNotEmpty ? 'No matching conversations' : _conversationFilter == 'Unread' ? 'You’re all caught up' : _conversationFilter == 'Groups' ? 'Bring everyone together' : 'Your conversations start here',
-                  textAlign: TextAlign.center, style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600, color: textColor)),
-                const SizedBox(height: 8),
-                Text(query.isNotEmpty ? 'Try searching for a different name.' : _conversationFilter == 'Unread' ? 'New unread messages will appear here.' : _conversationFilter == 'Groups' ? 'Tap + to create a group and start chatting.' : 'Tap + to find a friend and start chatting.',
-                  textAlign: TextAlign.center, style: GoogleFonts.inter(fontSize: 12, height: 1.7, color: textGreyColor)),
-              ],
-            )))
-          : ListView.builder(padding: EdgeInsets.fromLTRB(MediaQuery.sizeOf(context).width < 350 ? 9 : 15, 0, MediaQuery.sizeOf(context).width < 350 ? 9 : 15, 80),
-              itemCount: visible.length, itemBuilder: (context, index) => _buildConversationTile(visible[index], isDark, cardColor, textColor, textGreyColor, dividerColor))),
-        if (_addMenuOpen) Positioned.fill(child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => setState(() => _addMenuOpen = false))),
-      ])),
-    ]);
+          )]),
+        ),
+        Expanded(child: Stack(children: [
+          Positioned.fill(child: visible.isEmpty
+            ? Center(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 32), child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(query.isNotEmpty ? 'No matching conversations' : _conversationFilter == 'Unread' ? 'You’re all caught up' : _conversationFilter == 'Groups' ? 'Bring everyone together' : 'Your conversations start here',
+                    textAlign: TextAlign.center, style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600, color: textColor)),
+                  const SizedBox(height: 8),
+                  Text(query.isNotEmpty ? 'Try searching for a different name.' : _conversationFilter == 'Unread' ? 'New unread messages will appear here.' : _conversationFilter == 'Groups' ? 'Tap + to create a group and start chatting.' : 'Tap + to find a friend and start chatting.',
+                    textAlign: TextAlign.center, style: GoogleFonts.inter(fontSize: 12, height: 1.7, color: textGreyColor)),
+                ],
+              )))
+            : ListView.builder(
+                keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                padding: EdgeInsets.fromLTRB(MediaQuery.sizeOf(context).width < 350 ? 9 : 15, 0, MediaQuery.sizeOf(context).width < 350 ? 9 : 15, 80),
+                itemCount: visible.length, itemBuilder: (context, index) => _buildConversationTile(visible[index], isDark, cardColor, textColor, textGreyColor, dividerColor))),
+          if (_addMenuOpen) Positioned.fill(child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => setState(() => _addMenuOpen = false))),
+        ])),
+      ]),
+    );
   }
 
   Widget _buildConversationTile(ConversationInfo convo, bool isDark, Color cardColor, Color textColor, Color textGreyColor, Color dividerColor) {
@@ -809,7 +811,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final ws = context.read<WebSocketService>();
     setState(() => _addMenuOpen = false);
     if (!ws.isConnected || ws.channel == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Connecting... Please wait a moment.')));
+      OpaqueToast.info(context, 'Connecting... Please wait a moment.');
       return;
     }
     if (!group) {

@@ -1,5 +1,6 @@
 import 'widgets/notes_design.dart';
 import 'widgets/backup_design.dart';
+import 'widgets/opaque_toast.dart';
 // lib/setting_screen.dart
 
 import 'package:flutter/material.dart';
@@ -12,6 +13,7 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:uuid/uuid.dart';
 import 'package:zarq_messenger/screens/backup_management_screen.dart';
 import 'package:zarq_messenger/screens/style_screen.dart';
 import 'package:zarq_messenger/screens/tutorial_screen.dart';
@@ -70,6 +72,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isFriendsLoading = false;
   List<Friend> _friendsList = [];
   final _displayNameController = TextEditingController();
+  String _avatarPrivacy = 'everyone';
 
   @override
   void initState() {
@@ -174,6 +177,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _cachedDisplayName = fetchedDisplayName;
         }
 
+        final fetchedPrivacy = (data['avatar_privacy'] ?? data['avatarPrivacy']) as String?;
+        if (fetchedPrivacy != null && fetchedPrivacy.isNotEmpty && _avatarPrivacy != fetchedPrivacy) {
+          _avatarPrivacy = fetchedPrivacy;
+          changed = true;
+        }
+
         final uid = user.uid;
         _cachedUid = uid;
 
@@ -225,53 +234,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final imagePicker = ImagePicker();
     final pickedFile = await imagePicker.pickImage(
       source: ImageSource.gallery,
-      imageQuality: 70,
-      maxWidth: 800,
+      imageQuality: 75,
+      maxWidth: 400,
+      maxHeight: 400,
     );
     if (pickedFile == null) return;
 
     setState(() => _isUploading = true);
 
     try {
-      final userId = _currentUser!.uid;
-      final storageRef = FirebaseStorage.instance.ref().child(
-        'profile_pictures/$userId/avatar.jpg',
+      // Delete old avatar from Firebase Storage if replacing
+      if (_avatarUrl != null && _avatarUrl!.contains('firebasestorage.googleapis.com')) {
+        try {
+          await FirebaseStorage.instance.refFromURL(_avatarUrl!).delete();
+        } catch (_) {}
+      }
+
+      // Generate opaque random UUID to completely hide Firebase UID from CDN URL
+      final avatarId = const Uuid().v4();
+      final storageRef = FirebaseStorage.instance.ref().child('avatars/$avatarId.jpg');
+      final metadata = SettableMetadata(
+        contentType: 'image/jpeg',
+        cacheControl: 'public, max-age=31536000',
       );
 
+      String downloadUrl;
       if (kIsWeb) {
         final bytes = await pickedFile.readAsBytes();
-        final uploadTask = storageRef.putData(bytes);
+        final uploadTask = storageRef.putData(bytes, metadata);
         final snapshot = await uploadTask.whenComplete(() => {});
-        final downloadUrl = await snapshot.ref.getDownloadURL();
-        await _updateAvatarUrlInBackend(downloadUrl);
-        await _currentUser!.updatePhotoURL(downloadUrl);
-        if (mounted) setState(() => _avatarUrl = downloadUrl);
+        downloadUrl = await snapshot.ref.getDownloadURL();
       } else {
         final file = File(pickedFile.path);
-        final uploadTask = storageRef.putFile(file);
+        final uploadTask = storageRef.putFile(file, metadata);
         final snapshot = await uploadTask.whenComplete(() => {});
-        final downloadUrl = await snapshot.ref.getDownloadURL();
-        await _updateAvatarUrlInBackend(downloadUrl);
-        await _currentUser!.updatePhotoURL(downloadUrl);
-        if (mounted) setState(() => _avatarUrl = downloadUrl);
+        downloadUrl = await snapshot.ref.getDownloadURL();
       }
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Profile picture updated!'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
+      await _updateAvatarUrlInBackend(downloadUrl);
+      await _currentUser!.updatePhotoURL(downloadUrl);
+      if (mounted) setState(() => _avatarUrl = downloadUrl);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to upload image: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to upload image: $e');
       }
     } finally {
       if (mounted) setState(() => _isUploading = false);
@@ -294,6 +299,87 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (response.statusCode != 200) {
       throw Exception('Failed to update avatar in backend: ${response.body}');
     }
+  }
+
+  Future<void> _updateAvatarPrivacy(String newSetting) async {
+    try {
+      final token = await _currentUser?.getIdToken();
+      if (token == null) return;
+      final response = await http.post(
+        Uri.parse('${AppConfig.baseUrl}/profile/privacy/avatar'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: json.encode({'avatarPrivacy': newSetting}),
+      );
+      if (response.statusCode == 200) {
+        setState(() {
+          _avatarPrivacy = newSetting;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        OpaqueToast.error(context, 'Failed to update privacy: $e');
+      }
+    }
+  }
+
+  void _showAvatarPrivacyDialog() {
+    final c = NotesColors(context);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        Widget option(String title, String subtitle, String value) {
+          final isSelected = _avatarPrivacy == value;
+          return InkWell(
+            onTap: () {
+              Navigator.pop(ctx);
+              _updateAvatarPrivacy(value);
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+              decoration: BoxDecoration(
+                border: Border(bottom: BorderSide(color: c.line)),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(title, style: c.text(13, bold: isSelected)),
+                        const SizedBox(height: 3),
+                        Text(subtitle, style: c.text(10, muted: true)),
+                      ],
+                    ),
+                  ),
+                  if (isSelected)
+                    Icon(Icons.check_circle, color: c.ink, size: 18)
+                  else
+                    Icon(Icons.radio_button_unchecked, color: c.muted, size: 18),
+                ],
+              ),
+            ),
+          );
+        }
+
+        return NotesSheet(
+          title: 'Profile photo privacy',
+          description: 'Choose who can see your profile photo.',
+          showIcon: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              option('Everyone', 'Any user on Opaque can see your photo', 'everyone'),
+              option('My Contacts', 'Only accepted friends can see your photo', 'contacts'),
+              option('Nobody', 'No one can see your photo', 'nobody'),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _fetchFriendsList() async {
@@ -324,12 +410,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error fetching friends: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        OpaqueToast.error(context, 'Error fetching friends: $e');
       }
     } finally {
       if (mounted) {
@@ -353,23 +434,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       try {
         await _currentUser?.updateDisplayName(newName);
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Display name updated successfully!'),
-              backgroundColor: Colors.green,
-            ),
-          );
           setState(() {});
           Navigator.of(context).pop();
         }
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to update name: $e'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          OpaqueToast.error(context, 'Failed to update name: $e');
         }
       }
     }
@@ -378,12 +448,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _updateUserDisplayName() async {
     final newDisplayName = _displayNameController.text.trim();
     if (newDisplayName.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Display name cannot be empty'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      OpaqueToast.error(context, 'Display name cannot be empty');
       return;
     }
 
@@ -412,29 +477,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         setState(() {
           _displayName = newDisplayName;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Display name updated successfully!'),
-            backgroundColor: Colors.green,
-          ),
-        );
         Navigator.of(context).pop();
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to update display name: ${response.body}'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to update display name: ${response.body}');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error updating display name: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        OpaqueToast.error(context, 'Error updating display name: $e');
       }
     }
   }
@@ -1066,6 +1115,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 'Manage display-over-other-apps permission',
                 () => OverlayPermissionHelper.requestPermission(context),
               ),
+              label('PRIVACY'),
+              row(
+                Icons.lock_outline,
+                'Profile photo privacy',
+                _avatarPrivacy == 'nobody'
+                    ? 'Nobody'
+                    : _avatarPrivacy == 'contacts'
+                        ? 'My contacts'
+                        : 'Everyone',
+                _showAvatarPrivacyDialog,
+              ),
               label('BACKUP & RESTORE'),
               row(
                 Icons.folder_outlined,
@@ -1667,12 +1727,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               isDeleting = false;
                             });
                             if (dialogContext.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('Failed to delete account: $e'),
-                                  backgroundColor: Colors.red,
-                                ),
-                              );
+                              OpaqueToast.error(context, 'Failed to delete account: $e');
                             }
                           }
                         },

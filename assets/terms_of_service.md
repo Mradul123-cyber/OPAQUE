@@ -1,20 +1,20 @@
-# Terms of Service for Zarq Messenger
+# Terms of Service for OPAQUE
 
-**Last Updated:** October 7, 2025
+**Last Updated:** September 20, 2026
 
 ---
 
-## Welcome to Zarq Messenger
+## Welcome to OPAQUE
 
-These Terms of Service ("Terms") govern your use of Zarq Messenger, a secure messaging application developed by an independent developer in India.
+These Terms of Service ("Terms") govern your use of OPAQUE, a secure messaging application developed by an independent developer in India.
 
-By using Zarq Messenger, you agree to these Terms. If you don't agree, please don't use the app.
+Using OPAQUE requires your agreement to these Terms. If you have questions or concerns, contact us at opaquelabs.in@gmail.com before continuing.
 
 ---
 
 ## 1. Acceptance of Terms
 
-By creating an account or using Zarq Messenger, you agree to:
+By creating an account or using OPAQUE, you agree to:
 - These Terms of Service
 - Our Privacy Policy
 - All applicable laws and regulations
@@ -29,7 +29,7 @@ By creating an account or using Zarq Messenger, you agree to:
 
 ### Age Requirements
 
-- You must be at least **13 years old** to use Zarq Messenger
+- You must be at least **13 years old** to use OPAQUE
 - Users between 13-18 must have parental/guardian consent
 - We reserve the right to verify age and request proof if needed
 
@@ -66,7 +66,7 @@ When you create an account:
 ### Account Termination
 
 **You can:**
-- Delete your account at any time from Settings
+- Request account deletion at any time by emailing opaquelabs.in@gmail.com
 - Stop using the service without penalty
 
 **We can:**
@@ -80,7 +80,7 @@ When you create an account:
 
 ### You MAY:
 
-✅ Use Zarq Messenger for personal communication
+✅ Use OPAQUE for personal communication
 ✅ Send messages, photos, videos, and files
 ✅ Make voice and video calls
 ✅ Create and join group conversations
@@ -126,14 +126,14 @@ When you create an account:
 - Photos, videos, and files you upload
 - Your profile information
 
-**By using Zarq Messenger, you grant us:**
+**By using OPAQUE, you grant us:**
 - License to store and transmit your content (to provide the service)
 - Right to delete illegal or violating content
 - **Note:** We cannot read your messages due to end-to-end encryption
 
 ### Our Intellectual Property
 
-**Zarq Messenger owns:**
+**OPAQUE owns:**
 - The app name, logo, and branding
 - The software code and design
 - All features and functionality
@@ -191,7 +191,7 @@ We reserve the right to:
 
 ## 8. Third-Party Services
 
-Zarq Messenger uses:
+OPAQUE uses:
 - **Firebase** (Google) for authentication
 - **Firebase Cloud Messaging** for push notifications
 
@@ -238,7 +238,7 @@ We are not liable for:
 
 ## 10. Indemnification
 
-You agree to indemnify and hold harmless Zarq Messenger from:
+You agree to indemnify and hold harmless OPAQUE from:
 - Your violations of these Terms
 - Your violation of any law or rights of others
 - Your use or misuse of the service
@@ -283,9 +283,9 @@ If you don't agree with changes:
 
 ### By You
 
-You can stop using Zarq Messenger at any time by:
+You can stop using OPAQUE at any time by:
 - Deleting the app
-- Deleting your account (Settings → Delete Account)
+- Requesting account deletion by emailing opaquelabs.in@gmail.com with your OPAQUE username and the subject "Account deletion"
 
 ### By Us
 
@@ -306,7 +306,7 @@ We may terminate or suspend your account if:
 
 ### Entire Agreement
 
-These Terms, along with our Privacy Policy, constitute the entire agreement between you and Zarq Messenger.
+These Terms, along with our Privacy Policy, constitute the entire agreement between you and OPAQUE.
 
 ### Severability
 
@@ -332,7 +332,7 @@ We are not liable for failures due to circumstances beyond our control (natural 
 
 **Email:** opaquelabs.in@gmail.com
 
-**Developer:** Zarq Messenger (Independent Developer, India)
+**Developer:** OPAQUE (Independent Developer, India)
 
 **Response Time:** We aim to respond within 7 business days.
 
@@ -340,12 +340,12 @@ We are not liable for failures due to circumstances beyond our control (natural 
 
 ## 16. Acknowledgment
 
-By using Zarq Messenger, you acknowledge that:
+By using OPAQUE, you acknowledge that:
 - You have read and understood these Terms
 - You agree to be bound by these Terms
 - You are legally able to enter into this agreement
 
-**If you do not agree to these Terms, do not use Zarq Messenger.**
+**Your use of OPAQUE is subject to your agreement to these Terms. For clarification or help closing your account, email opaquelabs.in@gmail.com.**
 
 ---
 
@@ -363,10 +363,10 @@ In simple terms:
 
 ---
 
-**Zarq Messenger - Zero-access Authenticated Real-time Query**
+**OPAQUE**
 
 *Your messages. Zero access. Total privacy.*
 
 ---
 
-**Thank you for using Zarq Messenger! 🔐**
+**Thank you for using OPAQUE! 🔐**

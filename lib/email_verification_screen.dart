@@ -5,6 +5,7 @@ import 'starfield_background.dart';
 import 'profile_setup_screen.dart';
 import 'register_screen.dart';
 import 'main.dart';
+import 'widgets/opaque_toast.dart';
 
 class EmailVerificationScreen extends StatefulWidget {
   final User user;
@@ -74,34 +75,12 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
       } else {
         // Not verified yet
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Row(
-                children: [
-                  Icon(Icons.info_outline, color: Colors.white),
-                  SizedBox(width: 12),
-                  Expanded(
-                    child: Text('Email not verified yet. Please check your inbox.'),
-                  ),
-                ],
-              ),
-              backgroundColor: Colors.orange,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-          );
+          OpaqueToast.warning(context, 'Email not verified yet. Please check your inbox.');
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error checking verification: $e'),
-            backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-        );
+        OpaqueToast.error(context, 'Error checking verification: $e');
       }
     }
 
@@ -151,22 +130,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
       await widget.user.sendEmailVerification();
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Row(
-              children: [
-                Icon(Icons.check_circle, color: Colors.white),
-                SizedBox(width: 12),
-                Expanded(
-                  child: Text('Verification email sent! Please check your inbox.'),
-                ),
-              ],
-            ),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-        );
+        OpaqueToast.success(context, 'Verification email sent! Check your inbox.');
 
         // Disable resend button for 60 seconds
         setState(() {
@@ -190,22 +154,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                const Icon(Icons.error, color: Colors.white),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text('Failed to send email: ${e.toString()}'),
-                ),
-              ],
-            ),
-            backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to send email: ${e.toString()}');
       }
     }
   }
@@ -444,22 +393,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
         }
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  const Icon(Icons.error, color: Colors.white),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text('Could not cancel: ${e.toString()}'),
-                  ),
-                ],
-              ),
-              backgroundColor: Colors.red,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-          );
+          OpaqueToast.error(context, 'Could not cancel: ${e.toString()}');
         }
       }
     }

@@ -9,7 +9,9 @@ import 'package:zarq_messenger/starfield_background.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
+import 'package:uuid/uuid.dart';
 import 'package:zarq_messenger/app_config.dart';
+import 'widgets/opaque_toast.dart';
 
 class ProfileSetupScreen extends StatefulWidget {
   final User user;
@@ -223,12 +225,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
         }
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Could not cancel registration: $e'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          OpaqueToast.error(context, 'Could not cancel registration: $e');
         }
       }
     }
@@ -238,8 +235,9 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     final ImagePicker picker = ImagePicker();
     final XFile? pickedFile = await picker.pickImage(
       source: ImageSource.gallery,
-      imageQuality: 70,
-      maxWidth: 800,
+      imageQuality: 75,
+      maxWidth: 400,
+      maxHeight: 400,
     );
 
     if (pickedFile == null) return;
@@ -249,20 +247,31 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     });
 
     try {
-      final storageRef = FirebaseStorage.instance.ref().child(
-        'profile_pictures/${widget.user.uid}/avatar.jpg',
+      // Delete old avatar from Firebase Storage if replacing
+      if (_avatarUrl != null && _avatarUrl!.contains('firebasestorage.googleapis.com')) {
+        try {
+          await FirebaseStorage.instance.refFromURL(_avatarUrl!).delete();
+        } catch (_) {}
+      }
+
+      // Generate opaque random UUID to completely hide Firebase UID from CDN URL
+      final avatarId = const Uuid().v4();
+      final storageRef = FirebaseStorage.instance.ref().child('avatars/$avatarId.jpg');
+      final metadata = SettableMetadata(
+        contentType: 'image/jpeg',
+        cacheControl: 'public, max-age=31536000',
       );
 
       String downloadUrl;
       if (kIsWeb) {
         final bytes = await pickedFile.readAsBytes();
         _webImage = bytes;
-        final uploadTask = storageRef.putData(bytes);
+        final uploadTask = storageRef.putData(bytes, metadata);
         final snapshot = await uploadTask;
         downloadUrl = await snapshot.ref.getDownloadURL();
       } else {
         _imageFile = File(pickedFile.path);
-        final uploadTask = storageRef.putFile(_imageFile!);
+        final uploadTask = storageRef.putFile(_imageFile!, metadata);
         final snapshot = await uploadTask;
         downloadUrl = await snapshot.ref.getDownloadURL();
       }
@@ -272,19 +281,12 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
         _isUploading = false;
       });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Avatar uploaded successfully!')),
-      );
+      OpaqueToast.success(context, 'Avatar uploaded successfully');
     } catch (e) {
       setState(() {
         _isUploading = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to upload avatar: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      OpaqueToast.error(context, 'Failed to upload avatar: $e');
     }
   }
 

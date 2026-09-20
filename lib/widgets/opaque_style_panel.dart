@@ -44,9 +44,9 @@ class OpaqueStylePanel extends StatelessWidget {
     final tint = dark ? const Color(0xFF252E3B) : const Color(0xFFF3F5F9);
     final line = dark ? const Color(0xFF303947) : const Color(0xFFEDF0F5);
     final selectedTint = dark
-        ? const Color(0xFF2B3B52)
-        : const Color(0xFFEDF3FC);
-    final blue = dark ? const Color(0xFFABC9F2) : const Color(0xFF6085BA);
+        ? const Color(0xFFE3E5E9)
+        : const Color(0xFF303238);
+    final selectedInk = dark ? const Color(0xFF25272C) : const Color(0xFFF8F8FA);
 
     Widget heading(String text) => Padding(
       padding: const EdgeInsets.only(top: 18, bottom: 12),
@@ -70,11 +70,11 @@ class OpaqueStylePanel extends StatelessWidget {
             onPressed: onTap,
             style: OutlinedButton.styleFrom(
               backgroundColor: selected ? selectedTint : surface,
-              foregroundColor: selected ? blue : muted,
+              foregroundColor: selected ? selectedInk : muted,
               minimumSize: const Size(0, 40),
               padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 10),
               side: BorderSide(
-                color: selected ? blue.withValues(alpha: .3) : line,
+                color: selected ? selectedTint : line,
               ),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
@@ -88,7 +88,7 @@ class OpaqueStylePanel extends StatelessWidget {
                   const SizedBox(width: 7),
                 ],
                 Flexible(
-                  child: Text(label, style: const TextStyle(fontSize: 11)),
+                  child: Text(label, style: TextStyle(fontSize: 11, fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
                 ),
               ],
             ),
@@ -261,10 +261,10 @@ class OpaqueStylePanel extends StatelessWidget {
             onPressed: () => onOverlayChanged(circular),
             style: OutlinedButton.styleFrom(
               padding: const EdgeInsets.fromLTRB(7, 7, 7, 10),
-              backgroundColor: dark ? const Color(0xFF202731) : Colors.white,
+              backgroundColor: circularOverlay == circular ? selectedTint : surface,
               side: BorderSide(
                 color: circularOverlay == circular
-                    ? const Color(0xFFB9CEE9)
+                    ? selectedTint
                     : line,
               ),
               shape: RoundedRectangleBorder(
@@ -341,7 +341,7 @@ class OpaqueStylePanel extends StatelessWidget {
                   circular ? 'Circular bubble' : 'Horizontal bar',
                   style: TextStyle(
                     fontSize: 10,
-                    color: circularOverlay == circular ? blue : muted,
+                    color: circularOverlay == circular ? selectedInk : muted,
                   ),
                 ),
               ],

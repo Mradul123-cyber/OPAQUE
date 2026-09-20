@@ -1,20 +1,30 @@
-import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:io';
-import 'dart:ui';
-import 'package:cached_network_image/cached_network_image.dart';
-import 'package:intl/intl.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:uuid/uuid.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+
+import '../app_config.dart';
 import '../chat_screen.dart';
 import '../home_screen.dart';
-import '../services/websocket_service.dart';
 import '../providers/home_provider.dart';
-import 'package:zarq_messenger/app_config.dart';
+import '../services/user_settings_provider.dart';
+import '../services/websocket_service.dart';
+import '../widgets/backup_design.dart';
+import '../widgets/call_aware_screen.dart';
+import '../widgets/notes_design.dart';
+import '../widgets/opaque_toast.dart';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MODELS
+// ─────────────────────────────────────────────────────────────────────────────
 
 class GroupMember {
   final String uid;
@@ -40,11 +50,12 @@ class GroupMember {
       avatarUrl: json['avatarUrl'],
       displayName: json['displayName'],
       role: json['role'] ?? 'member',
-      joinedAt: DateTime.parse(json['joinedAt']),
+      joinedAt: DateTime.tryParse(json['joinedAt'] ?? '') ?? DateTime.now(),
     );
   }
 
-  String get displayNameOrUsername => displayName ?? username;
+  String get displayNameOrUsername =>
+      displayName?.trim().isNotEmpty == true ? displayName! : username;
 }
 
 class GroupInfo {
@@ -75,8 +86,8 @@ class GroupInfo {
       description: json['description'],
       creatorUid: json['creatorUid'] ?? '',
       avatarUrl: json['avatarUrl'],
-      createdAt: DateTime.parse(json['createdAt']),
-      updatedAt: DateTime.parse(json['updatedAt']),
+      createdAt: DateTime.tryParse(json['createdAt'] ?? '') ?? DateTime.now(),
+      updatedAt: DateTime.tryParse(json['updatedAt'] ?? '') ?? DateTime.now(),
       members: (json['members'] as List?)
               ?.map((m) => GroupMember.fromJson(m as Map<String, dynamic>))
               .toList() ??
@@ -84,6 +95,10 @@ class GroupInfo {
     );
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
 
 class GroupInfoScreen extends StatefulWidget {
   final int groupId;
@@ -102,49 +117,53 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
   bool _isLoading = true;
   String? _currentUserUid;
   String? _currentUserRole;
-  String _memberSearchQuery = '';
   final TextEditingController _memberSearchController = TextEditingController();
+  final FocusNode _memberSearchFocusNode = FocusNode();
+  String _memberSearchQuery = '';
 
   @override
   void initState() {
     super.initState();
     _currentUserUid = FirebaseAuth.instance.currentUser?.uid;
     _fetchGroupInfo();
-    _memberSearchController.addListener(() {
+    _memberSearchController.addListener(_onSearchChanged);
+  }
+
+  void _onSearchChanged() {
+    if (mounted) {
       setState(() {
-        _memberSearchQuery = _memberSearchController.text;
+        _memberSearchQuery = _memberSearchController.text.trim();
       });
-    });
+    }
   }
 
   @override
   void dispose() {
     _memberSearchController.dispose();
+    _memberSearchFocusNode.dispose();
     super.dispose();
   }
+
+  // ─── API Methods ──────────────────────────────────────────────────────────
 
   Future<void> _fetchGroupInfo() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
       return;
     }
 
-    final token = await user.getIdToken();
-
     try {
-      final url = Uri.parse(
-          '${AppConfig.baseUrl}/groups/${widget.groupId}/info');
-      final response = await http.get(
-        url,
-        headers: {'Authorization': 'Bearer $token'},
-      );
+      final token = await user.getIdToken();
+      final url = Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/info');
+      final response = await http
+          .get(url, headers: {'Authorization': 'Bearer $token'})
+          .timeout(const Duration(seconds: 20));
 
       if (response.statusCode == 200 && mounted) {
         final data = json.decode(response.body);
         final groupInfo = GroupInfo.fromJson(data);
 
-        // Find current user's role
         final currentMember = groupInfo.members.firstWhere(
           (m) => m.uid == _currentUserUid,
           orElse: () => GroupMember(
@@ -163,34 +182,41 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       } else {
         if (mounted) {
           setState(() => _isLoading = false);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to load group info: ${response.body}'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          OpaqueToast.error(context, 'Failed to load group info');
         }
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
         setState(() => _isLoading = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error loading group info: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        OpaqueToast.error(context, 'Error loading group info');
       }
     }
+  }
+
+  bool _canManageMembers() =>
+      _currentUserRole == 'owner' || _currentUserRole == 'admin';
+
+  bool _canRemoveMember(GroupMember member) {
+    if (!_canManageMembers()) return false;
+    if (member.uid == _currentUserUid) return false;
+    if (member.role == 'owner') return false;
+    if (member.role == 'admin' && _currentUserRole != 'owner') return false;
+    return true;
+  }
+
+  bool _canChangeRole(GroupMember member) {
+    if (_currentUserRole != 'owner') return false;
+    if (member.uid == _currentUserUid) return false;
+    if (member.role == 'owner') return false;
+    return true;
   }
 
   Future<void> _removeMember(String memberUid, String memberUsername) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    final token = await user.getIdToken();
-
     try {
+      final token = await user.getIdToken();
       final url = Uri.parse(
           '${AppConfig.baseUrl}/groups/${widget.groupId}/members/remove');
       final response = await http.post(
@@ -204,196 +230,39 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
       if (mounted) {
         if (response.statusCode == 200) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('$memberUsername removed from group'),
-              backgroundColor: Colors.green,
-            ),
-          );
-          _fetchGroupInfo(); // Refresh the member list
+          OpaqueToast.success(context, 'Removed @$memberUsername');
+          _fetchGroupInfo();
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to remove member: ${response.body}'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          OpaqueToast.error(context, 'Failed to remove member');
         }
       }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error removing member: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+    } catch (_) {
+      if (mounted) OpaqueToast.error(context, 'Error removing member');
     }
   }
 
-  void _showRemoveMemberDialog(GroupMember member) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Remove Member'),
-        content: Text('Remove ${member.displayNameOrUsername} from this group?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _removeMember(member.uid, member.username);
-            },
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Remove'),
-          ),
-        ],
-      ),
+  Future<void> _confirmRemoveMember(GroupMember member) async {
+    final confirmed = await showNotesConfirmation(
+      context,
+      title: 'Remove member?',
+      body: 'Remove ${member.displayNameOrUsername} (@${member.username}) from this group?',
+      confirm: 'Remove',
+      danger: true,
+      icon: Icons.person_remove_outlined,
     );
-  }
 
-  bool _canManageMembers() {
-    return _currentUserRole == 'owner' || _currentUserRole == 'admin';
-  }
-
-  bool _canRemoveMember(GroupMember member) {
-    if (!_canManageMembers()) return false;
-    if (member.uid == _currentUserUid) return false; // Cannot remove self
-    if (member.role == 'owner') return false; // Cannot remove owner
-    // Only owner can remove admin
-    if (member.role == 'admin' && _currentUserRole != 'owner') return false;
-    return true;
-  }
-
-  Future<void> _showAddMembersDialog() async {
-    // Get current member usernames to exclude them
-    final currentMemberUsernames = _groupInfo?.members.map((m) => m.username).toSet() ?? {};
-
-    // Fetch friends list
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    final token = await user.getIdToken();
-
-    try {
-      final url = Uri.parse('${AppConfig.baseUrl}/friends/list');
-      final response = await http.get(
-        url,
-        headers: {'Authorization': 'Bearer $token'},
-      );
-
-      if (response.statusCode != 200) {
-        throw Exception('Failed to load friends');
-      }
-
-      final List<dynamic> friendsJson = json.decode(response.body);
-
-      // Filter out friends who are already in the group (by username)
-      final availableFriends = friendsJson
-          .where((f) {
-            final username = f['username'] as String?;
-            return username != null && !currentMemberUsernames.contains(username);
-          })
-          .map((f) => {
-                'username': f['username'] ?? 'Unknown',
-                'avatarUrl': f['avatarUrl'],
-              })
-          .toList();
-
-      if (availableFriends.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('All your friends are already in this group'),
-            backgroundColor: Colors.orange,
-          ),
-        );
-        return;
-      }
-
-      // Show selection dialog
-      if (!mounted) return;
-      final selectedUsernames = await showDialog<List<String>>(
-        context: context,
-        builder: (context) => _AddMembersDialog(friends: availableFriends),
-      );
-
-      if (selectedUsernames != null && selectedUsernames.isNotEmpty) {
-        await _addMembers(selectedUsernames);
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error loading friends: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+    if (confirmed) {
+      await _removeMember(member.uid, member.username);
     }
   }
 
-  Future<void> _addMembers(List<String> usernames) async {
+  Future<void> _changeRole(
+      String memberUid, String newRole, String memberUsername) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    final token = await user.getIdToken();
-
     try {
-      final url = Uri.parse(
-          '${AppConfig.baseUrl}/groups/${widget.groupId}/members/add');
-      final response = await http.post(
-        url,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: json.encode({'memberUsernames': usernames}),
-      );
-
-      if (mounted) {
-        if (response.statusCode == 200) {
-          final data = json.decode(response.body);
-          final count = data['added_count'] ?? usernames.length;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('$count member(s) added successfully'),
-              backgroundColor: Colors.green,
-            ),
-          );
-          _fetchGroupInfo(); // Refresh member list
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to add members: ${response.body}'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error adding members: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _changeRole(String memberUid, String newRole, String memberUsername) async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    final token = await user.getIdToken();
-
-    try {
+      final token = await user.getIdToken();
       final url = Uri.parse(
           '${AppConfig.baseUrl}/groups/${widget.groupId}/members/role');
       final response = await http.post(
@@ -410,302 +279,20 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
       if (mounted) {
         if (response.statusCode == 200) {
-          final action = newRole == 'admin' ? 'promoted to admin' : 'demoted to member';
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('$memberUsername $action'),
-              backgroundColor: Colors.green,
-            ),
+          OpaqueToast.success(
+            context,
+            newRole == 'admin'
+                ? '@$memberUsername is now an Admin'
+                : '@$memberUsername is now a Member',
           );
-          _fetchGroupInfo(); // Refresh the member list
+          _fetchGroupInfo();
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to change role: ${response.body}'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          OpaqueToast.error(context, 'Failed to change role');
         }
       }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error changing role: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+    } catch (_) {
+      if (mounted) OpaqueToast.error(context, 'Error changing role');
     }
-  }
-
-  void _showMemberOptionsDialog(GroupMember member) {
-    final canPromote = member.role == 'member';
-    final canDemote = member.role == 'admin';
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(member.displayNameOrUsername),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (canPromote)
-              ListTile(
-                leading: const Icon(Icons.arrow_upward, color: Colors.blue),
-                title: const Text('Promote to Admin'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _changeRole(member.uid, 'admin', member.username);
-                },
-              ),
-            if (canDemote)
-              ListTile(
-                leading: const Icon(Icons.arrow_downward, color: Colors.orange),
-                title: const Text('Demote to Member'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _changeRole(member.uid, 'member', member.username);
-                },
-              ),
-            if (_canRemoveMember(member))
-              ListTile(
-                leading: const Icon(Icons.person_remove, color: Colors.red),
-                title: const Text('Remove from Group'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _showRemoveMemberDialog(member);
-                },
-              ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  bool _canChangeRole(GroupMember member) {
-    if (_currentUserRole != 'owner') return false; // Only owner can change roles
-    if (member.uid == _currentUserUid) return false; // Cannot change own role
-    if (member.role == 'owner') return false; // Cannot change owner
-    return true;
-  }
-
-  Future<void> _leaveGroup() async {
-    // Owner cannot leave group
-    if (_currentUserRole == 'owner') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Group owner cannot leave. Transfer ownership or delete the group.'),
-          backgroundColor: Colors.orange,
-        ),
-      );
-      return;
-    }
-
-    // Show confirmation dialog
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Leave Group'),
-        content: Text('Are you sure you want to leave "${_groupInfo?.groupName}"?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Leave'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    try {
-      final token = await user.getIdToken();
-      final url = Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/leave');
-      final response = await http.post(
-        url,
-        headers: {
-          'Authorization': 'Bearer $token',
-        },
-      );
-
-      if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('You have left the group'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        // Navigate back to home
-        Navigator.of(context).popUntil((route) => route.isFirst);
-      } else {
-        throw Exception('Failed to leave group: ${response.body}');
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error leaving group: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _deleteGroup() async {
-    if (_currentUserRole != 'owner') return;
-
-    // Show confirmation dialog with group name verification
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Group'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'This will permanently delete the group and all its messages. This action cannot be undone.',
-              style: TextStyle(color: Colors.red),
-            ),
-            const SizedBox(height: 16),
-            Text('Group: "${_groupInfo?.groupName}"'),
-            const SizedBox(height: 8),
-            Text('Members: ${_groupInfo?.members.length ?? 0}'),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('Delete Forever'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    try {
-      final token = await user.getIdToken();
-      final url = Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/delete');
-      final response = await http.post(
-        url,
-        headers: {
-          'Authorization': 'Bearer $token',
-        },
-      );
-
-      if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Group deleted successfully'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        // Navigate back to home
-        Navigator.of(context).popUntil((route) => route.isFirst);
-      } else {
-        throw Exception('Failed to delete group: ${response.body}');
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error deleting group: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _showEditGroupDialog() async {
-    if (_currentUserRole != 'owner' && _currentUserRole != 'admin') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Only owner and admins can edit group info'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
-
-    final nameController = TextEditingController(text: _groupInfo?.groupName ?? '');
-    final descController = TextEditingController(text: _groupInfo?.description ?? '');
-
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Edit Group Info'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: 'Group Name',
-                hintText: 'Enter group name',
-              ),
-              maxLength: 50,
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: descController,
-              decoration: const InputDecoration(
-                labelText: 'Description',
-                hintText: 'Enter group description',
-              ),
-              maxLines: 3,
-              maxLength: 200,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-
-    if (result == true) {
-      await _updateGroupInfo(nameController.text, descController.text);
-    }
-
-    nameController.dispose();
-    descController.dispose();
   }
 
   Future<void> _updateGroupInfo(String newName, String newDescription) async {
@@ -728,95 +315,149 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
         }),
       );
 
-      if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Group info updated successfully')),
-        );
-        _fetchGroupInfo(); // Refresh group info
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to update group info: ${response.body}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error updating group info: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        if (response.statusCode == 200) {
+          OpaqueToast.success(context, 'Group details updated');
+          _fetchGroupInfo();
+        } else {
+          OpaqueToast.error(context, 'Failed to update group info');
+        }
       }
+    } catch (_) {
+      if (mounted) OpaqueToast.error(context, 'Error updating group info');
     }
   }
 
-  Future<void> _changeGroupAvatar() async {
-    if (_currentUserRole != 'owner') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Only the group owner can change the avatar'),
-          backgroundColor: Colors.red,
-        ),
+  Future<void> _leaveGroup() async {
+    if (_currentUserRole == 'owner') {
+      OpaqueToast.warning(
+        context,
+        'Group owner cannot leave. Transfer ownership or delete the group.',
       );
       return;
     }
 
-    final ImagePicker picker = ImagePicker();
-    final XFile? pickedFile = await picker.pickImage(
-      source: ImageSource.gallery,
-      imageQuality: 70,
-      maxWidth: 800,
+    final confirmed = await showNotesConfirmation(
+      context,
+      title: 'Leave group?',
+      body: 'Are you sure you want to leave "${_groupInfo?.groupName}"? You will stop receiving messages.',
+      confirm: 'Leave',
+      danger: true,
+      icon: Icons.exit_to_app_rounded,
     );
 
-    if (pickedFile == null) return;
+    if (!confirmed) return;
 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
     try {
-      // Show loading dialog
-      if (!mounted) return;
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const AlertDialog(
-          content: Row(
-            children: [
-              CircularProgressIndicator(color: Color(0xFF00ACC1)),
-              SizedBox(width: 20),
-              Text('Uploading avatar...'),
-            ],
-          ),
-        ),
+      final token = await user.getIdToken();
+      final url = Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/leave');
+      final response = await http.post(
+        url,
+        headers: {'Authorization': 'Bearer $token'},
       );
 
-      // Upload to Firebase Storage (same as profile avatars)
-      final storageRef = FirebaseStorage.instance.ref().child(
-        'group_avatars/${widget.groupId}/avatar.jpg',
+      if (mounted) {
+        if (response.statusCode == 200) {
+          Navigator.of(context).popUntil((route) => route.isFirst);
+        } else {
+          OpaqueToast.error(context, 'Failed to leave group');
+        }
+      }
+    } catch (_) {
+      if (mounted) OpaqueToast.error(context, 'Error leaving group');
+    }
+  }
+
+  Future<void> _deleteGroup() async {
+    if (_currentUserRole != 'owner') return;
+
+    final confirmed = await showNotesConfirmation(
+      context,
+      title: 'Delete group?',
+      body: 'Permanently delete "${_groupInfo?.groupName}" and all its messages for all ${_groupInfo?.members.length ?? 0} members? This action cannot be undone.',
+      confirm: 'Delete group',
+      danger: true,
+      icon: Icons.delete_forever_outlined,
+    );
+
+    if (!confirmed) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final token = await user.getIdToken();
+      final url = Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}');
+      final response = await http.delete(
+        url,
+        headers: {'Authorization': 'Bearer $token'},
+      );
+
+      if (mounted) {
+        if (response.statusCode == 200) {
+          Navigator.of(context).popUntil((route) => route.isFirst);
+        } else {
+          OpaqueToast.error(context, 'Failed to delete group');
+        }
+      }
+    } catch (_) {
+      if (mounted) OpaqueToast.error(context, 'Error deleting group');
+    }
+  }
+
+  Future<void> _pickAndUploadAvatar(ImageSource source) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final picker = ImagePicker();
+      final pickedFile = await picker.pickImage(
+        source: source,
+        imageQuality: 80,
+        maxWidth: 600,
+        maxHeight: 600,
+      );
+
+      if (pickedFile == null) return;
+
+      if (!mounted) return;
+      OpaqueToast.info(context, 'Uploading photo...');
+
+      final oldAvatarUrl = _groupInfo?.avatarUrl;
+      if (oldAvatarUrl != null &&
+          oldAvatarUrl.contains('firebasestorage.googleapis.com')) {
+        try {
+          await FirebaseStorage.instance.refFromURL(oldAvatarUrl).delete();
+        } catch (_) {}
+      }
+
+      final avatarId = const Uuid().v4();
+      final storageRef =
+          FirebaseStorage.instance.ref().child('group_avatars/$avatarId.jpg');
+      final metadata = SettableMetadata(
+        contentType: 'image/jpeg',
+        cacheControl: 'public, max-age=31536000',
       );
 
       String downloadUrl;
       if (kIsWeb) {
         final bytes = await pickedFile.readAsBytes();
-        final uploadTask = storageRef.putData(bytes);
+        final uploadTask = storageRef.putData(bytes, metadata);
         final snapshot = await uploadTask.whenComplete(() => {});
         downloadUrl = await snapshot.ref.getDownloadURL();
       } else {
         final file = File(pickedFile.path);
-        final uploadTask = storageRef.putFile(file);
+        final uploadTask = storageRef.putFile(file, metadata);
         final snapshot = await uploadTask.whenComplete(() => {});
         downloadUrl = await snapshot.ref.getDownloadURL();
       }
 
-      // Update group avatar via backend API
       final token = await user.getIdToken();
-      final updateUrl = Uri.parse(
-          '${AppConfig.baseUrl}/groups/${widget.groupId}/avatar');
+      final updateUrl =
+          Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/avatar');
       final updateResponse = await http.post(
         updateUrl,
         headers: {
@@ -826,220 +467,119 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
         body: json.encode({'avatarUrl': downloadUrl}),
       );
 
-      if (!mounted) return;
-      Navigator.pop(context); // Close loading dialog
-
-      if (updateResponse.statusCode == 200) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Group avatar updated successfully'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        _fetchGroupInfo(); // Refresh to show new avatar
-      } else {
-        throw Exception('Failed to update avatar: ${updateResponse.body}');
-      }
-    } catch (e) {
       if (mounted) {
-        // Close loading dialog if still open
-        if (Navigator.canPop(context)) {
-          Navigator.pop(context);
+        if (updateResponse.statusCode == 200) {
+          OpaqueToast.success(context, 'Group photo updated');
+          _fetchGroupInfo();
+        } else {
+          OpaqueToast.error(context, 'Failed to update avatar');
         }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error updating avatar: $e'),
-            backgroundColor: Colors.red,
+      }
+    } catch (_) {
+      if (mounted) OpaqueToast.error(context, 'Error uploading photo');
+    }
+  }
+
+  Future<void> _removeGroupAvatar() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final oldAvatarUrl = _groupInfo?.avatarUrl;
+      if (oldAvatarUrl != null &&
+          oldAvatarUrl.contains('firebasestorage.googleapis.com')) {
+        try {
+          await FirebaseStorage.instance.refFromURL(oldAvatarUrl).delete();
+        } catch (_) {}
+      }
+
+      final token = await user.getIdToken();
+      final updateUrl =
+          Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/avatar');
+      final updateResponse = await http.post(
+        updateUrl,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: json.encode({'avatarUrl': null}),
+      );
+
+      if (mounted) {
+        if (updateResponse.statusCode == 200) {
+          OpaqueToast.success(context, 'Photo removed');
+          _fetchGroupInfo();
+        } else {
+          OpaqueToast.error(context, 'Failed to remove photo');
+        }
+      }
+    } catch (_) {
+      if (mounted) OpaqueToast.error(context, 'Error removing photo');
+    }
+  }
+
+  Future<void> _openConversation(GroupMember member) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      final websocketService =
+          Provider.of<WebSocketService>(context, listen: false);
+      if (!websocketService.isConnected || websocketService.channel == null) {
+        OpaqueToast.info(context, 'Connecting... Please wait a moment.');
+        return;
+      }
+
+      final token = await user.getIdToken();
+      final response = await http.post(
+        Uri.parse('${AppConfig.baseUrl}/conversations/start'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: json.encode({'targetUsername': member.username}),
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final data = json.decode(response.body);
+        final conversationId = data['conversationId'] as int;
+
+        final conversation = ConversationInfo(
+          conversationId: conversationId,
+          chatTitle: member.displayNameOrUsername,
+          isGroup: false,
+          partnerUid: member.uid,
+          avatarUrl: member.avatarUrl,
+        );
+
+        if (!mounted) return;
+        Provider.of<HomeProvider>(context, listen: false)
+            .fetchInitialConversations();
+
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ChatScreen(
+              channel: websocketService.channel!,
+              conversationInfo: conversation,
+            ),
           ),
         );
+      } else {
+        if (mounted) OpaqueToast.error(context, 'Failed to open conversation');
       }
+    } catch (_) {
+      if (mounted) OpaqueToast.error(context, 'Error opening conversation');
     }
-  }
-
-  String _getRoleBadgeText(String role) {
-    switch (role) {
-      case 'owner':
-        return 'Owner';
-      case 'admin':
-        return 'Admin';
-      default:
-        return '';
-    }
-  }
-
-  Color _getRoleBadgeColor(String role) {
-    switch (role) {
-      case 'owner':
-        return Colors.white;
-      case 'admin':
-        return Colors.blue;
-      default:
-        return Colors.grey;
-    }
-  }
-
-  void _showMemberActionsBottomSheet(GroupMember member) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (context) => Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.only(
-            topLeft: Radius.circular(24),
-            topRight: Radius.circular(24),
-          ),
-        ),
-        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Handle bar
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(height: 20),
-
-            // User info header
-            Row(
-              children: [
-                _buildAvatar(
-                  member.displayNameOrUsername,
-                  member.avatarUrl,
-                  radius: 32,
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        member.displayNameOrUsername,
-                        style: const TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '@${member.username}',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.grey[600],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 24),
-
-            // Action buttons
-            _buildActionCard(
-              icon: Icons.person_add,
-              title: 'Add Friend',
-              subtitle: 'Send friend request',
-              color: Colors.blue,
-              onTap: () {
-                Navigator.pop(context);
-                _sendFriendRequest(member);
-              },
-            ),
-            const SizedBox(height: 12),
-            _buildActionCard(
-              icon: Icons.chat_bubble,
-              title: 'Send Message',
-              subtitle: 'Start a conversation',
-              color: Colors.green,
-              onTap: () {
-                Navigator.pop(context);
-                _openConversation(member);
-              },
-            ),
-            SizedBox(height: MediaQuery.of(context).padding.bottom + 16),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildActionCard({
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: color.withOpacity(0.3),
-            width: 1,
-          ),
-        ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: color,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(icon, color: Colors.white, size: 24),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.black87,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: Colors.grey[600],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey[400]),
-          ],
-        ),
-      ),
-    );
   }
 
   Future<void> _sendFriendRequest(GroupMember member) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    final token = await user.getIdToken();
-    final url = Uri.parse('${AppConfig.baseUrl}/friends/request');
-
     try {
+      final token = await user.getIdToken();
+      final url = Uri.parse('${AppConfig.baseUrl}/friends/request');
       final response = await http.post(
         url,
         headers: {
@@ -1051,924 +591,1313 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
       if (mounted) {
         if (response.statusCode == 201) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Friend request sent to ${member.displayNameOrUsername}!'),
-              backgroundColor: Colors.green,
-            ),
-          );
+          OpaqueToast.success(
+              context, 'Friend request sent to @${member.username}');
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed: ${response.body}'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          OpaqueToast.error(context, 'Failed to send friend request');
         }
       }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+    } catch (_) {
+      if (mounted) OpaqueToast.error(context, 'Error sending friend request');
     }
   }
 
-  Future<void> _openConversation(GroupMember member) async {
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) {
-        // print('[GroupInfo] User not logged in');
-        return;
-      }
+  // ─── Modal Sheets & Dialogs ───────────────────────────────────────────────
 
-      // Get WebSocket service
-      final websocketService = Provider.of<WebSocketService>(context, listen: false);
-      if (!websocketService.isConnected || websocketService.channel == null) {
-        // print('[GroupInfo] WebSocket not connected');
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Connecting... Please wait a moment.')),
-        );
-        return;
-      }
-
-      // print('[GroupInfo] Starting conversation with ${member.username}');
-
-      // Start or get conversation
-      final token = await user.getIdToken();
-      final response = await http.post(
-        Uri.parse('${AppConfig.baseUrl}/conversations/start'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: json.encode({'targetUsername': member.username}),
-      );
-
-      // print('[GroupInfo] Response status: ${response.statusCode}');
-      // print('[GroupInfo] Response body: ${response.body}');
-
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        final data = json.decode(response.body);
-        final conversationId = data['conversationId'] as int;
-
-        // print('[GroupInfo] Conversation ID: $conversationId');
-
-        // Create ConversationInfo directly from available data
-        final conversation = ConversationInfo(
-          conversationId: conversationId,
-          chatTitle: member.displayNameOrUsername,
-          isGroup: false,
-          partnerUid: member.uid,
-          avatarUrl: member.avatarUrl,
-        );
-
-        // print('[GroupInfo] Created conversation info, navigating...');
-
-        // Refresh home provider in background (don't wait)
-        final homeProvider = Provider.of<HomeProvider>(context, listen: false);
-        homeProvider.fetchInitialConversations();
-
-        // Navigate to chat screen immediately
-        if (mounted) {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => ChatScreen(
-                channel: websocketService.channel!,
-                conversationInfo: conversation,
+  void _showAvatarPickerSheet() {
+    final c = NotesColors(context);
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        decoration: BoxDecoration(
+          color: c.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          border: Border(top: BorderSide(color: c.line)),
+        ),
+        padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: c.line,
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
-            ),
-          );
-        }
-      } else {
-        // print('[GroupInfo] Failed with status ${response.statusCode}: ${response.body}');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to open conversation: ${response.body}'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-      }
-    } catch (e, stackTrace) {
-      // print('[GroupInfo] Exception: $e');
-      // print('[GroupInfo] Stack trace: $stackTrace');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: $e'),
-            backgroundColor: Colors.red,
+              const SizedBox(height: 16),
+              Text('Group photo', style: c.text(16, bold: true)),
+              const SizedBox(height: 16),
+              ListTile(
+                leading: Icon(Icons.photo_library_outlined, color: c.blue),
+                title: Text('Choose from Gallery', style: c.text(14)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickAndUploadAvatar(ImageSource.gallery);
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.camera_alt_outlined, color: c.blue),
+                title: Text('Take Photo', style: c.text(14)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickAndUploadAvatar(ImageSource.camera);
+                },
+              ),
+              if (_groupInfo?.avatarUrl?.isNotEmpty == true)
+                ListTile(
+                  leading: const Icon(Icons.delete_outline, color: Colors.red),
+                  title: Text(
+                    'Remove Photo',
+                    style: c.text(14).copyWith(color: Colors.red),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _removeGroupAvatar();
+                  },
+                ),
+            ],
           ),
-        );
-      }
-    }
-  }
-
-  Widget _buildAvatar(String username, String? avatarUrl, {double radius = 30}) {
-    final hasImage = avatarUrl != null && avatarUrl.isNotEmpty;
-    final initial = username.isNotEmpty ? username[0].toUpperCase() : '?';
-    final color = Color(username.hashCode | 0xFF000000).withOpacity(1.0);
-    final fontSize = radius * 0.9; // Scale font size with radius
-
-    if (hasImage) {
-      return CachedNetworkImage(
-        imageUrl: avatarUrl,
-        imageBuilder: (context, imageProvider) => CircleAvatar(
-          radius: radius,
-          backgroundImage: imageProvider,
-          backgroundColor: Colors.transparent,
-        ),
-        placeholder: (context, url) => CircleAvatar(
-          radius: radius,
-          backgroundColor: color,
-          child: SizedBox(
-            width: radius * 0.8,
-            height: radius * 0.8,
-            child: const CircularProgressIndicator(
-              strokeWidth: 2,
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-            ),
-          ),
-        ),
-        errorWidget: (context, url, error) => CircleAvatar(
-          radius: radius,
-          backgroundColor: color,
-          child: Text(
-            initial,
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: fontSize,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
-      );
-    }
-
-    return CircleAvatar(
-      radius: radius,
-      backgroundColor: color,
-      child: Text(
-        initial,
-        style: TextStyle(
-          color: Colors.white,
-          fontSize: fontSize,
-          fontWeight: FontWeight.bold,
         ),
       ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final appBarTitleSize = (screenWidth * 0.05).clamp(18.0, 24.0);
-    final iconSize = (screenWidth * 0.05).clamp(18.0, 24.0);
-    final menuIconSize = (screenWidth * 0.045).clamp(16.0, 20.0);
-    final menuTextSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final spacing1 = (screenWidth * 0.02).clamp(6.0, 10.0);
+  Future<void> _showEditGroupDialog() async {
+    final nameController =
+        TextEditingController(text: _groupInfo?.groupName ?? '');
+    final descController =
+        TextEditingController(text: _groupInfo?.description ?? '');
+    final nameFocusNode = FocusNode();
+    final descFocusNode = FocusNode();
 
-    // Additional responsive sizes for body content
-    final headerPadding = (screenWidth * 0.06).clamp(20.0, 28.0);
-    final avatarRadius = (screenWidth * 0.11).clamp(40.0, 50.0);
-    final cameraIconPadding = (screenWidth * 0.015).clamp(5.0, 8.0);
-    final cameraIconSize = (screenWidth * 0.04).clamp(14.0, 18.0);
-    final groupNameSize = (screenWidth * 0.06).clamp(22.0, 28.0);
-    final descriptionSize = (screenWidth * 0.035).clamp(13.0, 16.0);
-    final createdDateSize = (screenWidth * 0.03).clamp(11.0, 14.0);
-    final sectionTitleSize = (screenWidth * 0.04).clamp(15.0, 19.0);
-    final sectionIconSize = (screenWidth * 0.06).clamp(22.0, 28.0);
-    final spacing2 = (screenWidth * 0.04).clamp(14.0, 20.0);
-    final spacing3 = (screenWidth * 0.03).clamp(10.0, 14.0);
-
-    return Scaffold(
-      backgroundColor: Colors.grey[100],
-      appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(kToolbarHeight),
-        child: ClipRect(
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-            child: AppBar(
-              title: Text(
-                'Group Info',
-                style: TextStyle(color: Colors.black, fontSize: appBarTitleSize),
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final c = NotesColors(ctx);
+        return NotesDialog(
+          title: 'Edit group info',
+          icon: Icons.edit_outlined,
+          body: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('GROUP NAME', style: c.text(10, muted: true)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: nameController,
+                focusNode: nameFocusNode,
+                onTapOutside: (_) => nameFocusNode.unfocus(),
+                onTap: () {
+                  if (!nameFocusNode.hasFocus) {
+                    nameFocusNode.requestFocus();
+                  }
+                },
+                maxLength: 50,
+                style: c.text(14, bold: true),
+                decoration: c.field('Enter group name').copyWith(counterText: ''),
               ),
-              backgroundColor: Colors.white.withOpacity(0.7),
-              elevation: 0,
-              iconTheme: IconThemeData(color: Colors.black, size: iconSize),
-              actions: [
-          // Menu for owner/admin, leave button for members
-          if (_currentUserRole == 'owner' || _currentUserRole == 'admin')
-            PopupMenuButton<String>(
-              icon: Icon(Icons.more_vert, size: iconSize),
-              onSelected: (value) {
-                if (value == 'edit') {
-                  _showEditGroupDialog();
-                } else if (value == 'delete') {
-                  _deleteGroup();
-                } else if (value == 'leave') {
-                  _leaveGroup();
-                }
-              },
-              itemBuilder: (context) => [
-                PopupMenuItem(
-                  value: 'edit',
-                  child: Row(
-                    children: [
-                      Icon(Icons.edit, size: menuIconSize),
-                      SizedBox(width: spacing1),
-                      Text('Edit Group Info', style: TextStyle(fontSize: menuTextSize)),
-                    ],
-                  ),
+              const SizedBox(height: 14),
+              Text('DESCRIPTION', style: c.text(10, muted: true)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: descController,
+                focusNode: descFocusNode,
+                onTapOutside: (_) => descFocusNode.unfocus(),
+                onTap: () {
+                  if (!descFocusNode.hasFocus) {
+                    descFocusNode.requestFocus();
+                  }
+                },
+                minLines: 2,
+                maxLines: 4,
+                maxLength: 250,
+                style: c.text(13),
+                decoration:
+                    c.field('What’s this group about?').copyWith(counterText: ''),
+              ),
+            ],
+          ),
+          actions: [
+            NotesButton(
+              label: 'Cancel',
+              onPressed: () => Navigator.pop(ctx, false),
+            ),
+            NotesButton(
+              label: 'Save',
+              primary: true,
+              onPressed: () => Navigator.pop(ctx, true),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (result == true && nameController.text.trim().isNotEmpty) {
+      await _updateGroupInfo(nameController.text, descController.text);
+    }
+
+    nameController.dispose();
+    descController.dispose();
+    nameFocusNode.dispose();
+    descFocusNode.dispose();
+  }
+
+  void _showMemberActionsBottomSheet(GroupMember member) {
+    final isCurrentUser = member.uid == _currentUserUid;
+    final c = NotesColors(context);
+    final canPromote = _currentUserRole == 'owner' && member.role == 'member';
+    final canDemote = _currentUserRole == 'owner' && member.role == 'admin';
+    final canRemove = _canRemoveMember(member);
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => Container(
+        decoration: BoxDecoration(
+          color: c.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          border: Border(top: BorderSide(color: c.line)),
+        ),
+        padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: c.line,
+                  borderRadius: BorderRadius.circular(2),
                 ),
-                if (_currentUserRole == 'owner')
-                  PopupMenuItem(
-                    value: 'delete',
-                    child: Row(
+              ),
+              const SizedBox(height: 18),
+              // Member header info
+              Row(
+                children: [
+                  _buildAvatarWidget(
+                    name: member.displayNameOrUsername,
+                    avatarUrl: member.avatarUrl,
+                    radius: 24,
+                    c: c,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(Icons.delete_forever, color: Colors.red, size: menuIconSize),
-                        SizedBox(width: spacing1),
-                        Text('Delete Group', style: TextStyle(color: Colors.red, fontSize: menuTextSize)),
+                        Text(
+                          member.displayNameOrUsername,
+                          style: c.text(16, bold: true),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '@${member.username}',
+                          style: c.text(12, muted: true),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ],
                     ),
                   ),
-                if (_currentUserRole == 'admin')
-                  PopupMenuItem(
-                    value: 'leave',
-                    child: Row(
-                      children: [
-                        Icon(Icons.exit_to_app, size: menuIconSize),
-                        SizedBox(width: spacing1),
-                        Text('Leave Group', style: TextStyle(fontSize: menuTextSize)),
-                      ],
-                    ),
+                  _buildRoleBadge(member.role, c),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Divider(height: 1, color: c.line),
+              const SizedBox(height: 8),
+
+              // Action list
+              if (!isCurrentUser) ...[
+                ListTile(
+                  leading: Icon(Icons.chat_bubble_outline_rounded, color: c.blue),
+                  title: Text('Send message', style: c.text(14)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _openConversation(member);
+                  },
+                ),
+                ListTile(
+                  leading: Icon(Icons.person_add_outlined, color: c.blue),
+                  title: Text('Add friend', style: c.text(14)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _sendFriendRequest(member);
+                  },
+                ),
+              ],
+              if (canPromote)
+                ListTile(
+                  leading: Icon(Icons.verified_user_outlined, color: c.blue),
+                  title: Text('Make group admin', style: c.text(14)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _changeRole(member.uid, 'admin', member.username);
+                  },
+                ),
+              if (canDemote)
+                ListTile(
+                  leading: Icon(Icons.shield_outlined, color: c.muted),
+                  title: Text('Dismiss as admin', style: c.text(14)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _changeRole(member.uid, 'member', member.username);
+                  },
+                ),
+              if (canRemove)
+                ListTile(
+                  leading: const Icon(Icons.person_remove_outlined, color: Colors.red),
+                  title: Text(
+                    'Remove from group',
+                    style: c.text(14).copyWith(color: Colors.red),
                   ),
-              ],
-            )
-          else if (_currentUserRole != null)
-            IconButton(
-              icon: Icon(Icons.exit_to_app, size: iconSize),
-              tooltip: 'Leave Group',
-              onPressed: _leaveGroup,
-            ),
-              ],
-            ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _confirmRemoveMember(member);
+                  },
+                ),
+            ],
           ),
         ),
       ),
-      floatingActionButton: _canManageMembers()
-          ? Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).padding.bottom,
-              ),
-              child: FloatingActionButton.extended(
-                onPressed: _showAddMembersDialog,
-                backgroundColor: Colors.deepOrange,
-                foregroundColor: Colors.white,
-                elevation: 4,
-                icon: Icon(Icons.person_add, size: (screenWidth * 0.055).clamp(20.0, 26.0)),
-                label: Text(
-                  'Add Members',
-                  style: TextStyle(
-                    fontSize: (screenWidth * 0.0375).clamp(14.0, 17.0),
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.5,
-                  ),
-                ),
+    );
+  }
+
+  Future<void> _showAddMembersSheet() async {
+    final currentMemberUsernames =
+        _groupInfo?.members.map((m) => m.username).toSet() ?? {};
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final token = await user.getIdToken();
+      final url = Uri.parse('${AppConfig.baseUrl}/friends/list');
+      final response = await http.get(
+        url,
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 20));
+
+      if (response.statusCode != 200) {
+        throw Exception('Failed to load friends');
+      }
+
+      final List<dynamic> friendsJson = json.decode(response.body);
+      final availableFriends = friendsJson
+          .where((f) {
+            final username = f['username'] as String?;
+            return username != null && !currentMemberUsernames.contains(username);
+          })
+          .map((f) => {
+                'username': f['username'] ?? 'Unknown',
+                'displayName': f['displayName'],
+                'avatarUrl': f['avatarUrl'],
+              })
+          .toList();
+
+      if (!mounted) return;
+
+      if (availableFriends.isEmpty) {
+        OpaqueToast.info(context, 'All your friends are already in this group');
+        return;
+      }
+
+      final selected = await showModalBottomSheet<List<String>>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (ctx) => _AddMembersSheet(friends: availableFriends),
+      );
+
+      if (selected != null && selected.isNotEmpty) {
+        await _addMembers(selected);
+      }
+    } catch (_) {
+      if (mounted) OpaqueToast.error(context, 'Error loading friends');
+    }
+  }
+
+  Future<void> _addMembers(List<String> usernames) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final token = await user.getIdToken();
+      final url =
+          Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/members/add');
+      final response = await http.post(
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: json.encode({'memberUsernames': usernames}),
+      );
+
+      if (mounted) {
+        if (response.statusCode == 200) {
+          OpaqueToast.success(
+            context,
+            'Added ${usernames.length} member${usernames.length > 1 ? 's' : ''}',
+          );
+          _fetchGroupInfo();
+        } else {
+          OpaqueToast.error(context, 'Failed to add members');
+        }
+      }
+    } catch (_) {
+      if (mounted) OpaqueToast.error(context, 'Error adding members');
+    }
+  }
+
+  // ─── Helpers & Widgets ───────────────────────────────────────────────────
+
+  Widget _buildAvatarWidget({
+    required String name,
+    required String? avatarUrl,
+    required double radius,
+    required NotesColors c,
+  }) {
+    final initials = name
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((s) => s.isNotEmpty)
+        .take(2)
+        .map((s) => s.characters.first.toUpperCase())
+        .join();
+
+    final fallback = Center(
+      child: Text(
+        initials.isEmpty ? '?' : initials,
+        style: c.text(radius * 0.7, bold: true, muted: true),
+      ),
+    );
+
+    return Container(
+      width: radius * 2,
+      height: radius * 2,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(shape: BoxShape.circle, color: c.soft),
+      child: avatarUrl?.isNotEmpty == true
+          ? CachedNetworkImage(
+              imageUrl: avatarUrl!,
+              fit: BoxFit.cover,
+              placeholder: (_, __) => fallback,
+              errorWidget: (_, __, ___) => fallback,
+            )
+          : fallback,
+    );
+  }
+
+  Widget _buildRoleBadge(String role, NotesColors c) {
+    if (role == 'owner') {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: c.ink,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Text(
+          'Owner',
+          style: c.text(9, bold: true).copyWith(color: c.surface),
+        ),
+      );
+    } else if (role == 'admin') {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: c.blue.withOpacity(0.18),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Text(
+          'Admin',
+          style: c.text(9, bold: true).copyWith(color: c.blue),
+        ),
+      );
+    }
+    return const SizedBox.shrink();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    context.watch<UserSettingsProvider>();
+    final neutralDark = context.read<UserSettingsProvider>().isDarkMode;
+    final selectedSurface =
+        neutralDark ? const Color(0xFFE3E5E9) : const Color(0xFF303238);
+    final selectedInk =
+        neutralDark ? const Color(0xFF25272C) : const Color(0xFFF8F8FA);
+    final c = NotesColors(context);
+
+    return CallAwareScreen(
+      screenName: 'GroupInfoScreen',
+      child: Scaffold(
+        backgroundColor: c.surface,
+        appBar: AppBar(
+          backgroundColor: c.surface,
+          foregroundColor: c.ink,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          leading: IconButton(
+            tooltip: 'Back',
+            icon: const Icon(Icons.arrow_back, size: 20),
+            onPressed: () => Navigator.pop(context),
+          ),
+          title: Text('Group info', style: c.text(18, bold: true)),
+          centerTitle: true,
+          actions: [
+            if (_groupInfo != null)
+              PopupMenuButton<String>(
+                icon: Icon(Icons.more_vert, size: 20, color: c.ink),
+                color: c.surface,
+                elevation: 3,
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular((screenWidth * 0.04).clamp(14.0, 18.0)),
+                  borderRadius: BorderRadius.circular(14),
+                  side: BorderSide(color: c.line),
                 ),
+                onSelected: (value) {
+                  if (value == 'edit') {
+                    _showEditGroupDialog();
+                  } else if (value == 'add') {
+                    _showAddMembersSheet();
+                  } else if (value == 'leave') {
+                    _leaveGroup();
+                  } else if (value == 'delete') {
+                    _deleteGroup();
+                  }
+                },
+                itemBuilder: (context) => [
+                  if (_canManageMembers())
+                    PopupMenuItem(
+                      value: 'edit',
+                      child: Row(
+                        children: [
+                          Icon(Icons.edit_outlined, size: 16, color: c.ink),
+                          const SizedBox(width: 10),
+                          Text('Edit info', style: c.text(13)),
+                        ],
+                      ),
+                    ),
+                  if (_canManageMembers())
+                    PopupMenuItem(
+                      value: 'add',
+                      child: Row(
+                        children: [
+                          Icon(Icons.person_add_outlined, size: 16, color: c.ink),
+                          const SizedBox(width: 10),
+                          Text('Add members', style: c.text(13)),
+                        ],
+                      ),
+                    ),
+                  if (_currentUserRole != 'owner')
+                    PopupMenuItem(
+                      value: 'leave',
+                      child: Row(
+                        children: [
+                          const Icon(Icons.exit_to_app_rounded,
+                              size: 16, color: Colors.red),
+                          const SizedBox(width: 10),
+                          Text('Leave group',
+                              style: c.text(13).copyWith(color: Colors.red)),
+                        ],
+                      ),
+                    ),
+                  if (_currentUserRole == 'owner')
+                    PopupMenuItem(
+                      value: 'delete',
+                      child: Row(
+                        children: [
+                          const Icon(Icons.delete_outline_rounded,
+                              size: 16, color: Colors.red),
+                          const SizedBox(width: 10),
+                          Text('Delete group',
+                              style: c.text(13).copyWith(color: Colors.red)),
+                        ],
+                      ),
+                    ),
+                ],
               ),
-            )
-          : null,
-      body: _isLoading
-          ? const Center(
-              child: CircularProgressIndicator(
-                color: Color(0xFF00ACC1),
-              ),
-            )
-          : _groupInfo == null
-              ? const Center(
-                  child: Text('Failed to load group information'),
-                )
-              : SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // Group Header
-                      Container(
-                        width: double.infinity,
-                        padding: EdgeInsets.all(headerPadding),
-                        decoration: BoxDecoration(
-                          color: Colors.blue[50],
-                        ),
+          ],
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(1),
+            child: Divider(height: 1, color: c.line),
+          ),
+        ),
+        body: SafeArea(
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+            child: _isLoading
+                ? Center(
+                    child: CircularProgressIndicator(
+                      color: c.blue,
+                      strokeWidth: 2,
+                    ),
+                  )
+                : _groupInfo == null
+                    ? Center(
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Stack(
-                              children: [
-                                _buildAvatar(
-                                  _groupInfo!.groupName,
-                                  _groupInfo!.avatarUrl,
-                                  radius: avatarRadius,
-                                ),
-                                if (_currentUserRole == 'owner')
-                                  Positioned(
-                                    bottom: 0,
-                                    right: 0,
-                                    child: GestureDetector(
-                                      onTap: _changeGroupAvatar,
-                                      child: Container(
-                                        padding: EdgeInsets.all(cameraIconPadding),
-                                        decoration: BoxDecoration(
-                                          color: Colors.cyan,
-                                          shape: BoxShape.circle,
-                                          boxShadow: [
-                                            BoxShadow(
-                                              color: Colors.black.withOpacity(0.2),
-                                              blurRadius: 4,
-                                              offset: const Offset(0, 2),
+                            Text(
+                              'Failed to load group info.',
+                              style: c.text(13, muted: true),
+                            ),
+                            const SizedBox(height: 12),
+                            NotesButton(
+                              label: 'Try again',
+                              onPressed: _fetchGroupInfo,
+                            ),
+                          ],
+                        ),
+                      )
+                    : SingleChildScrollView(
+                        keyboardDismissBehavior:
+                            ScrollViewKeyboardDismissBehavior.onDrag,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // ─── HERO PROFILE HEADER ───
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.fromLTRB(22, 24, 22, 20),
+                              child: Column(
+                                children: [
+                                  Stack(
+                                    children: [
+                                      _buildAvatarWidget(
+                                        name: _groupInfo!.groupName,
+                                        avatarUrl: _groupInfo!.avatarUrl,
+                                        radius: 46,
+                                        c: c,
+                                      ),
+                                      if (_currentUserRole == 'owner')
+                                        Positioned(
+                                          bottom: 0,
+                                          right: 0,
+                                          child: GestureDetector(
+                                            onTap: _showAvatarPickerSheet,
+                                            child: Container(
+                                              width: 28,
+                                              height: 28,
+                                              decoration: BoxDecoration(
+                                                shape: BoxShape.circle,
+                                                color: c.blue,
+                                                border: Border.all(
+                                                  color: c.surface,
+                                                  width: 2,
+                                                ),
+                                              ),
+                                              child: const Icon(
+                                                Icons.camera_alt_rounded,
+                                                size: 14,
+                                                color: Colors.white,
+                                              ),
                                             ),
-                                          ],
+                                          ),
                                         ),
-                                        child: Icon(
-                                          Icons.camera_alt,
-                                          color: Colors.white,
-                                          size: cameraIconSize,
+                                    ],
+                                  ),
+                                  const SizedBox(height: 14),
+                                  Text(
+                                    _groupInfo!.groupName,
+                                    textAlign: TextAlign.center,
+                                    style: c
+                                        .text(22, bold: true)
+                                        .copyWith(letterSpacing: -.6),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: c.soft,
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Text(
+                                      '${_groupInfo!.members.length} members · Created ${DateFormat('MMM d, yyyy').format(_groupInfo!.createdAt)}',
+                                      style: c.text(11, muted: true),
+                                    ),
+                                  ),
+                                  if (_groupInfo!.description?.trim().isNotEmpty ==
+                                      true) ...[
+                                    const SizedBox(height: 14),
+                                    Container(
+                                      width: double.infinity,
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: c.soft,
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(color: c.line),
+                                      ),
+                                      child: Text(
+                                        _groupInfo!.description!.trim(),
+                                        textAlign: TextAlign.center,
+                                        style: c.text(12, muted: true).copyWith(
+                                              height: 1.5,
+                                            ),
+                                      ),
+                                    ),
+                                  ],
+                                  const SizedBox(height: 18),
+                                  // Quick Action Buttons
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      if (_canManageMembers())
+                                        Padding(
+                                          padding:
+                                              const EdgeInsets.only(right: 8),
+                                          child: FilledButton.icon(
+                                            onPressed: _showAddMembersSheet,
+                                            icon: const Icon(
+                                                Icons.person_add_rounded,
+                                                size: 15),
+                                            label: const Text('Add members'),
+                                            style: FilledButton.styleFrom(
+                                              backgroundColor: selectedSurface,
+                                              foregroundColor: selectedInk,
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                horizontal: 14,
+                                                vertical: 10,
+                                              ),
+                                              textStyle: c.text(12, bold: true),
+                                              shape: RoundedRectangleBorder(
+                                                borderRadius:
+                                                    BorderRadius.circular(12),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      if (_canManageMembers())
+                                        OutlinedButton.icon(
+                                          onPressed: _showEditGroupDialog,
+                                          icon: Icon(Icons.edit_outlined,
+                                              size: 15, color: c.ink),
+                                          label: Text('Edit',
+                                              style: c.text(12, bold: true)),
+                                          style: OutlinedButton.styleFrom(
+                                            side: BorderSide(color: c.line),
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 14,
+                                              vertical: 10,
+                                            ),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(12),
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Divider(height: 1, color: c.line),
+
+                            // ─── MEMBERS SEARCH & LIST ───
+                            Padding(
+                              padding:
+                                  const EdgeInsets.fromLTRB(22, 16, 22, 10),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Text(
+                                        'MEMBERS',
+                                        style: c
+                                            .text(9, muted: true)
+                                            .copyWith(letterSpacing: 1.2),
+                                      ),
+                                      const Spacer(),
+                                      Text(
+                                        '${_groupInfo!.members.length} members',
+                                        style: c.text(10, muted: true),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 10),
+                                  SizedBox(
+                                    height: 38,
+                                    child: TextField(
+                                      controller: _memberSearchController,
+                                      focusNode: _memberSearchFocusNode,
+                                      onTapOutside: (_) =>
+                                          _memberSearchFocusNode.unfocus(),
+                                      style: c.text(12),
+                                      decoration: InputDecoration(
+                                        hintText: 'Search members',
+                                        hintStyle: c.text(12, muted: true),
+                                        filled: true,
+                                        fillColor: c.soft,
+                                        contentPadding:
+                                            const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                        ),
+                                        prefixIcon: Icon(
+                                          Icons.search,
+                                          size: 16,
+                                          color: c.muted,
+                                        ),
+                                        suffixIcon: _memberSearchQuery.isEmpty
+                                            ? null
+                                            : IconButton(
+                                                tooltip: 'Clear search',
+                                                onPressed: () {
+                                                  _memberSearchController.clear();
+                                                },
+                                                icon: Icon(
+                                                  Icons.close,
+                                                  size: 16,
+                                                  color: c.muted,
+                                                ),
+                                              ),
+                                        border: OutlineInputBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(19),
+                                          borderSide: BorderSide.none,
+                                        ),
+                                        enabledBorder: OutlineInputBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(19),
+                                          borderSide: BorderSide.none,
+                                        ),
+                                        focusedBorder: OutlineInputBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(19),
+                                          borderSide: BorderSide(color: c.blue),
                                         ),
                                       ),
                                     ),
                                   ),
-                              ],
-                            ),
-                            SizedBox(height: spacing2),
-                            Text(
-                              _groupInfo!.groupName,
-                              style: TextStyle(
-                                color: Colors.black87,
-                                fontSize: groupNameSize,
-                                fontWeight: FontWeight.bold,
+                                ],
                               ),
-                              textAlign: TextAlign.center,
                             ),
-                            if (_groupInfo!.description != null &&
-                                _groupInfo!.description!.isNotEmpty) ...[
-                              SizedBox(height: spacing1),
-                              Text(
-                                _groupInfo!.description!,
-                                style: TextStyle(
-                                  color: Colors.black54,
-                                  fontSize: descriptionSize,
-                                ),
-                                textAlign: TextAlign.center,
-                              ),
-                            ],
-                            SizedBox(height: spacing3),
-                            Text(
-                              'Created ${DateFormat('MMM d, yyyy').format(_groupInfo!.createdAt)}',
-                              style: TextStyle(
-                                color: Colors.black45,
-                                fontSize: createdDateSize,
+
+                            // Render sections for Owner, Admins, and Members
+                            ..._buildRoleSections(c),
+
+                            const SizedBox(height: 24),
+
+                            // ─── DANGER ZONE ACTIONS ───
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 22),
+                              child: Divider(height: 1, color: c.line),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(22, 14, 22, 32),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (_currentUserRole != 'owner')
+                                    InkWell(
+                                      onTap: _leaveGroup,
+                                      borderRadius: BorderRadius.circular(12),
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                            vertical: 10),
+                                        child: Row(
+                                          children: [
+                                            const Icon(
+                                                Icons.exit_to_app_rounded,
+                                                color: Colors.red,
+                                                size: 20),
+                                            const SizedBox(width: 12),
+                                            Text(
+                                              'Leave group',
+                                              style: c.text(14, bold: true)
+                                                  .copyWith(color: Colors.red),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  if (_currentUserRole == 'owner')
+                                    InkWell(
+                                      onTap: _deleteGroup,
+                                      borderRadius: BorderRadius.circular(12),
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                            vertical: 10),
+                                        child: Row(
+                                          children: [
+                                            const Icon(
+                                                Icons.delete_outline_rounded,
+                                                color: Colors.red,
+                                                size: 20),
+                                            const SizedBox(width: 12),
+                                            Text(
+                                              'Delete group',
+                                              style: c.text(14, bold: true)
+                                                  .copyWith(color: Colors.red),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                ],
                               ),
                             ),
                           ],
                         ),
                       ),
-
-                      // Members Section
-                      Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // Header with total member count
-                          Padding(
-                            padding: EdgeInsets.fromLTRB(spacing2, spacing2, spacing2, spacing1),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  Icons.people,
-                                  color: Colors.deepOrange,
-                                  size: sectionIconSize,
-                                ),
-                                SizedBox(width: spacing1),
-                                Text(
-                                  'MEMBERS — ${_groupInfo!.members.length}',
-                                  style: TextStyle(
-                                    fontSize: sectionTitleSize,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.black87,
-                                    letterSpacing: 0.5,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-
-                          // Search bar
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                            child: TextField(
-                              controller: _memberSearchController,
-                              style: const TextStyle(color: Colors.black87, fontSize: 14),
-                              decoration: InputDecoration(
-                                hintText: 'Search members...',
-                                hintStyle: TextStyle(color: Colors.grey[700], fontSize: 14),
-                                prefixIcon: const Icon(Icons.search, size: 20, color: Colors.amber),
-                                suffixIcon: _memberSearchQuery.isNotEmpty
-                                    ? IconButton(
-                                        icon: const Icon(Icons.clear, size: 20),
-                                        onPressed: () {
-                                          _memberSearchController.clear();
-                                        },
-                                      )
-                                    : null,
-                                filled: true,
-                                fillColor: Colors.yellow[50],
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(color: Colors.yellow[800]!, width: 1.5),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(color: Colors.yellow[800]!, width: 1.5),
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(color: Colors.yellow[900]!, width: 2),
-                                ),
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                isDense: true,
-                              ),
-                            ),
-                          ),
-
-                          const SizedBox(height: 8),
-
-                          // Build role-based sections
-                          ..._buildRoleSections(),
-                        ],
-                      ),
-                      // Add bottom padding to prevent overlap with FAB and system buttons
-                      SizedBox(
-                        height: (_canManageMembers() ? 80 : 16) +
-                                MediaQuery.of(context).padding.bottom,
-                      ),
-                    ],
-                  ),
-                ),
+          ),
+        ),
+      ),
     );
   }
 
-  // Build members organized by role (Discord-style)
-  List<Widget> _buildRoleSections() {
-    // Filter members by search query
-    final filteredMembers = _groupInfo!.members.where((member) {
-      if (_memberSearchQuery.isEmpty) return true;
-      final query = _memberSearchQuery.toLowerCase();
+  List<Widget> _buildRoleSections(NotesColors c) {
+    final query = _memberSearchQuery.toLowerCase();
+    final filtered = _groupInfo!.members.where((member) {
+      if (query.isEmpty) return true;
       return member.displayNameOrUsername.toLowerCase().contains(query) ||
-             member.username.toLowerCase().contains(query);
+          member.username.toLowerCase().contains(query);
     }).toList();
 
-    // Separate by role
-    final owners = filteredMembers.where((m) => m.role == 'owner').toList();
-    final admins = filteredMembers.where((m) => m.role == 'admin').toList();
-    final members = filteredMembers.where((m) => m.role == 'member').toList();
-
-    List<Widget> sections = [];
-
-    // Owner section
-    if (owners.isNotEmpty) {
-      sections.add(_buildRoleSection('OWNER', owners, Colors.black));
-    }
-
-    // Admins section
-    if (admins.isNotEmpty) {
-      sections.add(_buildRoleSection('ADMINS', admins, Colors.blue));
-    }
-
-    // Members section
-    if (members.isNotEmpty) {
-      sections.add(_buildRoleSection('MEMBERS', members, Colors.grey));
-    }
-
-    if (sections.isEmpty) {
-      sections.add(
-        const Padding(
-          padding: EdgeInsets.all(32.0),
+    if (filtered.isEmpty) {
+      return [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 32),
           child: Center(
             child: Text(
-              'No members found',
-              style: TextStyle(color: Colors.grey),
+              'No matching members found',
+              style: c.text(12, muted: true),
             ),
           ),
-        ),
-      );
+        )
+      ];
     }
 
-    return sections;
+    final owners = filtered.where((m) => m.role == 'owner').toList();
+    final admins = filtered.where((m) => m.role == 'admin').toList();
+    final members = filtered.where((m) => m.role == 'member').toList();
+
+    return [
+      if (owners.isNotEmpty) _buildRoleGroup('OWNER', owners, c),
+      if (admins.isNotEmpty) _buildRoleGroup('ADMINS', admins, c),
+      if (members.isNotEmpty) _buildRoleGroup('MEMBERS', members, c),
+    ];
   }
 
-  Widget _buildRoleSection(String roleTitle, List<GroupMember> members, Color color) {
-    // Determine background color and border based on role title
-    Color backgroundColor;
-    Color borderColor;
-    if (roleTitle == 'OWNER') {
-      backgroundColor = Colors.red[50]!;
-      borderColor = Colors.red[700]!;
-    } else if (roleTitle == 'ADMINS') {
-      backgroundColor = Colors.green[50]!;
-      borderColor = Colors.green[700]!;
-    } else {
-      backgroundColor = Colors.blue[50]!;
-      borderColor = Colors.blue[700]!;
-    }
-
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      decoration: BoxDecoration(
-        color: backgroundColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: borderColor,
-          width: 1.5,
-        ),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Role header
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Text(
-              '$roleTitle — ${members.length}',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-                color: color,
-                letterSpacing: 0.5,
-              ),
-            ),
+  Widget _buildRoleGroup(
+      String title, List<GroupMember> groupMembers, NotesColors c) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(22, 14, 22, 6),
+          child: Text(
+            '$title · ${groupMembers.length}',
+            style: c.text(9, muted: true).copyWith(letterSpacing: 1.1),
           ),
-          // Members in this role
-          ListView.separated(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            padding: const EdgeInsets.only(bottom: 4),
-            itemCount: members.length,
-            separatorBuilder: (context, index) => const Divider(height: 1, indent: 60),
-            itemBuilder: (context, index) {
-            final member = members[index];
-            final isCurrentUser = member.uid == _currentUserUid;
-            final roleBadge = _getRoleBadgeText(member.role);
+        ),
+        for (final member in groupMembers) _buildMemberRow(member, c),
+      ],
+    );
+  }
 
-            return ListTile(
-              dense: true,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 0,
+  Widget _buildMemberRow(GroupMember member, NotesColors c) {
+    final isCurrentUser = member.uid == _currentUserUid;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => _showMemberActionsBottomSheet(member),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 11),
+          decoration: BoxDecoration(
+            border: Border(bottom: BorderSide(color: c.line, width: 0.5)),
+          ),
+          child: Row(
+            children: [
+              _buildAvatarWidget(
+                name: member.displayNameOrUsername,
+                avatarUrl: member.avatarUrl,
+                radius: 19,
+                c: c,
               ),
-              onTap: (_canChangeRole(member) || _canRemoveMember(member))
-                  ? () => _showMemberOptionsDialog(member)
-                  : (!isCurrentUser ? () => _showMemberActionsBottomSheet(member) : null),
-              onLongPress: !isCurrentUser
-                  ? () => _showMemberActionsBottomSheet(member)
-                  : null,
-              leading: _buildAvatar(
-                member.displayNameOrUsername,
-                member.avatarUrl,
-                radius: 20,
-              ),
-              title: Row(
-                children: [
-                  Flexible(
-                    child: Text(
-                      member.displayNameOrUsername,
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                        color: isCurrentUser
-                            ? const Color(0xFF00ACC1)
-                            : Colors.black87,
-                      ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            member.displayNameOrUsername,
+                            style: c.text(13, bold: true),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (isCurrentUser) ...[
+                          const SizedBox(width: 6),
+                          Text(
+                            '(You)',
+                            style: c.text(11, muted: true),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '@${member.username}',
+                      style: c.text(10, muted: true),
+                      maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
-                  ),
-                  if (isCurrentUser) ...[
-                    const SizedBox(width: 8),
-                    const Text(
-                      '(You)',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: Color(0xFF00ACC1),
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
                   ],
-                ],
+                ),
               ),
-              trailing: roleBadge.isNotEmpty
-                  ? Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: member.role == 'owner'
-                            ? Colors.white
-                            : _getRoleBadgeColor(member.role).withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: member.role == 'owner'
-                              ? Colors.black
-                              : _getRoleBadgeColor(member.role),
-                          width: 1.5,
-                        ),
-                      ),
-                      child: Text(
-                        roleBadge,
-                        style: TextStyle(
-                          color: member.role == 'owner'
-                              ? Colors.black
-                              : _getRoleBadgeColor(member.role),
-                          fontSize: 12,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                    )
-                  : null,
-            );
-          },
+              _buildRoleBadge(member.role, c),
+              const SizedBox(width: 8),
+              Icon(Icons.more_horiz_rounded, size: 18, color: c.muted),
+            ],
+          ),
         ),
-        ],
       ),
     );
   }
 }
 
-// Rest of the existing code continues here...
-class _AddMembersDialog extends StatefulWidget {
+// ─────────────────────────────────────────────────────────────────────────────
+// ADD MEMBERS BOTTOM SHEET (MATCHING OPAQUE DESIGN & GREEN TICKS)
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _AddMembersSheet extends StatefulWidget {
   final List<Map<String, dynamic>> friends;
 
-  const _AddMembersDialog({required this.friends});
+  const _AddMembersSheet({required this.friends});
 
   @override
-  State<_AddMembersDialog> createState() => _AddMembersDialogState();
+  State<_AddMembersSheet> createState() => _AddMembersSheetState();
 }
 
-class _AddMembersDialogState extends State<_AddMembersDialog> {
+class _AddMembersSheetState extends State<_AddMembersSheet> {
   final Set<String> _selectedUsernames = {};
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
   String _searchQuery = '';
 
   @override
+  void initState() {
+    super.initState();
+    _searchController.addListener(() {
+      if (mounted) {
+        setState(() => _searchQuery = _searchController.text.trim().toLowerCase());
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _toggle(String username) {
+    setState(() {
+      if (!_selectedUsernames.remove(username)) {
+        _selectedUsernames.add(username);
+      }
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final filteredFriends = widget.friends.where((friend) {
-      final username = friend['username'] as String;
-      return username.toLowerCase().contains(_searchQuery.toLowerCase());
+    final c = NotesColors(context);
+    final neutralDark = context.read<UserSettingsProvider>().isDarkMode;
+    final selectedSurface =
+        neutralDark ? const Color(0xFFE3E5E9) : const Color(0xFF303238);
+    final selectedInk =
+        neutralDark ? const Color(0xFF25272C) : const Color(0xFFF8F8FA);
+
+    final filtered = widget.friends.where((friend) {
+      final username = (friend['username'] as String).toLowerCase();
+      final displayName = ((friend['displayName'] as String?) ?? '').toLowerCase();
+      return username.contains(_searchQuery) || displayName.contains(_searchQuery);
     }).toList();
 
-    return Dialog(
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
+    final isKeyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0;
+
+    return Container(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.85,
       ),
-      child: Container(
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.9,
-          maxHeight: MediaQuery.of(context).size.height * 0.7,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Header
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.grey[100],
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(20),
-                  topRight: Radius.circular(20),
+      decoration: BoxDecoration(
+        color: c.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        border: Border(top: BorderSide(color: c.line)),
+      ),
+      child: SafeArea(
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+          child: Column(
+            children: [
+              // Top drag bar
+              const SizedBox(height: 12),
+              Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: c.line,
+                  borderRadius: BorderRadius.circular(2),
                 ),
               ),
-              child: Row(
-                children: [
-                  Icon(Icons.person_add, size: 24, color: Colors.grey[800]),
-                  const SizedBox(width: 12),
-                  const Text(
-                    'Add Members',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black87,
-                    ),
-                  ),
-                  const Spacer(),
-                  if (_selectedUsernames.isNotEmpty)
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: Colors.blue,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(
-                        '${_selectedUsernames.length}',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
+              // Header
+              Padding(
+                padding: const EdgeInsets.fromLTRB(22, 14, 22, 10),
+                child: Row(
+                  children: [
+                    Text('Add members', style: c.text(18, bold: true)),
+                    const Spacer(),
+                    if (_selectedUsernames.isNotEmpty)
+                      Container(
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF16A34A).withOpacity(0.16),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          '${_selectedUsernames.length} selected',
+                          style: c.text(11, bold: true).copyWith(
+                                color: const Color(0xFF16A34A),
+                              ),
                         ),
                       ),
-                    ),
-                ],
-              ),
-            ),
-
-            // Search field
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: TextField(
-                style: const TextStyle(color: Colors.black87, fontSize: 16),
-                decoration: InputDecoration(
-                  hintText: 'Search friends...',
-                  hintStyle: TextStyle(color: Colors.grey[600]),
-                  prefixIcon: Icon(Icons.search, color: Colors.grey[700]),
-                  filled: true,
-                  fillColor: Colors.grey[100],
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  ],
                 ),
-                onChanged: (value) {
-                  setState(() {
-                    _searchQuery = value;
-                  });
-                },
               ),
-            ),
+              // Search input
+              Padding(
+                padding: const EdgeInsets.fromLTRB(22, 4, 22, 10),
+                child: SizedBox(
+                  height: 38,
+                  child: TextField(
+                    controller: _searchController,
+                    focusNode: _searchFocusNode,
+                    onTapOutside: (_) => _searchFocusNode.unfocus(),
+                    style: c.text(12),
+                    decoration: InputDecoration(
+                      hintText: 'Search friends',
+                      hintStyle: c.text(12, muted: true),
+                      filled: true,
+                      fillColor: c.soft,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                      prefixIcon: Icon(Icons.search, size: 16, color: c.muted),
+                      suffixIcon: _searchQuery.isEmpty
+                          ? null
+                          : IconButton(
+                              tooltip: 'Clear',
+                              onPressed: _searchController.clear,
+                              icon: Icon(Icons.close, size: 16, color: c.muted),
+                            ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(19),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Divider(height: 1, color: c.line),
 
-            // Friends list
-            Flexible(
-              child: filteredFriends.isEmpty
-                  ? const Center(
-                      child: Padding(
-                        padding: EdgeInsets.all(32.0),
+              // Friends list
+              Expanded(
+                child: filtered.isEmpty
+                    ? Center(
                         child: Text(
                           'No friends found',
-                          style: TextStyle(
-                            color: Colors.grey,
-                            fontSize: 16,
-                          ),
+                          style: c.text(12, muted: true),
                         ),
-                      ),
-                    )
-                  : ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: filteredFriends.length,
-                      itemBuilder: (context, index) {
-                        final friend = filteredFriends[index];
-                        final username = friend['username'] as String;
-                        final avatarUrl = friend['avatarUrl'] as String?;
-                        final displayName = friend['displayName'] ?? username;
-                        final isSelected = _selectedUsernames.contains(username);
+                      )
+                    : ListView.builder(
+                        padding: EdgeInsets.zero,
+                        keyboardDismissBehavior:
+                            ScrollViewKeyboardDismissBehavior.onDrag,
+                        itemCount: filtered.length,
+                        itemBuilder: (context, index) {
+                          final friend = filtered[index];
+                          final username = friend['username'] as String;
+                          final displayName = friend['displayName'] as String?;
+                          final avatarUrl = friend['avatarUrl'] as String?;
+                          final name = displayName?.trim().isNotEmpty == true
+                              ? displayName!
+                              : username;
+                          final isSelected =
+                              _selectedUsernames.contains(username);
 
-                        return InkWell(
-                          onTap: () {
-                            setState(() {
-                              if (isSelected) {
-                                _selectedUsernames.remove(username);
-                              } else {
-                                _selectedUsernames.add(username);
-                              }
-                            });
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                            child: Row(
-                              children: [
-                                CircleAvatar(
-                                  radius: 24,
-                                  backgroundColor: Color(username.hashCode | 0xFF000000),
-                                  backgroundImage: avatarUrl != null && avatarUrl.isNotEmpty
-                                      ? CachedNetworkImageProvider(avatarUrl)
-                                      : null,
-                                  child: avatarUrl == null || avatarUrl.isEmpty
-                                      ? Text(
-                                          username.isNotEmpty
-                                              ? username[0].toUpperCase()
-                                              : '?',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 18,
-                                          ),
-                                        )
-                                      : null,
+                          return Material(
+                            color: isSelected
+                                ? (neutralDark
+                                    ? const Color(0xFF16A34A).withOpacity(0.12)
+                                    : const Color(0xFF16A34A).withOpacity(0.08))
+                                : Colors.transparent,
+                            child: InkWell(
+                              onTap: () => _toggle(username),
+                              child: Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 22,
+                                  vertical: 12,
                                 ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        displayName,
-                                        style: const TextStyle(
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.w600,
-                                          color: Colors.white,
+                                decoration: BoxDecoration(
+                                  border: Border(
+                                    bottom: BorderSide(
+                                      color: c.line,
+                                      width: 0.5,
+                                    ),
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    _buildAvatar(name, avatarUrl, c),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            name,
+                                            style: c.text(13, bold: isSelected),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            '@$username',
+                                            style: c.text(10, muted: true),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      width: 18,
+                                      height: 18,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: isSelected
+                                            ? const Color(0xFF16A34A)
+                                            : Colors.transparent,
+                                        border: Border.all(
+                                          color: isSelected
+                                              ? const Color(0xFF16A34A)
+                                              : c.line,
+                                          width: 1.4,
                                         ),
                                       ),
-                                      if (displayName != username)
-                                        Text(
-                                          '@$username',
-                                          style: const TextStyle(
-                                            fontSize: 13,
-                                            color: Colors.white70,
-                                          ),
-                                        ),
-                                    ],
-                                  ),
+                                      child: isSelected
+                                          ? const Icon(
+                                              Icons.check,
+                                              color: Colors.white,
+                                              size: 12,
+                                            )
+                                          : null,
+                                    ),
+                                  ],
                                 ),
-                                Checkbox(
-                                  value: isSelected,
-                                  onChanged: (checked) {
-                                    setState(() {
-                                      if (checked == true) {
-                                        _selectedUsernames.add(username);
-                                      } else {
-                                        _selectedUsernames.remove(username);
-                                      }
-                                    });
-                                  },
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                ),
-                              ],
+                              ),
                             ),
-                          ),
-                        );
-                      },
-                    ),
-            ),
-
-            // Actions
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.grey[50],
-                borderRadius: const BorderRadius.only(
-                  bottomLeft: Radius.circular(20),
-                  bottomRight: Radius.circular(20),
-                ),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: Text(
-                      'Cancel',
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: Colors.grey[700],
+                          );
+                        },
                       ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  ElevatedButton(
-                    onPressed: _selectedUsernames.isEmpty
-                        ? null
-                        : () => Navigator.pop(context, _selectedUsernames.toList()),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blue,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              ),
+
+              // Bottom Add Action Bar
+              Container(
+                padding: EdgeInsets.fromLTRB(
+                  22,
+                  isKeyboardOpen ? 8 : 12,
+                  22,
+                  isKeyboardOpen ? 6 : 10,
+                ),
+                decoration: BoxDecoration(
+                  border: Border(top: BorderSide(color: c.line)),
+                ),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: _selectedUsernames.isNotEmpty
+                        ? () => Navigator.pop(
+                            context, _selectedUsernames.toList())
+                        : null,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: selectedSurface,
+                      foregroundColor: selectedInk,
+                      disabledBackgroundColor: c.soft,
+                      disabledForegroundColor: c.muted,
+                      minimumSize: const Size.fromHeight(44),
+                      textStyle: c.text(13, bold: true),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      elevation: 0,
                     ),
-                    child: const Text(
-                      'Add',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
+                    child: Text(
+                      _selectedUsernames.isNotEmpty
+                          ? 'Add (${_selectedUsernames.length})'
+                          : 'Select members to add',
                     ),
                   ),
-                ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
+    );
+  }
+
+  Widget _buildAvatar(String name, String? avatarUrl, NotesColors c) {
+    final initials = name
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((s) => s.isNotEmpty)
+        .take(2)
+        .map((s) => s.characters.first.toUpperCase())
+        .join();
+
+    final fallback = Center(
+      child: Text(
+        initials.isEmpty ? '?' : initials,
+        style: c.text(12, bold: true, muted: true),
+      ),
+    );
+
+    return Container(
+      width: 36,
+      height: 36,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(shape: BoxShape.circle, color: c.soft),
+      child: avatarUrl?.isNotEmpty == true
+          ? CachedNetworkImage(
+              imageUrl: avatarUrl!,
+              fit: BoxFit.cover,
+              placeholder: (_, __) => fallback,
+              errorWidget: (_, __, ___) => fallback,
+            )
+          : fallback,
     );
   }
 }

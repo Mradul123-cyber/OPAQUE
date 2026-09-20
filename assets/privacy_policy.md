@@ -1,14 +1,14 @@
-# Privacy Policy for Zarq Messenger
+# Privacy Policy for OPAQUE
 
-**Last Updated:** October 7, 2025
+**Last Updated:** September 20, 2026
 
 ---
 
 ## Introduction
 
-Welcome to **Zarq Messenger** (Zero-access Authenticated Real-time Query), a secure messaging application developed by an independent developer in India.
+Welcome to **OPAQUE**, a secure messaging application developed by an independent developer in India.
 
-Your privacy is our top priority. This Privacy Policy explains how we collect, use, and protect your information when you use Zarq Messenger.
+Your privacy is our top priority. This Privacy Policy explains how we collect, use, and protect your information when you use OPAQUE.
 
 ---
 
@@ -17,10 +17,10 @@ Your privacy is our top priority. This Privacy Policy explains how we collect, u
 ### 1. Information You Provide
 
 **Account Information:**
-- Phone number (authenticated via Firebase, hash stored in database)
-- Username
-- Display name (optional)
-- Profile picture (optional)
+- Phone number, if you use phone sign-in, and email address (including Gmail), if you use email or Google sign-in. Firebase Authentication manages these details; OPAQUE can access them to authenticate and manage your account.
+- Firebase user ID, sign-in provider, and verification status.
+- A phone-number hash in our database, where a phone number is available, for contact matching and account checks. This does not make your number anonymous to OPAQUE.
+- Username, optional display name, and optional profile picture. Google sign-in can also provide your Google profile name and photo.
 
 **Content You Create:**
 - Messages (end-to-end encrypted)
@@ -39,14 +39,14 @@ Your privacy is our top priority. This Privacy Policy explains how we collect, u
 - Last seen timestamp
 - Online/offline status
 - Message delivery status (sent, delivered, read)
-- Call logs (duration, participants, time)
+- In-app call logs for OPAQUE calls (participants, start/end time, duration, voice/video type, and call outcome). These are call metadata, not recordings or your cellular call history.
 
-### 3. Information We Do NOT Collect
+### 3. Optional Features and Information We Do Not Access
 
 - ❌ Message content (we cannot read your messages due to end-to-end encryption)
 - ❌ Payment information (no in-app purchases)
-- ❌ Location data
-- ❌ Contacts from your phone (we don't access your contact list)
+- Location sharing is optional. If you choose to share a location in a message, that location becomes part of the content you send.
+- Contact discovery is optional. With your permission, the app reads device contacts and sends phone-number hashes to our server to find matching OPAQUE accounts.
 - ❌ Browsing history
 
 ---
@@ -75,11 +75,11 @@ We use your information to:
 
 ## End-to-End Encryption (E2EE)
 
-**Zarq Messenger uses the Signal Protocol for end-to-end encryption.**
+**OPAQUE uses the Signal Protocol for end-to-end encryption.**
 
 This means:
 - ✅ Only you and the recipient can read your messages
-- ✅ Not even Zarq Messenger servers can decrypt your messages
+- ✅ Not even OPAQUE servers can decrypt your messages
 - ✅ Messages are encrypted on your device before being sent
 - ✅ Photos, videos, and files are also encrypted
 
@@ -101,7 +101,6 @@ This means:
 
 - **Database Server:** PostgreSQL database hosted on secure servers
 - **File Storage:** Encrypted media files stored on server storage
-- **Location:** Currently hosted in [Server Location - will be specified when deployed]
 
 ### How We Protect Your Data
 
@@ -113,11 +112,14 @@ This means:
 
 ### Data Retention
 
-- **Messages:** Stored until you delete them
-- **Media:** Automatically deleted after 180 days (or sooner if viewed by all recipients)
-- **Call Logs:** Deleted after 30 days
-- **Offline Messages:** Deleted after delivery or 30 days
-- **Deleted Messages:** Permanently removed from servers
+These periods describe scheduled server cleanup, not an exact deletion time or a guarantee of permanent backup.
+
+- **Messages on our servers:** Encrypted message records are scheduled for server cleanup once they are more than 45 days old. Cleanup does not erase messages already saved in your device chat history.
+- **Media on our servers:** Server media storage is temporary. Photos and videos may be removed after they are more than 3 days old and recorded as viewed by the sender and recipient. A fixed deletion deadline is not currently guaranteed for every uploaded file. Media may become unavailable for download after server cleanup.
+- **Copies on your device:** Messages and media already downloaded or saved on a device remain there after routine server cleanup. Server cleanup does not remotely erase those copies. Media that has not been downloaded before removal may no longer be retrievable. Local deletion, clearing app data, or removing saved files is separate from server cleanup.
+- **In-app call history:** Records of calls made through OPAQUE are scheduled for deletion from our servers once they are more than 30 days old. The Calls page loads this history from the server, so deleted records disappear when the history refreshes. OPAQUE does not keep a separate permanent on-device call-history archive.
+- **Messages waiting for a recipient to reconnect:** If a recipient is offline (for example, their phone has no internet connection), encrypted messages can wait on our servers for delivery when they reconnect. These are sometimes called offline messages. Delivery does not necessarily immediately erase the server record; queued records linked to messages are removed by the same 45-day message cleanup. Messages may therefore expire before a recipient reconnects.
+- **Deletion requests:** You can delete messages using the options available in the app or email us to request account deletion. Routine server cleanup and account deletion cannot remove copies another person has already saved or exported.
 
 ---
 
@@ -135,7 +137,7 @@ We use the following third-party services:
 
 **Privacy Policy:** https://firebase.google.com/support/privacy
 
-### 2. Google Cloud Messaging (FCM)
+### 2. Firebase Cloud Messaging (FCM)
 **Used for:** Sending push notifications
 
 **Data shared:**
@@ -157,7 +159,7 @@ We use the following third-party services:
 2. **Delete Your Data:**
    - Delete individual messages
    - Delete conversations
-   - Delete your account (removes all data)
+   - Request account deletion by emailing opaquelabs.in@gmail.com. Copies saved by other people are not removed by your account-deletion request.
 
 3. **Control Notifications:**
    - Enable/disable push notifications
@@ -170,7 +172,7 @@ We use the following third-party services:
 
 ### How to Exercise Your Rights:
 
-- **Delete Account:** Settings → Account → Delete Account
+- **Delete Account:** Email opaquelabs.in@gmail.com with the subject "Account deletion" and your OPAQUE username. We will guide you through ownership verification. Never send your password or one-time verification codes.
 - **Delete Messages:** Long press message → Delete
 - **Privacy Settings:** Settings → Privacy
 
@@ -192,7 +194,7 @@ We may share information only in these limited circumstances:
 ## Children's Privacy
 
 **Age Requirement:**
-- Users must be at least 13 years old to use Zarq Messenger
+- Users must be at least 13 years old to use OPAQUE
 - Users under 18 must have parental/guardian permission
 
 **We do not knowingly collect information from children under 13.**
@@ -205,9 +207,9 @@ Parents/guardians can contact us at **opaquelabs.in@gmail.com** if they believe 
 
 ## International Users
 
-Zarq Messenger is developed in India and complies with Indian data protection laws.
+OPAQUE is developed in India and complies with Indian data protection laws.
 
-If you use the service from outside India, your information may be transferred to and stored in India.
+Your information may be processed by OPAQUE and its service providers in countries other than the country where you live.
 
 ---
 
@@ -228,7 +230,7 @@ If you have questions, concerns, or requests regarding this Privacy Policy or yo
 
 **Email:** opaquelabs.in@gmail.com
 
-**Developer:** Zarq Messenger (Independent Developer, India)
+**Developer:** OPAQUE (Independent Developer, India)
 
 We will respond to your inquiry within 7 business days.
 
@@ -236,12 +238,12 @@ We will respond to your inquiry within 7 business days.
 
 ## Your Consent
 
-By using Zarq Messenger, you consent to this Privacy Policy and agree to its terms.
+By using OPAQUE, you consent to this Privacy Policy and agree to its terms.
 
-If you do not agree with this policy, please do not use the app.
+If you have concerns about this policy, contact us at opaquelabs.in@gmail.com before continuing. You can stop using OPAQUE and request account deletion at any time.
 
 ---
 
-**Zarq Messenger - Zero-access Authenticated Real-time Query**
+**OPAQUE**
 
 *Your messages. Zero access. Total privacy.*

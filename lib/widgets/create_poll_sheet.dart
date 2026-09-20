@@ -3,6 +3,7 @@ import 'sharing_ui.dart';
 import 'opaque_navigation.dart';
 import 'package:flutter/material.dart';
 import '../models/chat_payloads.dart';
+import 'opaque_toast.dart';
 
 class CreatePollSheet extends StatefulWidget {
   final String? currentUid;
@@ -60,9 +61,7 @@ class _CreatePollSheetState extends State<CreatePollSheet> {
     setState(() => _validationError = error);
     if (error != null) return;
     if (question.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a poll question')),
-      );
+      OpaqueToast.warning(context, 'Please enter a poll question');
       return;
     }
 
@@ -75,9 +74,7 @@ class _CreatePollSheetState extends State<CreatePollSheet> {
     }
 
     if (options.length < 2) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please provide at least 2 options')),
-      );
+      OpaqueToast.warning(context, 'Please provide at least 2 options');
       return;
     }
 

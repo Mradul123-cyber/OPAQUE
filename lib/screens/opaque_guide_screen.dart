@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'opaque_guide_content.dart';
+import '../widgets/opaque_toast.dart';
 
 /// Shared guide layout for the overview and existing tutorial entry points.
 class OpaqueGuideScreen extends StatefulWidget {
@@ -586,14 +587,11 @@ class _OpaqueGuideScreenState extends State<OpaqueGuideScreen> {
 
   void _linkFailed() {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          _t(
-            'Unable to open the reference. Please try again.',
-            'लिंक नहीं खुल सका। कृपया फिर कोशिश करें।',
-          ),
-        ),
+    OpaqueToast.error(
+      context,
+      _t(
+        'Unable to open reference. Try again.',
+        'लिंक नहीं खुल सका। कृपया फिर कोशिश करें।',
       ),
     );
   }

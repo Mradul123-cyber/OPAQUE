@@ -4,6 +4,7 @@ import '../models/chat_payloads.dart';
 import '../services/location_places_service.dart';
 import 'sharing_ui.dart';
 import 'location_map.dart';
+import 'opaque_toast.dart';
 
 class ShareLocationPage extends StatefulWidget {
   const ShareLocationPage({super.key, required this.latitude, required this.longitude});
@@ -43,7 +44,7 @@ class _ShareLocationPageState extends State<ShareLocationPage> {
       if (!mounted) return;
       setState(() { _latitude = p.latitude; _longitude = p.longitude; _selected = _current; });
       _search.clear(); await _find();
-    } catch (_) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not refresh location. Check GPS and permissions.'))); }
+    } catch (_) { if (mounted) OpaqueToast.error(context, 'Could not refresh location'); }
     finally { if (mounted) setState(() => _locating = false); }
   }
   @override

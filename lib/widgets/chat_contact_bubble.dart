@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/chat_payloads.dart';
+import 'opaque_toast.dart';
 
 class ChatContactBubble extends StatelessWidget {
   final ContactPayload payload;
@@ -25,12 +26,9 @@ class ChatContactBubble extends StatelessWidget {
       if (!await launchUrl(Uri(scheme: 'tel', path: clean)))
         throw StateError('No dialer available');
     } catch (_) {
-      if (context.mounted)
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Could not open this number in the phone app.'),
-          ),
-        );
+      if (context.mounted) {
+        OpaqueToast.error(context, 'Could not open phone dialer');
+      }
     }
   }
 
@@ -39,9 +37,7 @@ class ChatContactBubble extends StatelessWidget {
       final permission = await FlutterContacts.requestPermission();
       if (!permission) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Contacts permission denied')),
-          );
+          OpaqueToast.warning(context, 'Contacts permission denied');
         }
         return;
       }
@@ -60,9 +56,7 @@ class ChatContactBubble extends StatelessWidget {
       await FlutterContacts.openExternalInsert(newContact);
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Could not save contact: $e')));
+        OpaqueToast.error(context, 'Could not save contact');
       }
     }
   }

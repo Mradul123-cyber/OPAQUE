@@ -33,6 +33,16 @@ final ThemeData zarqLightTheme = ThemeData(
   progressIndicatorTheme: const ProgressIndicatorThemeData(
     color: Colors.white,
   ),
+  textSelectionTheme: const TextSelectionThemeData(
+    cursorColor: Colors.black,
+    selectionHandleColor: Colors.black,
+    selectionColor: Color(0x33000000),
+  ),
+  inputDecorationTheme: const InputDecorationTheme(
+    focusedBorder: OutlineInputBorder(
+      borderSide: BorderSide(color: Colors.black, width: 1.5),
+    ),
+  ),
 );
 
 final ThemeData zarqDarkTheme = ThemeData(
@@ -66,5 +76,15 @@ final ThemeData zarqDarkTheme = ThemeData(
   ),
   progressIndicatorTheme: const ProgressIndicatorThemeData(
     color: Colors.white,
+  ),
+  textSelectionTheme: const TextSelectionThemeData(
+    cursorColor: Colors.white,
+    selectionHandleColor: Colors.white,
+    selectionColor: Color(0x33FFFFFF),
+  ),
+  inputDecorationTheme: const InputDecorationTheme(
+    focusedBorder: OutlineInputBorder(
+      borderSide: BorderSide(color: Colors.white, width: 1.5),
+    ),
   ),
 );

@@ -20,6 +20,7 @@ import 'package:provider/provider.dart';
 import 'providers/home_provider.dart';
 import 'chat_screen.dart';
 import 'package:zarq_messenger/app_config.dart';
+import 'widgets/opaque_toast.dart';
 
 class Friend {
   final String username;
@@ -177,7 +178,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     if (_isRefreshingTabs) return;
     setState(() {
       _isRefreshingTabs = true;
-      if (FriendTab.values[tabIndex] != FriendTab.search) {
+      if (FriendTab.values[tabIndex] != FriendTab.search && _tabController.index != FriendTab.search.index) {
         _searchResults = [];
       }
     });
@@ -215,7 +216,9 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
               : "You have ${_receivedRequests.length} pending requests.";
           break;
         case FriendTab.search:
-          _statusMessage = "Search for friends by their username.";
+          if (_searchResults.isEmpty && _searchController.text.trim().isEmpty && !_contactMode) {
+            _statusMessage = "Search for friends by their username.";
+          }
           break;
       }
     } catch (e) {
@@ -389,13 +392,9 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
   Future<void> _sendFriendRequest(String targetUsername) async {
     if (_pendingRequests.contains(targetUsername) ||
         _myFriends.any((f) => f.username == targetUsername)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Request already sent or already friends with $targetUsername!',
-          ),
-          backgroundColor: Colors.orange,
-        ),
+      OpaqueToast.warning(
+        context,
+        'Request already sent or already friends with $targetUsername!',
       );
       return;
     }
@@ -407,12 +406,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Error: Not logged in.'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        OpaqueToast.error(context, 'Error: Not logged in.');
         setState(() {
           _pendingRequests.remove(targetUsername);
         });
@@ -435,20 +429,12 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
       if (mounted) {
         if (response.statusCode == 201) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Friend request sent to $targetUsername!'),
-              backgroundColor: Colors.green,
-            ),
-          );
-          _loadTabContent(FriendTab.sentRequests.index);
+          OpaqueToast.success(context, 'Friend request sent to $targetUsername!');
+          if (token != null) {
+            _fetchSentRequests(token);
+          }
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed: ${response.body}'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          OpaqueToast.error(context, 'Failed: ${response.body}');
           setState(() {
             _pendingRequests.remove(targetUsername);
           });
@@ -456,12 +442,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Failed to connect to server.'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to connect to server.');
         setState(() {
           _pendingRequests.remove(targetUsername);
         });
@@ -1183,25 +1164,16 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
           _myFriends.removeWhere((f) => f.username == username);
         });
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Removed $username from friends')),
-          );
+          OpaqueToast.info(context, 'Removed $username from friends');
         }
       } else {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to remove friend: ${response.body}'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          OpaqueToast.error(context, 'Failed to remove friend: ${response.body}');
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
-        );
+        OpaqueToast.error(context, 'Error: $e');
       }
     }
   }
@@ -1217,9 +1189,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
         listen: false,
       );
       if (!websocketService.isConnected || websocketService.channel == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Connecting... Please wait a moment.')),
-        );
+        OpaqueToast.info(context, 'Connecting... Please wait a moment.');
         return;
       }
 
@@ -1262,19 +1232,12 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
         }
       } else {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to open conversation: ${response.body}'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          OpaqueToast.error(context, 'Failed to open conversation: ${response.body}');
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
-        );
+        OpaqueToast.error(context, 'Error: $e');
       }
     }
   }

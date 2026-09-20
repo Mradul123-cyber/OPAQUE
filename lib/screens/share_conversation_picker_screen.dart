@@ -20,6 +20,7 @@ import '../services/group_encryption_service.dart';
 import '../services/database_service.dart';
 import '../services/user_settings_provider.dart';
 import '../message_model.dart';
+import '../widgets/opaque_toast.dart';
 
 class ShareConversationPickerScreen extends StatefulWidget {
   final SharedContent sharedContent;
@@ -117,12 +118,7 @@ class _ShareConversationPickerScreenState
 
   Future<void> _sendToSelectedConversations() async {
     if (_selectedConversationIds.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please select at least one conversation'),
-          backgroundColor: Colors.orange,
-        ),
-      );
+      OpaqueToast.warning(context, 'Please select at least one conversation');
       return;
     }
 
@@ -187,30 +183,15 @@ class _ShareConversationPickerScreenState
         Navigator.of(context).pop();
 
         if (failCount == 0) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('✓ Shared to $successCount conversation(s)'),
-              backgroundColor: Colors.green,
-            ),
-          );
+          OpaqueToast.success(context, 'Shared to $successCount conversation(s)');
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Shared to $successCount, failed: $failCount'),
-              backgroundColor: Colors.orange,
-            ),
-          );
+          OpaqueToast.warning(context, 'Shared to $successCount, failed: $failCount');
         }
       }
     } catch (e) {
       debugPrint('[SharePicker] Error sending: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to share: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to share: $e');
       }
     } finally {
       if (mounted) {

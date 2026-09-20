@@ -3,7 +3,7 @@
 ## Isolated workspace
 
 Original: `E:\Zarq Final\zarq_git\zarq_messenger`
-Working copy: `E:\Zarq Final\zarq_git\opaque`
+Working copy: `E:\Opaque\opaque`
 Repository requested: public `Mradul123-cyber/opaque`. GitHub creation/push still pending authenticated access. Local branch: `main`.
 
 The authoritative working copy is the E: drive location above. The earlier D: drive copy is superseded and must not be used for implementation.
@@ -61,3 +61,22 @@ Logo review update: concept 13 replaces concept 09 in About. User found nested c
 Logo direction correction: user wants one hollow rounded-rectangle O, tilted, inside a circular badge. Concept 14 now appears in About for review, replacing the solid bubble interpretation. No additional ring or speech bubble.
 
 Logo review concept 15: refined the user's first attached interlocking mark with rounded terminals, balanced weight and clearer gaps. Now displayed in About; earlier concepts preserved. Preview only.
+
+About and document redesign implemented in E:\Opaque\opaque:
+- The current user-specified frontend working copy is E:\Opaque\opaque. Earlier E:\Zarq Final and D: copies are not the implementation target.
+- Audited preview counterparts: Settings/profile, backups, auth, groups, Home/Chat, Calls, Friends, Style, Notes and guides already have redesigned implementations. Existing uncommitted changes were preserved.
+- About now follows the unified reference: compact back header, OPAQUE hero, privacy panel, feature list, developer copy and three legal/support routes, with responsive light/dark styling and pure-white OPAQUE text in dark mode.
+- The existing circular assets/zarq_logo_circle.png is retained while logo work is deferred. No generated concept or preview control was added to production. The existing Version 1.0.0 display is retained.
+- Privacy Policy, Terms of Service and Contact & Support retain their original asset paths and content, including the previously updated support email. The shared document viewer now uses the same solid surfaces and typography, selectable content, mounted checks and retry state. CallAwareScreen and back navigation are preserved.
+- Validation: targeted analysis had 13 pre-existing diagnostics (one unused variable, twelve deprecated withOpacity uses); the three changed/new Dart implementation files now have none. Five focused widget tests pass: narrow enlarged-text layout/live dark theme, all three document routes and return navigation, and load-error retry. No APK built or installed, following the handoff's manual-build instruction.
+E2EE banner proposal (2026-09-20): unified opaque-preview.html#e2ee opens the chat with a compact tinted privacy notice at the start of the conversation. Small lock, sentence-case title, and participant-neutral copy work for individual/group messaging. Light/dark styles use existing preview theme controls. Browser review only; no Flutter or encryption behavior changes.
+
+E2EE preview revision: replaced the rejected tinted card with a centered floating notice, no background/border or icon badge. Standalone 23px lock, 12px title and balanced 11px supporting copy within a 276px maximum width. Preview only.
+
+E2EE compact revision: one centered inline lock and sentence, 'Messages are end-to-end encrypted.' No box; 13px icon, 11px medium text, 6px icon gap and reduced date spacing. Teal in light mode and soft mint in dark mode. Both themes visually reviewed. This supersedes the stacked banner proposal; Flutter unchanged pending approval.
+
+Chat modal implementation (2026-09-20): implemented the approved compact inline encryption notice, green #26833C in light and #8BEA91 in dark. Shared OpaqueChatDialog styles all eight alert dialogs plus message info; delete choices/confirmations, deleted-message removal, wallpaper, clear chat and block retain their existing callbacks. Document actions, forwarding picker and photo/video selection use OpaqueChatSheet; reaction picker now respects light/dark colors. Three-dot menu uses a bordered 18px surface, compact icon rows, separator and themed destructive actions. No auth, encryption, storage or networking behavior changed. Three widget tests pass for narrow enlarged-text layouts, dialog cancel/confirm results, and media choice. Chat analysis: 126 baseline diagnostics reduced to 116, with no new diagnostics; new surface/test files clean. Reaction widget retains seven existing informational diagnostics. No APK built or installed.
+
+Chat search redesign: solid light/dark toolbar, rounded theme-aware field with focused outline and accessible clear/back controls, compact result count matching the visible-message filters, and a smaller scrollable empty state with Clear search. Matches now use pale blue with dark ink for readable contrast on outgoing/incoming bubbles; Text.rich respects text scaling. Existing case-insensitive loaded-message search and normal-mode link actions retained. Analysis: 109 existing diagnostics, no errors or new diagnostics compared with the prior 116. No APK built.
+
+Common chat UI recovery: restored approved green E2EE notice, compact three-dot menu and dynamic mute label, OPAQUE dialogs/sheets, modern Clear/Block confirmations, search toolbar/empty state/highlights, and Gallery/Default wallpaper reset. Recovery was applied to the current chat file, preserving group messaging, encryption and media code; no whole-file rollback. A pre-recovery snapshot is saved in the Codex visualization workspace. Four existing widget tests pass; chat analysis decreased from 126 to 108 diagnostics with no new diagnostics or errors. No APK built or installed.

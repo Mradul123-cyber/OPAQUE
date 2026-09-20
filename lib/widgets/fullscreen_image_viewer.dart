@@ -6,6 +6,7 @@ import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:image_picker/image_picker.dart';
+import 'opaque_toast.dart';
 
 class FullscreenImageViewer extends StatefulWidget {
   final Uint8List imageData;
@@ -49,9 +50,7 @@ class _FullscreenImageViewerState extends State<FullscreenImageViewer> {
   Future<void> _saveToGallery() async {
     try {
       // Show loading
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Saving image...'), duration: Duration(seconds: 1)),
-      );
+      OpaqueToast.info(context, 'Saving image...');
 
       // Save to temporary file
       final tempDir = await getTemporaryDirectory();
@@ -65,24 +64,12 @@ class _FullscreenImageViewerState extends State<FullscreenImageViewer> {
       await tempFile.delete();
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Image saved to gallery'),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 2),
-          ),
-        );
+        OpaqueToast.success(context, 'Image saved to gallery');
       }
     } catch (e) {
       // print('[FullscreenViewer] Error saving image: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to save: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 2),
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to save: $e');
       }
     }
   }
@@ -107,13 +94,7 @@ class _FullscreenImageViewerState extends State<FullscreenImageViewer> {
     } catch (e) {
       // print('[FullscreenViewer] Error sharing image: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to share: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 2),
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to share: $e');
       }
     }
   }

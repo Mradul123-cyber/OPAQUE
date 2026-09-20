@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:async';
 import '../starfield_background.dart';
+import '../widgets/opaque_toast.dart';
 
 class PhoneOtpVerificationScreen extends StatefulWidget {
   final String phoneNumber;
@@ -192,14 +193,11 @@ class _PhoneOtpVerificationScreenState extends State<PhoneOtpVerificationScreen>
 
   void _showSnackbar(String message, {bool isError = false}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: isError ? Colors.red : Colors.green,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-    );
+    if (isError) {
+      OpaqueToast.error(context, message);
+    } else {
+      OpaqueToast.success(context, message);
+    }
   }
 
   @override

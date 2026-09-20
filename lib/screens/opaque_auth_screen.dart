@@ -53,7 +53,7 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
       _emailSent = false,
       _profileCreated = false;
   String _phone = '', _error = '', _countryIso = 'IN';
-  String? _verificationId, _avatar;
+  String? _verificationId, _avatar, _registrationPassword, _pendingEmail;
   int? _resendToken;
   int _phoneAttempt = 0;
   DateTime? _resendAt;
@@ -254,6 +254,9 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
         await _sendPhone();
         return;
       }
+      if (_register) {
+        _registrationPassword = _password.text;
+      }
       final credential = _register
           ? await FirebaseAuth.instance.createUserWithEmailAndPassword(
               email: _email.text.trim(),
@@ -403,7 +406,11 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
     if (_remaining > 0) return;
     final user = _user;
     if (user == null) throw StateError('Please sign in again.');
-    await user.sendEmailVerification();
+    if (_pendingEmail != null) {
+      await user.verifyBeforeUpdateEmail(_pendingEmail!);
+    } else {
+      await user.sendEmailVerification();
+    }
     if (mounted)
       setState(() {
         _emailSent = true;
@@ -420,6 +427,10 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
       if (!mounted || _step != _Step.verify) return;
       final user = _user;
       if (user != null && user.emailVerified) {
+        if (_pendingEmail != null) {
+          _email.text = user.email ?? _pendingEmail!;
+          _pendingEmail = null;
+        }
         await user.getIdToken(true);
         await _run(() => _routeAuthenticated(user));
       } else if (!silent) {
@@ -484,6 +495,7 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
           _go(_Step.details);
         rethrow;
       }
+      _registrationPassword = null;
       await _finish();
     });
   }
@@ -493,12 +505,85 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
     if (_user == null) {
       _phoneAttempt++;
       _resendToken = null;
+      _email.clear();
+      _password.clear();
+      _username.clear();
+      _displayName.clear();
       _go(_Step.choose);
       return;
     }
+
+    if (_register && !_profileCreated) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogCtx) => Theme(
+          data: opaqueAuthTheme(_isDark),
+          child: AlertDialog(
+            title: const Text('Cancel registration?'),
+            content: const Text(
+              'If you cancel, your registration will be cancelled and your account will not be created. Any entered information will be removed.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogCtx).pop(false),
+                child: const Text('Keep going'),
+              ),
+              TextButton(
+                style: TextButton.styleFrom(foregroundColor: Colors.red),
+                onPressed: () => Navigator.of(dialogCtx).pop(true),
+                child: const Text('Cancel registration'),
+              ),
+            ],
+          ),
+        ),
+      );
+
+      if (confirmed == true) {
+        await _run(() async {
+          final user = _user;
+          if (user != null) {
+            try {
+              await OpaqueAuthService.clearDraft(user);
+            } catch (e) {
+              debugPrint('Error clearing draft: $e');
+            }
+            try {
+              await user.delete();
+            } catch (e) {
+              debugPrint('Error deleting user during cancel: $e');
+              try {
+                await FirebaseAuth.instance.signOut();
+              } catch (_) {}
+            }
+          }
+          _email.clear();
+          _password.clear();
+          _registrationPassword = null;
+          _pendingEmail = null;
+          _username.clear();
+          _displayName.clear();
+          _code.clear();
+          _phoneController.clear();
+          _avatar = null;
+          _emailSent = false;
+          _profileCreated = false;
+          _phoneAttempt++;
+          _verificationId = null;
+          _resendToken = null;
+          OpaqueAuthService.interactive.value = false;
+          if (!mounted) return;
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (_) => const AuthGate()),
+            (_) => false,
+          );
+        });
+      }
+      return;
+    }
+
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (_) => Theme(
+      builder: (dialogCtx) => Theme(
         data: opaqueAuthTheme(_isDark),
         child: AlertDialog(
           title: const Text('Leave setup for now?'),
@@ -507,18 +592,18 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context, false),
+              onPressed: () => Navigator.of(dialogCtx).pop(false),
               child: const Text('Keep going'),
             ),
             TextButton(
-              onPressed: () => Navigator.pop(context, true),
+              onPressed: () => Navigator.of(dialogCtx).pop(true),
               child: const Text('Sign out'),
             ),
           ],
         ),
       ),
     );
-    if (confirmed == true)
+    if (confirmed == true) {
       await _run(() async {
         await FirebaseAuth.instance.signOut();
         if (!mounted) return;
@@ -528,6 +613,7 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
         );
         OpaqueAuthService.interactive.value = false;
       });
+    }
   }
 
   bool get _isDark =>
@@ -614,6 +700,7 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
             keyboardType: keyboard,
             autocorrect: false,
             enableSuggestions: !secret,
+            cursorColor: c.typingColor,
             style: TextStyle(fontSize: 13, color: c.ink),
             autofillHints: secret
                 ? [
@@ -898,11 +985,16 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
             controller: _phoneController,
             enabled: !_busy,
             initialCountryCode: _countryIso,
+            cursorColor: c.typingColor,
             style: TextStyle(fontSize: 13, color: c.ink),
             dropdownTextStyle: TextStyle(fontSize: 12, color: c.ink),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               hintText: 'Phone number',
               counterText: '',
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(11),
+                borderSide: BorderSide(color: c.typingColor, width: 1.5),
+              ),
             ),
             onChanged: (phone) {
               _phone = phone.completeNumber;
@@ -982,6 +1074,7 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
         TextFormField(
           controller: _code,
           enabled: !_busy,
+          cursorColor: c.typingColor,
           keyboardType: TextInputType.number,
           autofillHints: const [AutofillHints.oneTimeCode],
           inputFormatters: [
@@ -990,7 +1083,13 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
           ],
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 24, letterSpacing: 10, color: c.ink),
-          decoration: const InputDecoration(hintText: '000000'),
+          decoration: InputDecoration(
+            hintText: '000000',
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(11),
+              borderSide: BorderSide(color: c.typingColor, width: 1.5),
+            ),
+          ),
           validator: (v) =>
               (v?.length ?? 0) == 6 ? null : 'Enter all six digits.',
         ),
@@ -1031,70 +1130,177 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
         ),
         Container(
           width: double.infinity,
-          padding: const EdgeInsets.all(14),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           decoration: BoxDecoration(
             color: c.soft,
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: c.line.withOpacity(0.5),
+              width: 1,
+            ),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
             children: [
-              Text(
-                _emailSent
-                    ? 'Verification email sent to'
-                    : 'Your email address',
-                style: TextStyle(fontSize: 11, color: c.muted),
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: c.dark
+                      ? Colors.white.withOpacity(0.08)
+                      : Colors.black.withOpacity(0.05),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  Icons.mark_email_read_outlined,
+                  size: 20,
+                  color: c.ink,
+                ),
               ),
-              const SizedBox(height: 6),
-              Text(
-                _user?.email ?? _email.text,
-                style: const TextStyle(fontSize: 13),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _pendingEmail != null
+                          ? 'Verification link sent to (pending)'
+                          : (_emailSent
+                              ? 'Verification link sent to'
+                              : 'Your email address'),
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: c.muted,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      _pendingEmail ?? _user?.email ?? _email.text,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: c.ink,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: _busy ? null : _changeEmail,
+                style: TextButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  foregroundColor: c.ink,
+                ),
+                child: const Text(
+                  'Change',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                ),
               ),
             ],
           ),
         ),
         _errorView(context),
         _primary('I’ve verified my email', () => _checkEmail()),
-        Center(
-          child: TextButton(
-            onPressed: _busy || _remaining > 0 ? null : () => _run(_sendEmail),
-            child: Text(
-              _remaining > 0
-                  ? 'Resend email in ${_remaining}s'
-                  : _emailSent
-                  ? 'Resend email'
-                  : 'Send verification email',
-            ),
-          ),
-        ),
-        _hint(context, 'We’ll continue when your email is verified.'),
-        Center(
-          child: TextButton(
-            onPressed: () => showDialog<void>(
-              context: context,
-              builder: (_) => Theme(
-                data: opaqueAuthTheme(_isDark),
-                child: AlertDialog(
-                  title: const Text('Can’t find the email?'),
-                  content: const Text(
-                    'Check your spam or junk folder, allow a few minutes for delivery, and check the address shown here. You can then resend the email.',
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('Done'),
-                    ),
-                  ],
+        Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: SizedBox(
+            width: double.infinity,
+            height: 46,
+            child: OutlinedButton.icon(
+              onPressed:
+                  _busy || _remaining > 0 ? null : () => _run(_sendEmail),
+              icon: _remaining > 0
+                  ? SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: c.muted,
+                      ),
+                    )
+                  : Icon(Icons.refresh_rounded, size: 16, color: c.ink),
+              label: Text(
+                _remaining > 0
+                    ? 'Resend email in ${_remaining}s'
+                    : _emailSent
+                    ? 'Resend verification email'
+                    : 'Send verification email',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: _remaining > 0 ? c.muted : c.ink,
+                ),
+              ),
+              style: OutlinedButton.styleFrom(
+                side: BorderSide(color: c.line),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
                 ),
               ),
             ),
-            child: const Text('Email not received?'),
           ),
         ),
-        Center(
-          child: TextButton(
-            onPressed: _busy ? null : _changeEmail,
-            child: const Text('Change email address'),
+        Padding(
+          padding: const EdgeInsets.only(top: 18, bottom: 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              TextButton(
+                onPressed: () => showDialog<void>(
+                  context: context,
+                  builder: (dialogCtx) => Theme(
+                    data: opaqueAuthTheme(_isDark),
+                    child: AlertDialog(
+                      title: const Text('Can’t find the email?'),
+                      content: const Text(
+                        'Check your spam or junk folder, allow a few minutes for delivery, and check the address shown here. You can then resend the email.',
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(dialogCtx).pop(),
+                          child: const Text('Done'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                style: TextButton.styleFrom(
+                  foregroundColor: c.muted,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: const Text(
+                  'Email not received?',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ),
+              Text(
+                '•',
+                style: TextStyle(color: c.muted.withOpacity(0.4), fontSize: 12),
+              ),
+              TextButton(
+                onPressed: _busy ? null : _leave,
+                style: TextButton.styleFrom(
+                  foregroundColor: c.muted,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: const Text(
+                  'Cancel registration',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ),
+            ],
           ),
         ),
       ];
@@ -1223,51 +1429,141 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
   }
 
   Future<void> _changeEmail() async {
-    final controller = TextEditingController(text: _user?.email ?? _email.text);
+    final currentEmail = _pendingEmail ?? _user?.email ?? _email.text;
+    final controller = TextEditingController(text: currentEmail);
+    controller.selection = TextSelection.collapsed(offset: currentEmail.length);
+
+    final focusNode = FocusNode();
+    bool initialSelectPrevented = false;
+    void collapseSelection() {
+      if (!initialSelectPrevented &&
+          controller.text.isNotEmpty &&
+          controller.selection.baseOffset == 0 &&
+          controller.selection.extentOffset == controller.text.length) {
+        initialSelectPrevented = true;
+        controller.selection =
+            TextSelection.collapsed(offset: controller.text.length);
+      }
+    }
+    controller.addListener(collapseSelection);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      focusNode.requestFocus();
+    });
+
     final address = await showDialog<String>(
       context: context,
-      builder: (_) => Theme(
+      builder: (dialogCtx) => Theme(
         data: opaqueAuthTheme(_isDark),
         child: AlertDialog(
           title: const Text('Change email address'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'We’ll send a link to verify your new address. Your email changes after you open it.',
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: controller,
-                keyboardType: TextInputType.emailAddress,
-                decoration: const InputDecoration(hintText: 'you@example.com'),
-              ),
-            ],
+          content: SingleChildScrollView(
+            child: TextField(
+              controller: controller,
+              focusNode: focusNode,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(hintText: 'you@example.com'),
+              onTap: () {
+                if (!controller.selection.isCollapsed) {
+                  controller.selection = TextSelection.collapsed(
+                    offset: controller.selection.extentOffset,
+                  );
+                }
+              },
+            ),
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context),
+              onPressed: () => Navigator.of(dialogCtx).pop(),
               child: const Text('Cancel'),
             ),
             TextButton(
-              onPressed: () => Navigator.pop(context, controller.text.trim()),
+              onPressed: () =>
+                  Navigator.of(dialogCtx).pop(controller.text.trim()),
               child: const Text('Send link'),
             ),
           ],
         ),
       ),
     );
-    controller.dispose();
+
+    Future.delayed(const Duration(milliseconds: 300), () {
+      controller.removeListener(collapseSelection);
+      controller.dispose();
+      focusNode.dispose();
+    });
     if (address == null || !mounted) return;
+
+    if (!RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(address)) {
+      setState(() => _error = 'Enter a valid email address.');
+      return;
+    }
+
+    if (address.toLowerCase() == currentEmail.toLowerCase()) {
+      setState(() => _error = 'That is already your current email address.');
+      return;
+    }
+
     await _run(() async {
-      if (!RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(address))
-        throw StateError('Enter a valid email address.');
-      await _user!.verifyBeforeUpdateEmail(address);
-      if (mounted)
-        setState(
-          () => _error =
-              'A verification link was sent to $address. Open it to update your email.',
-        );
+      final user = _user;
+      if (user == null) throw StateError('Please sign in again.');
+
+      final pwd = _registrationPassword ??
+          (_password.text.isNotEmpty ? _password.text : null);
+
+      if (_register && !_profileCreated && pwd != null) {
+        final username = _username.text.trim().isNotEmpty
+            ? _username.text.trim()
+            : (await OpaqueAuthService.pendingUsername(user) ?? '');
+
+        // 1. Clear draft and delete the previous unverified user
+        try {
+          await OpaqueAuthService.clearDraft(user);
+        } catch (e) {
+          debugPrint('Error clearing draft: $e');
+        }
+        try {
+          await user.delete();
+        } catch (e) {
+          debugPrint('Error deleting previous user: $e');
+        }
+
+        // 2. Register the new user with the new email in Firebase
+        final credential = await FirebaseAuth.instance
+            .createUserWithEmailAndPassword(email: address, password: pwd);
+        final newUser = credential.user;
+        if (newUser == null) throw StateError('Could not register with new email.');
+
+        // 3. Save pending username for new user
+        if (username.isNotEmpty) {
+          await OpaqueAuthService.saveUsername(newUser, username);
+        }
+
+        // 4. Send verification email to the new address
+        await newUser.sendEmailVerification();
+
+        if (mounted) {
+          setState(() {
+            _email.text = address;
+            _pendingEmail = null;
+            _emailSent = true;
+            _resendAt = DateTime.now().add(const Duration(seconds: 60));
+            _error = 'Verification link sent to $address.';
+          });
+        }
+        return;
+      }
+
+      // Fallback for already existing accounts
+      await user.verifyBeforeUpdateEmail(address);
+      if (mounted) {
+        setState(() {
+          _pendingEmail = address;
+          _emailSent = true;
+          _resendAt = DateTime.now().add(const Duration(seconds: 60));
+          _error = 'Verification link sent to $address.';
+        });
+      }
     });
   }
 
@@ -1309,7 +1605,9 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
                 leading: _step == _Step.choose
                     ? null
                     : IconButton(
-                        tooltip: _user == null ? 'Back' : 'Leave setup',
+                        tooltip: (_register && !_profileCreated)
+                            ? 'Cancel registration'
+                            : (_user == null ? 'Back' : 'Leave setup'),
                         onPressed: _busy ? null : _leave,
                         icon: Icon(
                           _user == null

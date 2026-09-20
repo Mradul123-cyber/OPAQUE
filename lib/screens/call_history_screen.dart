@@ -1,4 +1,5 @@
 import '../widgets/opaque_navigation.dart';
+import '../widgets/opaque_toast.dart';
 import 'package:flutter/material.dart';
 import '../widgets/call_aware_screen.dart';
 import 'package:intl/intl.dart';
@@ -66,40 +67,143 @@ class _CallHistoryScreenState extends State<CallHistoryScreen> {
   });
 
   Widget _buildBody(bool dark) {
-    if (_isLoading) return const Center(child: CircularProgressIndicator());
-    if (_error != null) return Center(child: Padding(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, children: [
-      const Icon(Icons.error_outline, color: Color(0xFFC5757E), size: 30),
-      const SizedBox(height: 12),
-      Text('Could not load calls', style: TextStyle(fontSize: 16, color: dark ? Colors.white : const Color(0xFF535E70))),
-      const SizedBox(height: 8), Text(_error!, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, color: Color(0xFF969EAC))),
-      TextButton.icon(onPressed: _loadCallHistory, icon: const Icon(Icons.refresh), label: const Text('Retry')),
-    ])));
-    if (_callLogs.isEmpty) return RefreshIndicator(onRefresh: _loadCallHistory, child: CustomScrollView(
-      physics: const AlwaysScrollableScrollPhysics(), slivers: [SliverFillRemaining(hasScrollBody: false, child: Center(child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 60), child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Container(width: 74, height: 74, alignment: Alignment.center,
-            decoration: BoxDecoration(borderRadius: BorderRadius.circular(26), gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight,
-              colors: dark ? const [Color(0xFF283241), Color(0xFF212B39)] : const [Color(0xFFF1F4FA), Color(0xFFE9EEF7)])),
-            child: const OpaqueIcon('calls', size: 30, strokeWidth: 1.35, color: Color(0xFF8B9BB5))),
-          const SizedBox(height: 20),
-          Text('No calls yet', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500, letterSpacing: -.3, color: dark ? const Color(0xFFE0E6EF) : const Color(0xFF535E70))),
-          const SizedBox(height: 9),
-          const Text('Your voice and video calls will appear here.\nCall a friend to start a conversation.', textAlign: TextAlign.center, style: TextStyle(fontSize: 12, height: 1.8, color: Color(0xFF969EAC))),
-        ]),
-      )))],
-    ));
-    return RefreshIndicator(onRefresh: _loadCallHistory, child: ListView.builder(
-      physics: const AlwaysScrollableScrollPhysics(), padding: const EdgeInsets.symmetric(horizontal: 20), itemCount: _callLogs.length,
-      itemBuilder: (context, index) {
-        final log = _callLogs[index];
-        final date = DateUtils.dateOnly(log.startedAt);
-        final startsDay = index == 0 || date != DateUtils.dateOnly(_callLogs[index - 1].startedAt);
-        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          if (startsDay) Padding(padding: const EdgeInsets.only(top: 10, bottom: 7), child: Text(_formatTimestamp(log.startedAt)['label']!, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: Color(0xFF9A9FAA)))),
-          _buildCallLogItem(log, dark),
-        ]);
-      },
-    ));
+    final indicatorColor = dark ? Colors.white : Colors.black;
+    final indicatorBg = dark ? const Color(0xFF283241) : Colors.white;
+
+    if (_isLoading) {
+      return Center(
+        child: CircularProgressIndicator(
+          color: indicatorColor,
+          strokeWidth: 2.5,
+        ),
+      );
+    }
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, color: Color(0xFFC5757E), size: 30),
+              const SizedBox(height: 12),
+              Text('Could not load calls', style: TextStyle(fontSize: 16, color: dark ? Colors.white : const Color(0xFF535E70))),
+              const SizedBox(height: 8), Text(_error!, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, color: Color(0xFF969EAC))),
+              TextButton.icon(
+                onPressed: _loadCallHistory,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Retry'),
+                style: TextButton.styleFrom(
+                  foregroundColor: indicatorColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (_callLogs.isEmpty) {
+      return RefreshIndicator(
+        color: indicatorColor,
+        backgroundColor: indicatorBg,
+        onRefresh: _loadCallHistory,
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverFillRemaining(
+              hasScrollBody: false,
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 20, 20, 60),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 74,
+                        height: 74,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(26),
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: dark
+                                ? const [Color(0xFF283241), Color(0xFF212B39)]
+                                : const [Color(0xFFF1F4FA), Color(0xFFE9EEF7)],
+                          ),
+                        ),
+                        child: const OpaqueIcon(
+                          'calls',
+                          size: 30,
+                          strokeWidth: 1.35,
+                          color: Color(0xFF8B9BB5),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      Text(
+                        'No calls yet',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w500,
+                          letterSpacing: -.3,
+                          color: dark
+                              ? const Color(0xFFE0E6EF)
+                              : const Color(0xFF535E70),
+                        ),
+                      ),
+                      const SizedBox(height: 9),
+                      const Text(
+                        'Your voice and video calls will appear here.\nCall a friend to start a conversation.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 12,
+                          height: 1.8,
+                          color: Color(0xFF969EAC),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return RefreshIndicator(
+      color: indicatorColor,
+      backgroundColor: indicatorBg,
+      onRefresh: _loadCallHistory,
+      child: ListView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        itemCount: _callLogs.length,
+        itemBuilder: (context, index) {
+          final log = _callLogs[index];
+          final date = DateUtils.dateOnly(log.startedAt);
+          final startsDay = index == 0 ||
+              date != DateUtils.dateOnly(_callLogs[index - 1].startedAt);
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (startsDay)
+                Padding(
+                  padding: const EdgeInsets.only(top: 10, bottom: 7),
+                  child: Text(
+                    _formatTimestamp(log.startedAt)['label']!,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF9A9FAA),
+                    ),
+                  ),
+                ),
+              _buildCallLogItem(log, dark),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   Widget _buildCallLogItem(CallLogModel log, bool dark) {
@@ -140,24 +244,13 @@ class _CallHistoryScreenState extends State<CallHistoryScreen> {
 
     // Check if already in a call
     if (callManager.isInCall) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('You are already in a call'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      OpaqueToast.warning(context, 'You are already in a call');
       return;
     }
 
     // Check if conversationId exists
     if (log.conversationId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Cannot initiate call: conversation not found'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 2),
-        ),
-      );
+      OpaqueToast.warning(context, 'Cannot initiate call: conversation not found');
       return;
     }
 
@@ -170,13 +263,7 @@ class _CallHistoryScreenState extends State<CallHistoryScreen> {
       );
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to initiate call: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 3),
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to initiate call: $e');
       }
     }
   }

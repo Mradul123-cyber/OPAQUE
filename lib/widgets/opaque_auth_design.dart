@@ -11,6 +11,7 @@ class AuthPalette {
   Color get muted => dark ? const Color(0xFFA0ACBD) : const Color(0xFF7D8490);
   Color get soft => dark ? const Color(0xFF232D3B) : const Color(0xFFF5F6F8);
   Color get line => dark ? const Color(0xFF323D4C) : const Color(0xFFE7E9EE);
+  Color get typingColor => dark ? Colors.white : Colors.black;
 }
 
 ThemeData opaqueAuthTheme(bool dark) {
@@ -19,6 +20,7 @@ ThemeData opaqueAuthTheme(bool dark) {
   final soft = dark ? const Color(0xFF232D3B) : const Color(0xFFF5F6F8);
   final line = dark ? const Color(0xFF323D4C) : const Color(0xFFE7E9EE);
   final muted = dark ? const Color(0xFFA0ACBD) : const Color(0xFF7D8490);
+  final typingColor = dark ? Colors.white : Colors.black;
   final scheme = ColorScheme.fromSeed(
     seedColor: ink,
     brightness: dark ? Brightness.dark : Brightness.light,
@@ -27,6 +29,11 @@ ThemeData opaqueAuthTheme(bool dark) {
     useMaterial3: true,
     colorScheme: scheme,
     scaffoldBackgroundColor: bg,
+    textSelectionTheme: TextSelectionThemeData(
+      cursorColor: typingColor,
+      selectionColor: typingColor.withOpacity(0.25),
+      selectionHandleColor: typingColor,
+    ),
     textTheme: GoogleFonts.interTextTheme(
       ThemeData(brightness: scheme.brightness).textTheme,
     ).apply(bodyColor: ink, displayColor: ink),
@@ -45,7 +52,7 @@ ThemeData opaqueAuthTheme(bool dark) {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(11),
-        borderSide: BorderSide(color: muted),
+        borderSide: BorderSide(color: typingColor, width: 1.5),
       ),
     ),
     filledButtonTheme: FilledButtonThemeData(

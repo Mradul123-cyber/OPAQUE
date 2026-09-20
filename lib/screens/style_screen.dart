@@ -6,6 +6,7 @@ import '../widgets/call_aware_screen.dart';
 import '../widgets/global_call_overlay.dart';
 import '../widgets/opaque_style_panel.dart';
 import '../widgets/backup_design.dart';
+import '../widgets/opaque_toast.dart';
 
 class StyleScreen extends StatefulWidget {
   const StyleScreen({super.key, this.embedded = false});
@@ -44,13 +45,7 @@ class _StyleScreenState extends State<StyleScreen> {
     GlobalCallOverlay.globalKey.currentState?.reloadStyle();
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Call overlay style updated!'),
-          backgroundColor: Colors.green,
-          duration: Duration(seconds: 1),
-        ),
-      );
+      OpaqueToast.success(context, 'Call overlay style updated');
     }
   }
 

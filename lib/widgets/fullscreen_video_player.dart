@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:share_plus/share_plus.dart';
 import 'package:gal/gal.dart';
 import 'package:image_picker/image_picker.dart';
+import 'opaque_toast.dart';
 
 class FullscreenVideoPlayer extends StatefulWidget {
   final String videoPath;
@@ -91,32 +92,18 @@ class _FullscreenVideoPlayerState extends State<FullscreenVideoPlayer> {
       _controller.pause();
 
       // Show loading
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Saving video...'), duration: Duration(seconds: 2)),
-      );
+      OpaqueToast.info(context, 'Saving video...');
 
       // Save to gallery using gal
       await Gal.putVideo(widget.videoPath);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Video saved to gallery'),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 2),
-          ),
-        );
+        OpaqueToast.success(context, 'Video saved to gallery');
       }
     } catch (e) {
       // print('[VideoPlayer] Error saving video: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to save: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 2),
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to save: $e');
       }
     }
   }
@@ -134,13 +121,7 @@ class _FullscreenVideoPlayerState extends State<FullscreenVideoPlayer> {
     } catch (e) {
       // print('[VideoPlayer] Error sharing video: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to share: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 2),
-          ),
-        );
+        OpaqueToast.error(context, 'Failed to share: $e');
       }
     }
   }

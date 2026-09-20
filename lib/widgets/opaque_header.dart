@@ -96,9 +96,10 @@ class OpaqueHeader extends StatelessWidget implements PreferredSizeWidget {
                   shadowColor: const Color(0x24121A28),
                   position: PopupMenuPosition.under,
                   offset: const Offset(0, 4),
-                  constraints: const BoxConstraints(
-                    minWidth: 246,
-                    maxWidth: 246,
+                  constraints: BoxConstraints(
+                    minWidth: 208,
+                    maxWidth: (208 * MediaQuery.textScalerOf(context).scale(13) / 13)
+                        .clamp(208.0, 300.0),
                   ),
                   menuPadding: const EdgeInsets.all(7),
                   shape: RoundedRectangleBorder(

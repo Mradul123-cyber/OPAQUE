@@ -154,6 +154,8 @@ class OpaqueAuthService {
         'user-disabled' => 'This account is unavailable. Contact support.',
         'requires-recent-login' =>
           'Please sign in again before making this change.',
+        'operation-not-allowed' =>
+          'This operation is currently not allowed by the authentication service.',
         _ => 'Authentication could not be completed. Please try again.',
       };
     }

@@ -1,22 +1,19 @@
-// lib/screens/markdown_viewer_screen.dart
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
-import 'dart:ui';
-import '../profile_background.dart';
+import 'package:provider/provider.dart';
+import '../services/user_settings_provider.dart';
 import '../widgets/call_aware_screen.dart';
+import '../widgets/opaque_info_design.dart';
 
 class MarkdownViewerScreen extends StatefulWidget {
   final String title;
   final String assetPath;
-
   const MarkdownViewerScreen({
     super.key,
     required this.title,
     required this.assetPath,
   });
-
   @override
   State<MarkdownViewerScreen> createState() => _MarkdownViewerScreenState();
 }
@@ -24,7 +21,7 @@ class MarkdownViewerScreen extends StatefulWidget {
 class _MarkdownViewerScreenState extends State<MarkdownViewerScreen> {
   String _markdownContent = '';
   bool _isLoading = true;
-
+  bool _failed = false;
   @override
   void initState() {
     super.initState();
@@ -32,15 +29,21 @@ class _MarkdownViewerScreenState extends State<MarkdownViewerScreen> {
   }
 
   Future<void> _loadMarkdown() async {
+    setState(() {
+      _isLoading = true;
+      _failed = false;
+    });
     try {
       final content = await rootBundle.loadString(widget.assetPath);
+      if (!mounted) return;
       setState(() {
         _markdownContent = content;
         _isLoading = false;
       });
-    } catch (e) {
+    } catch (_) {
+      if (!mounted) return;
       setState(() {
-        _markdownContent = 'Failed to load content: $e';
+        _failed = true;
         _isLoading = false;
       });
     }
@@ -48,136 +51,95 @@ class _MarkdownViewerScreenState extends State<MarkdownViewerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-
-    final outerPadding = (screenWidth * 0.05).clamp(16.0, 24.0);
-    final containerPadding = (screenWidth * 0.06).clamp(20.0, 28.0);
-    final borderRadius1 = (screenWidth * 0.05).clamp(16.0, 24.0);
-    final titleSize = (screenWidth * 0.05).clamp(18.0, 22.0);
-
+    final c = OpaqueInfoColors(
+      context.watch<UserSettingsProvider>().isDarkMode,
+    );
+    final body = c.text(13, muted: true).copyWith(height: 1.8);
     return CallAwareScreen(
       screenName: 'MarkdownViewerScreen',
-      child: ProfileBackground(
-        child: Scaffold(
-          backgroundColor: Colors.transparent,
-          appBar: AppBar(
-            backgroundColor: Colors.transparent,
-            elevation: 0,
-            title: Text(widget.title, style: TextStyle(fontSize: titleSize)),
-            centerTitle: true,
-          ),
-          body: Center(
-            child: Padding(
-              padding: EdgeInsets.only(
-                left: outerPadding,
-                right: outerPadding,
-                top: outerPadding,
-                bottom: MediaQuery.of(context).padding.bottom + outerPadding,
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(borderRadius1),
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 12.0, sigmaY: 12.0),
-                  child: Container(
-                    padding: EdgeInsets.all(containerPadding),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.25),
-                      borderRadius: BorderRadius.circular(borderRadius1),
-                      border: Border.all(color: Colors.white.withOpacity(0.2)),
-                    ),
-                    child: _isLoading
-                        ? const Center(
-                            child: CircularProgressIndicator(
-                              color: Colors.cyanAccent,
+      child: Scaffold(
+        backgroundColor: c.surface,
+        appBar: OpaqueInfoHeader(title: widget.title, colors: c),
+        body: SafeArea(
+          top: false,
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 720),
+              child: _isLoading
+                  ? Center(child: CircularProgressIndicator(color: c.accent))
+                  : _failed
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(23),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              'Could not load this document.',
+                              style: c.text(14),
+                              textAlign: TextAlign.center,
                             ),
-                          )
-                        : Markdown(
-                            data: _markdownContent,
-                            styleSheet: MarkdownStyleSheet(
-                              // Headings
-                              h1: TextStyle(
-                                fontSize: (screenWidth * 0.06).clamp(22.0, 28.0),
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
+                            const SizedBox(height: 12),
+                            TextButton(
+                              onPressed: _loadMarkdown,
+                              style: TextButton.styleFrom(
+                                foregroundColor: c.accent,
                               ),
-                              h2: TextStyle(
-                                fontSize: (screenWidth * 0.055).clamp(20.0, 26.0),
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
-                              ),
-                              h3: TextStyle(
-                                fontSize: (screenWidth * 0.05).clamp(18.0, 24.0),
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
-                              ),
-                              h4: TextStyle(
-                                fontSize: (screenWidth * 0.045).clamp(16.0, 20.0),
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
-                              ),
-                              // Body text
-                              p: TextStyle(
-                                fontSize: (screenWidth * 0.035).clamp(13.0, 16.0),
-                                color: Colors.white70,
-                                height: 1.6,
-                              ),
-                              // Lists
-                              listBullet: TextStyle(
-                                fontSize: (screenWidth * 0.035).clamp(13.0, 16.0),
-                                color: Colors.cyanAccent,
-                              ),
-                              // Links
-                              a: const TextStyle(
-                                color: Colors.cyanAccent,
-                                decoration: TextDecoration.underline,
-                              ),
-                              // Code
-                              code: TextStyle(
-                                backgroundColor: Colors.black.withOpacity(0.3),
-                                color: Colors.cyanAccent,
-                                fontSize: (screenWidth * 0.032).clamp(12.0, 15.0),
-                              ),
-                              // Blockquote
-                              blockquote: TextStyle(
-                                fontSize: (screenWidth * 0.035).clamp(13.0, 16.0),
-                                color: Colors.white60,
-                                fontStyle: FontStyle.italic,
-                              ),
-                              blockquoteDecoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.05),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border(
-                                  left: BorderSide(
-                                    color: Colors.cyanAccent.withOpacity(0.5),
-                                    width: 3,
-                                  ),
-                                ),
-                              ),
-                              // Horizontal rule
-                              horizontalRuleDecoration: BoxDecoration(
-                                border: Border(
-                                  top: BorderSide(
-                                    color: Colors.white.withOpacity(0.3),
-                                    width: 1,
-                                  ),
-                                ),
-                              ),
-                              // Table
-                              tableBody: TextStyle(
-                                fontSize: (screenWidth * 0.032).clamp(12.0, 15.0),
-                                color: Colors.white70,
-                              ),
-                              tableHead: TextStyle(
-                                fontSize: (screenWidth * 0.035).clamp(13.0, 16.0),
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
-                              ),
+                              child: const Text('Try again'),
                             ),
+                          ],
+                        ),
+                      ),
+                    )
+                  : Markdown(
+                      data: _markdownContent,
+                      selectable: true,
+                      padding: const EdgeInsets.fromLTRB(23, 20, 23, 24),
+                      styleSheet: MarkdownStyleSheet(
+                        h1: c.text(22, bold: true).copyWith(height: 1.35),
+                        h2: c.text(18, bold: true).copyWith(height: 1.4),
+                        h3: c.text(15, bold: true).copyWith(height: 1.5),
+                        h4: c.text(14, bold: true),
+                        h5: c.text(13, bold: true),
+                        h6: c.text(13, bold: true),
+                        p: body,
+                        strong: c.text(13, bold: true),
+                        listBullet: body,
+                        a: c
+                            .text(13)
+                            .copyWith(
+                              color: c.accent,
+                              decoration: TextDecoration.underline,
+                            ),
+                        code: c
+                            .text(12)
+                            .copyWith(
+                              backgroundColor: c.soft,
+                              fontFamily: 'monospace',
+                            ),
+                        codeblockDecoration: BoxDecoration(
+                          color: c.soft,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        blockquote: body,
+                        blockquoteDecoration: BoxDecoration(
+                          color: c.soft,
+                          border: Border(
+                            left: BorderSide(color: c.accent, width: 3),
                           ),
-                  ),
-                ),
-              ),
+                        ),
+                        horizontalRuleDecoration: BoxDecoration(
+                          border: Border(top: BorderSide(color: c.line)),
+                        ),
+                        tableBody: c
+                            .text(12, muted: true)
+                            .copyWith(height: 1.6),
+                        tableHead: c.text(12, bold: true),
+                        tableBorder: TableBorder.all(color: c.line),
+                        tableCellsPadding: const EdgeInsets.all(8),
+                      ),
+                    ),
             ),
           ),
         ),

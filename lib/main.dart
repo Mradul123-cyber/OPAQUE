@@ -42,6 +42,7 @@ import 'services/global_call_manager.dart';
 import 'services/system_overlay_service.dart';
 import 'services/share_service.dart';
 import 'widgets/global_call_overlay.dart';
+import 'widgets/opaque_toast.dart';
 import 'chat_screen.dart';
 import 'setting_screen.dart';
 import 'screens/share_conversation_picker_screen.dart';
@@ -1615,15 +1616,9 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
         Navigator.of(context).pop(); // Close progress dialog
 
         // Show success message briefly before restarting
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Backup restored successfully! Restarting app...'),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 2),
-          ),
-        );
+        OpaqueToast.success(context, 'Backup restored successfully! Restarting app...');
 
-        // Wait for snackbar to show, then restart
+        // Wait for toast to show, then restart
         await Future.delayed(const Duration(seconds: 2));
 
         // Restart the app
@@ -1643,14 +1638,9 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
       if (mounted) {
         Navigator.of(context).pop(); // Close progress dialog
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Restore failed: ${e.toString().contains('Incorrect passphrase') ? 'Incorrect passphrase' : 'Error - $e'}',
-            ),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 4),
-          ),
+        OpaqueToast.error(
+          context,
+          'Restore failed: ${e.toString().contains('Incorrect passphrase') ? 'Incorrect passphrase' : 'Error - $e'}',
         );
       }
     }

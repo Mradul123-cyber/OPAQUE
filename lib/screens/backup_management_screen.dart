@@ -20,6 +20,7 @@ import '../widgets/call_aware_screen.dart';
 import 'backup_info_screen.dart';
 import 'google_drive_backups_screen.dart';
 import 'package:provider/provider.dart';
+import '../widgets/opaque_toast.dart';
 
 class BackupManagementScreen extends StatefulWidget {
   const BackupManagementScreen({super.key});
@@ -1936,13 +1937,13 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
 
   void _showSnackbar(String message, {bool isError = false}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: isError ? Color(0xFFBF6974) : _ui.blue,
-        duration: Duration(seconds: 2),
-      ),
-    );
+    if (isError) {
+      OpaqueToast.error(context, message);
+    } else if (message.toLowerCase().contains('cancel') || message.contains('...')) {
+      OpaqueToast.info(context, message);
+    } else {
+      OpaqueToast.success(context, message);
+    }
   }
 
   /// Trigger highlight animation and haptic feedback when settings change
