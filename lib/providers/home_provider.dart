@@ -124,6 +124,7 @@ class HomeProvider with ChangeNotifier {
       creatorUid: conversation.creatorUid,
       avatarUrl: conversation.avatarUrl,
       partnerUid: conversation.partnerUid,
+      isFriend: conversation.isFriend,
       hasUnreadMessages: false,
       unreadCount: 0,
       lastMessageTimestamp: conversation.lastMessageTimestamp,
@@ -141,6 +142,22 @@ class HomeProvider with ChangeNotifier {
       final cachedIndex = cached.indexWhere((c) => c.conversationId == conversationId);
       if (cachedIndex != -1) cached[cachedIndex] = asRead(cached[cachedIndex]);
     }
+    notifyListeners();
+  }
+
+  void markFriendRemoved(String uid) {
+    ConversationInfo update(ConversationInfo chat) {
+      if (chat.partnerUid != uid || chat.isGroup) return chat;
+      return ConversationInfo(
+        conversationId: chat.conversationId, chatTitle: chat.chatTitle,
+        isGroup: chat.isGroup, creatorUid: chat.creatorUid,
+        avatarUrl: chat.avatarUrl, partnerUid: chat.partnerUid, isFriend: false,
+        hasUnreadMessages: chat.hasUnreadMessages, unreadCount: chat.unreadCount,
+        lastMessageTimestamp: chat.lastMessageTimestamp, lastMessage: chat.lastMessage,
+        isTyping: chat.isTyping, isOnline: chat.isOnline);
+    }
+    _conversations = _conversations.map(update).toList();
+    _cachedConversations = _cachedConversations?.map(update).toList();
     notifyListeners();
   }
 

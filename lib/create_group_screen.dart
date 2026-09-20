@@ -15,7 +15,7 @@ import 'app_config.dart';
 import 'services/user_settings_provider.dart';
 import 'widgets/call_aware_screen.dart';
 import 'widgets/backup_design.dart';
-import 'widgets/notes_design.dart';
+import 'widgets/opaque_design.dart';
 import 'widgets/opaque_toast.dart';
 
 class Friend {
@@ -123,11 +123,10 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
     final changed = _selectedFriends.isNotEmpty;
     final discard =
         !changed ||
-        await showNotesConfirmation(
+        await showOpaqueConfirmation(
           context,
           title: 'Discard selection?',
-          body:
-              'You have selected members. Leave without creating the group?',
+          body: 'You have selected members. Leave without creating the group?',
           confirm: 'Discard',
           danger: true,
           icon: Icons.group_outlined,
@@ -143,7 +142,10 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
   void _toggleFriend(Friend friend) {
     if (!_selectedFriends.contains(friend.username) &&
         _selectedFriends.length >= 99) {
-      OpaqueToast.warning(context, 'Maximum 100 members allowed, including you.');
+      OpaqueToast.warning(
+        context,
+        'Maximum 100 members allowed, including you.',
+      );
       return;
     }
     setState(() {
@@ -169,7 +171,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
     );
   }
 
-  Widget _avatar(Friend friend, NotesColors c) {
+  Widget _avatar(Friend friend, OpaqueColors c) {
     final name = friend.displayNameOrUsername;
     final initials = name
         .trim()
@@ -204,9 +206,13 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
   Widget build(BuildContext context) {
     context.watch<UserSettingsProvider>();
     final neutralDark = context.read<UserSettingsProvider>().isDarkMode;
-    final selectedSurface = neutralDark ? const Color(0xFFE3E5E9) : const Color(0xFF303238);
-    final selectedInk = neutralDark ? const Color(0xFF25272C) : const Color(0xFFF8F8FA);
-    final c = NotesColors(context);
+    final selectedSurface = neutralDark
+        ? const Color(0xFFE3E5E9)
+        : const Color(0xFF303238);
+    final selectedInk = neutralDark
+        ? const Color(0xFF25272C)
+        : const Color(0xFFF8F8FA);
+    final c = OpaqueColors(context);
     final query = _searchController.text.trim().toLowerCase();
     final filtered = _friendsList
         .where(
@@ -263,377 +269,399 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                                 child: TextField(
                                   controller: _searchController,
                                   focusNode: _searchFocusNode,
-                                  onTapOutside: (_) => _searchFocusNode.unfocus(),
+                                  onTapOutside: (_) =>
+                                      _searchFocusNode.unfocus(),
                                   style: c.text(12),
-                                decoration: InputDecoration(
-                                  hintText: 'Search friends',
-                                  hintStyle: c.text(12, muted: true),
-                                  filled: true,
-                                  fillColor: c.soft,
-                                  contentPadding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                  ),
-                                  prefixIcon: Icon(
-                                    Icons.search,
-                                    size: 16,
-                                    color: c.muted,
-                                  ),
-                                  suffixIcon: query.isEmpty
-                                      ? null
-                                      : IconButton(
-                                          tooltip: 'Clear search',
-                                          onPressed: _searchController.clear,
-                                          icon: Icon(
-                                            Icons.close,
-                                            size: 16,
-                                            color: c.muted,
+                                  decoration: InputDecoration(
+                                    hintText: 'Search friends',
+                                    hintStyle: c.text(12, muted: true),
+                                    filled: true,
+                                    fillColor: c.soft,
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                    ),
+                                    prefixIcon: Icon(
+                                      Icons.search,
+                                      size: 16,
+                                      color: c.muted,
+                                    ),
+                                    suffixIcon: query.isEmpty
+                                        ? null
+                                        : IconButton(
+                                            tooltip: 'Clear search',
+                                            onPressed: _searchController.clear,
+                                            icon: Icon(
+                                              Icons.close,
+                                              size: 16,
+                                              color: c.muted,
+                                            ),
                                           ),
-                                        ),
-                                  border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(19),
-                                    borderSide: BorderSide.none,
-                                  ),
-                                  enabledBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(19),
-                                    borderSide: BorderSide.none,
-                                  ),
-                                  focusedBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(19),
-                                    borderSide: BorderSide(color: c.blue),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(19),
+                                      borderSide: BorderSide.none,
+                                    ),
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(19),
+                                      borderSide: BorderSide.none,
+                                    ),
+                                    focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(19),
+                                      borderSide: BorderSide(color: c.blue),
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                            // Selected chips
-                            if (selected.isNotEmpty)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 10),
-                                child: SingleChildScrollView(
-                                  scrollDirection: Axis.horizontal,
-                                  child: Row(
-                                    children: [
-                                      for (final friend in selected)
-                                        Padding(
-                                          padding: const EdgeInsets.only(right: 6),
-                                          child: Semantics(
-                                            label:
-                                                'Remove ${friend.displayNameOrUsername}',
-                                            button: true,
-                                            child: InkWell(
-                                              onTap: () => _toggleFriend(friend),
-                                              borderRadius:
-                                                  BorderRadius.circular(12),
-                                              child: Container(
-                                                padding: const EdgeInsets.symmetric(
-                                                  horizontal: 9,
-                                                  vertical: 5,
-                                                ),
-                                                decoration: BoxDecoration(
-                                                  color: selectedSurface,
-                                                  borderRadius:
-                                                      BorderRadius.circular(12),
-                                                ),
-                                                child: Row(
-                                                  mainAxisSize: MainAxisSize.min,
-                                                  children: [
-                                                    Text(
-                                                      friend
-                                                          .displayNameOrUsername
-                                                          .split(' ')
-                                                          .first,
-                                                      style: c
-                                                          .text(10)
-                                                          .copyWith(
-                                                            color: selectedInk,
-                                                          ),
-                                                    ),
-                                                    const SizedBox(width: 6),
-                                                    Icon(
-                                                      Icons.close,
-                                                      size: 11,
-                                                      color: selectedInk,
-                                                    ),
-                                                  ],
+                              // Selected chips
+                              if (selected.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 10),
+                                  child: SingleChildScrollView(
+                                    scrollDirection: Axis.horizontal,
+                                    child: Row(
+                                      children: [
+                                        for (final friend in selected)
+                                          Padding(
+                                            padding: const EdgeInsets.only(
+                                              right: 6,
+                                            ),
+                                            child: Semantics(
+                                              label:
+                                                  'Remove ${friend.displayNameOrUsername}',
+                                              button: true,
+                                              child: InkWell(
+                                                onTap: () =>
+                                                    _toggleFriend(friend),
+                                                borderRadius:
+                                                    BorderRadius.circular(12),
+                                                child: Container(
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 9,
+                                                        vertical: 5,
+                                                      ),
+                                                  decoration: BoxDecoration(
+                                                    color: selectedSurface,
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          12,
+                                                        ),
+                                                  ),
+                                                  child: Row(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      Text(
+                                                        friend
+                                                            .displayNameOrUsername
+                                                            .split(' ')
+                                                            .first,
+                                                        style: c
+                                                            .text(10)
+                                                            .copyWith(
+                                                              color:
+                                                                  selectedInk,
+                                                            ),
+                                                      ),
+                                                      const SizedBox(width: 6),
+                                                      Icon(
+                                                        Icons.close,
+                                                        size: 11,
+                                                        color: selectedInk,
+                                                      ),
+                                                    ],
+                                                  ),
                                                 ),
                                               ),
                                             ),
                                           ),
-                                        ),
-                                    ],
+                                      ],
+                                    ),
                                   ),
                                 ),
+                              // Header row
+                              Padding(
+                                padding: EdgeInsets.only(
+                                  top: isKeyboardOpen ? 10 : 16,
+                                  bottom: 8,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Text(
+                                      'ADD MEMBERS',
+                                      style: c
+                                          .text(9, muted: true)
+                                          .copyWith(letterSpacing: 1.2),
+                                    ),
+                                    const Spacer(),
+                                    Text(
+                                      '${_selectedFriends.length} / 99 selected',
+                                      style: c.text(10, muted: true),
+                                    ),
+                                  ],
+                                ),
                               ),
-                            // Header row
-                            Padding(
-                              padding: EdgeInsets.only(
-                                top: isKeyboardOpen ? 10 : 16,
-                                bottom: 8,
-                              ),
-                              child: Row(
-                                children: [
-                                  Text(
-                                    'ADD MEMBERS',
-                                    style: c
-                                        .text(9, muted: true)
-                                        .copyWith(letterSpacing: 1.2),
-                                  ),
-                                  const Spacer(),
-                                  Text(
-                                    '${_selectedFriends.length} / 99 selected',
-                                    style: c.text(10, muted: true),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
-                      ),
-                      // Expanded list of friends with edge-to-edge full width layout
-                      Expanded(
-                        child: _isLoading
-                            ? Center(
-                                child: CircularProgressIndicator(
-                                  color: c.blue,
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : _loadError != null
-                            ? Center(
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 22),
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Text(
-                                        _loadError!,
-                                        textAlign: TextAlign.center,
-                                        style: c.text(12, muted: true),
-                                      ),
-                                      const SizedBox(height: 12),
-                                      NotesButton(
-                                        label: 'Try again',
-                                        onPressed: _fetchFriendsList,
-                                      ),
-                                    ],
+                        // Expanded list of friends with edge-to-edge full width layout
+                        Expanded(
+                          child: _isLoading
+                              ? Center(
+                                  child: CircularProgressIndicator(
+                                    color: c.blue,
+                                    strokeWidth: 2,
                                   ),
-                                ),
-                              )
-                            : filtered.isEmpty
-                            ? LayoutBuilder(
-                                builder: (context, constraints) {
-                                  final isCompact =
-                                      constraints.maxHeight < 150 || isKeyboardOpen;
-                                  return SingleChildScrollView(
-                                    physics: const BouncingScrollPhysics(),
-                                    child: ConstrainedBox(
-                                      constraints: BoxConstraints(
-                                        minHeight: constraints.maxHeight,
+                                )
+                              : _loadError != null
+                              ? Center(
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 22,
+                                    ),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          _loadError!,
+                                          textAlign: TextAlign.center,
+                                          style: c.text(12, muted: true),
+                                        ),
+                                        const SizedBox(height: 12),
+                                        OpaqueButton(
+                                          label: 'Try again',
+                                          onPressed: _fetchFriendsList,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                )
+                              : filtered.isEmpty
+                              ? LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    final isCompact =
+                                        constraints.maxHeight < 150 ||
+                                        isKeyboardOpen;
+                                    return SingleChildScrollView(
+                                      physics: const BouncingScrollPhysics(),
+                                      child: ConstrainedBox(
+                                        constraints: BoxConstraints(
+                                          minHeight: constraints.maxHeight,
+                                        ),
+                                        child: Center(
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 22,
+                                              vertical: 4,
+                                            ),
+                                            child: Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                if (!isCompact) ...[
+                                                  const BackupSymbol(
+                                                    icon: Icons.group_outlined,
+                                                  ),
+                                                  const SizedBox(height: 12),
+                                                ] else ...[
+                                                  Icon(
+                                                    Icons.search_off_rounded,
+                                                    size: 20,
+                                                    color: c.muted,
+                                                  ),
+                                                  const SizedBox(height: 4),
+                                                ],
+                                                Text(
+                                                  _friendsList.isEmpty
+                                                      ? 'A group starts with friends'
+                                                      : 'No matching friends',
+                                                  style: c.text(
+                                                    isCompact ? 12 : 14,
+                                                    bold: true,
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 3),
+                                                Text(
+                                                  _friendsList.isEmpty
+                                                      ? 'Add friends first, then choose who\nyou’d like to bring together.'
+                                                      : 'Try a different name or username.',
+                                                  textAlign: TextAlign.center,
+                                                  style: c
+                                                      .text(
+                                                        isCompact ? 10 : 12,
+                                                        muted: true,
+                                                      )
+                                                      .copyWith(
+                                                        height: isCompact
+                                                            ? 1.3
+                                                            : 1.6,
+                                                      ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
                                       ),
-                                      child: Center(
-                                        child: Padding(
+                                    );
+                                  },
+                                )
+                              : ListView.builder(
+                                  itemCount: filtered.length,
+                                  padding: EdgeInsets.zero,
+                                  keyboardDismissBehavior:
+                                      ScrollViewKeyboardDismissBehavior.onDrag,
+                                  itemBuilder: (_, index) {
+                                    final friend = filtered[index];
+                                    final checked = _selectedFriends.contains(
+                                      friend.username,
+                                    );
+                                    return Material(
+                                      color: checked
+                                          ? (neutralDark
+                                                ? const Color(
+                                                    0xFF16A34A,
+                                                  ).withOpacity(0.12)
+                                                : const Color(
+                                                    0xFF16A34A,
+                                                  ).withOpacity(0.08))
+                                          : Colors.transparent,
+                                      child: InkWell(
+                                        onTap: () => _toggleFriend(friend),
+                                        child: Container(
+                                          width: double.infinity,
                                           padding: const EdgeInsets.symmetric(
                                             horizontal: 22,
-                                            vertical: 4,
+                                            vertical: 13,
                                           ),
-                                          child: Column(
-                                            mainAxisSize: MainAxisSize.min,
+                                          decoration: BoxDecoration(
+                                            border: Border(
+                                              bottom: BorderSide(
+                                                color: c.line,
+                                                width: 0.5,
+                                              ),
+                                            ),
+                                          ),
+                                          child: Row(
                                             children: [
-                                              if (!isCompact) ...[
-                                                const BackupSymbol(
-                                                  icon: Icons.group_outlined,
-                                                ),
-                                                const SizedBox(height: 12),
-                                              ] else ...[
-                                                Icon(
-                                                  Icons.search_off_rounded,
-                                                  size: 20,
-                                                  color: c.muted,
-                                                ),
-                                                const SizedBox(height: 4),
-                                              ],
-                                              Text(
-                                                _friendsList.isEmpty
-                                                    ? 'A group starts with friends'
-                                                    : 'No matching friends',
-                                                style: c.text(
-                                                  isCompact ? 12 : 14,
-                                                  bold: true,
+                                              _avatar(friend, c),
+                                              const SizedBox(width: 12),
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      friend
+                                                          .displayNameOrUsername,
+                                                      style: c.text(
+                                                        12,
+                                                        bold: checked,
+                                                      ),
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                    ),
+                                                    const SizedBox(height: 3),
+                                                    Text(
+                                                      '@${friend.username}',
+                                                      style: c.text(
+                                                        10,
+                                                        muted: true,
+                                                      ),
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                    ),
+                                                  ],
                                                 ),
                                               ),
-                                              const SizedBox(height: 3),
-                                              Text(
-                                                _friendsList.isEmpty
-                                                    ? 'Add friends first, then choose who\nyou’d like to bring together.'
-                                                    : 'Try a different name or username.',
-                                                textAlign: TextAlign.center,
-                                                style: c
-                                                    .text(
-                                                      isCompact ? 10 : 12,
-                                                      muted: true,
-                                                    )
-                                                    .copyWith(
-                                                      height: isCompact ? 1.3 : 1.6,
-                                                    ),
+                                              const SizedBox(width: 8),
+                                              Container(
+                                                width: 18,
+                                                height: 18,
+                                                decoration: BoxDecoration(
+                                                  shape: BoxShape.circle,
+                                                  color: checked
+                                                      ? const Color(0xFF16A34A)
+                                                      : Colors.transparent,
+                                                  border: Border.all(
+                                                    color: checked
+                                                        ? const Color(
+                                                            0xFF16A34A,
+                                                          )
+                                                        : c.line,
+                                                    width: 1.4,
+                                                  ),
+                                                ),
+                                                child: checked
+                                                    ? const Icon(
+                                                        Icons.check,
+                                                        color: Colors.white,
+                                                        size: 12,
+                                                      )
+                                                    : null,
                                               ),
                                             ],
                                           ),
                                         ),
                                       ),
-                                    ),
-                                  );
-                                },
-                              )
-                            : ListView.builder(
-                                itemCount: filtered.length,
-                                padding: EdgeInsets.zero,
-                                keyboardDismissBehavior:
-                                    ScrollViewKeyboardDismissBehavior.onDrag,
-                                itemBuilder: (_, index) {
-                                  final friend = filtered[index];
-                                  final checked = _selectedFriends
-                                      .contains(friend.username);
-                                  return Material(
-                                    color: checked
-                                        ? (neutralDark
-                                            ? const Color(0xFF16A34A).withOpacity(0.12)
-                                            : const Color(0xFF16A34A).withOpacity(0.08))
-                                        : Colors.transparent,
-                                    child: InkWell(
-                                      onTap: () => _toggleFriend(friend),
-                                      child: Container(
-                                        width: double.infinity,
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 22,
-                                          vertical: 13,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          border: Border(
-                                            bottom: BorderSide(
-                                              color: c.line,
-                                              width: 0.5,
-                                            ),
-                                          ),
-                                        ),
-                                        child: Row(
-                                          children: [
-                                            _avatar(friend, c),
-                                            const SizedBox(width: 12),
-                                            Expanded(
-                                              child: Column(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.start,
-                                                children: [
-                                                  Text(
-                                                    friend
-                                                        .displayNameOrUsername,
-                                                    style: c.text(12, bold: checked),
-                                                    maxLines: 1,
-                                                    overflow: TextOverflow
-                                                        .ellipsis,
-                                                  ),
-                                                  const SizedBox(
-                                                    height: 3,
-                                                  ),
-                                                  Text(
-                                                    '@${friend.username}',
-                                                    style: c.text(
-                                                      10,
-                                                      muted: true,
-                                                    ),
-                                                    maxLines: 1,
-                                                    overflow: TextOverflow
-                                                        .ellipsis,
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                            const SizedBox(width: 8),
-                                            Container(
-                                              width: 18,
-                                              height: 18,
-                                              decoration: BoxDecoration(
-                                                shape: BoxShape.circle,
-                                                color: checked
-                                                    ? const Color(0xFF16A34A)
-                                                    : Colors.transparent,
-                                                border: Border.all(
-                                                  color: checked
-                                                      ? const Color(0xFF16A34A)
-                                                      : c.line,
-                                                  width: 1.4,
-                                                ),
-                                              ),
-                                              child: checked
-                                                  ? const Icon(
-                                                      Icons.check,
-                                                      color: Colors.white,
-                                                      size: 12,
-                                                    )
-                                                  : null,
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                      ),
-                    ],
-                  ),
-                ),
-                // Bottom continue bar
-                Container(
-                  padding: EdgeInsets.fromLTRB(
-                    22,
-                    isKeyboardOpen ? 8 : 14,
-                    22,
-                    isKeyboardOpen ? 6 : 10,
-                  ),
-                  decoration: BoxDecoration(
-                    border: Border(top: BorderSide(color: c.line)),
-                  ),
-                  child: Column(
-                    children: [
-                      SizedBox(
-                        width: double.infinity,
-                        child: FilledButton(
-                          onPressed: _canContinue ? _onContinue : null,
-                          style: FilledButton.styleFrom(
-                            backgroundColor: selectedSurface,
-                            foregroundColor: selectedInk,
-                            disabledBackgroundColor: c.soft,
-                            disabledForegroundColor: c.muted,
-                            minimumSize: const Size.fromHeight(46),
-                            textStyle: c.text(13, bold: true),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          child: const Text('Continue'),
-                        ),
-                      ),
-                      if (!isKeyboardOpen) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          _selectedFriends.isNotEmpty
-                              ? '${_selectedFriends.length} friend${_selectedFriends.length > 1 ? 's' : ''} selected'
-                              : 'Choose at least one friend to continue',
-                          textAlign: TextAlign.center,
-                          style: c.text(10, muted: true),
+                                    );
+                                  },
+                                ),
                         ),
                       ],
-                    ],
+                    ),
                   ),
-                ),
-              ],
+                  // Bottom continue bar
+                  Container(
+                    padding: EdgeInsets.fromLTRB(
+                      22,
+                      isKeyboardOpen ? 8 : 14,
+                      22,
+                      isKeyboardOpen ? 6 : 10,
+                    ),
+                    decoration: BoxDecoration(
+                      border: Border(top: BorderSide(color: c.line)),
+                    ),
+                    child: Column(
+                      children: [
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton(
+                            onPressed: _canContinue ? _onContinue : null,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: selectedSurface,
+                              foregroundColor: selectedInk,
+                              disabledBackgroundColor: c.soft,
+                              disabledForegroundColor: c.muted,
+                              minimumSize: const Size.fromHeight(46),
+                              textStyle: c.text(13, bold: true),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: const Text('Continue'),
+                          ),
+                        ),
+                        if (!isKeyboardOpen) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            _selectedFriends.isNotEmpty
+                                ? '${_selectedFriends.length} friend${_selectedFriends.length > 1 ? 's' : ''} selected'
+                                : 'Choose at least one friend to continue',
+                            textAlign: TextAlign.center,
+                            style: c.text(10, muted: true),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
       ),
-    ),
-  );
-}
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -688,7 +716,7 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
 
   Future<void> _pickPhoto() async {
     if (_isCreating) return;
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     final source = await showModalBottomSheet<ImageSource>(
       context: context,
       backgroundColor: Colors.transparent,
@@ -726,7 +754,10 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
                 ),
                 if (_selectedImageFile != null)
                   ListTile(
-                    leading: const Icon(Icons.delete_outline, color: Colors.red),
+                    leading: const Icon(
+                      Icons.delete_outline,
+                      color: Colors.red,
+                    ),
                     title: Text(
                       'Remove Photo',
                       style: c.text(14).copyWith(color: Colors.red),
@@ -785,15 +816,17 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
         if (_selectedImageFile != null && _selectedImageFile!.existsSync()) {
           try {
             final avatarId = const Uuid().v4();
-            final storageRef = FirebaseStorage.instance
-                .ref()
-                .child('group_avatars/$avatarId.jpg');
+            final storageRef = FirebaseStorage.instance.ref().child(
+              'group_avatars/$avatarId.jpg',
+            );
             final metadata = SettableMetadata(
               contentType: 'image/jpeg',
               cacheControl: 'public, max-age=31536000',
             );
-            final uploadTask =
-                storageRef.putFile(_selectedImageFile!, metadata);
+            final uploadTask = storageRef.putFile(
+              _selectedImageFile!,
+              metadata,
+            );
             final snapshot = await uploadTask.whenComplete(() => {});
             avatarUrl = await snapshot.ref.getDownloadURL();
           } catch (e) {
@@ -805,8 +838,9 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
         final bodyData = <String, dynamic>{
           'groupName': name,
           'description': _descriptionController.text.trim(),
-          'memberUsernames':
-              widget.selectedFriends.map((f) => f.username).toList(),
+          'memberUsernames': widget.selectedFriends
+              .map((f) => f.username)
+              .toList(),
         };
         if (avatarUrl != null) {
           bodyData['avatarUrl'] = avatarUrl;
@@ -829,8 +863,7 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
           if (avatarUrl != null) {
             try {
               await http.post(
-                Uri.parse(
-                    '${AppConfig.baseUrl}/groups/$conversationId/avatar'),
+                Uri.parse('${AppConfig.baseUrl}/groups/$conversationId/avatar'),
                 headers: {
                   'Content-Type': 'application/json',
                   'Authorization': 'Bearer $token',
@@ -849,15 +882,13 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
             partnerUid: null,
           );
         } else if (response.statusCode == 409) {
-          error =
-              'A group with this name already exists. Choose another name.';
+          error = 'A group with this name already exists. Choose another name.';
         } else {
           error = 'Could not create group. Please try again in a moment.';
         }
       }
     } catch (_) {
-      error =
-          'Could not confirm group creation. Please check your connection.';
+      error = 'Could not confirm group creation. Please check your connection.';
     } finally {
       if (mounted) setState(() => _isCreating = false);
     }
@@ -880,15 +911,17 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
     } else {
       await showDialog<void>(
         context: context,
-        builder: (ctx) => NotesDialog(
+        builder: (ctx) => OpaqueDialog(
           title: 'Couldn’t create group',
           icon: Icons.group_outlined,
           body: Text(
             error ?? 'Please try again.',
-            style: NotesColors(ctx).text(12, muted: true).copyWith(height: 1.8),
+            style: OpaqueColors(
+              ctx,
+            ).text(12, muted: true).copyWith(height: 1.8),
           ),
           actions: [
-            NotesButton(
+            OpaqueButton(
               label: 'Back',
               primary: true,
               onPressed: () => Navigator.pop(ctx),
@@ -902,7 +935,7 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
   Widget _memberAvatar({
     required String? avatarUrl,
     required String name,
-    required NotesColors c,
+    required OpaqueColors c,
   }) {
     final initials = name
         .trim()
@@ -937,9 +970,13 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
   Widget build(BuildContext context) {
     context.watch<UserSettingsProvider>();
     final neutralDark = context.read<UserSettingsProvider>().isDarkMode;
-    final selectedSurface = neutralDark ? const Color(0xFFE3E5E9) : const Color(0xFF303238);
-    final selectedInk = neutralDark ? const Color(0xFF25272C) : const Color(0xFFF8F8FA);
-    final c = NotesColors(context);
+    final selectedSurface = neutralDark
+        ? const Color(0xFFE3E5E9)
+        : const Color(0xFF303238);
+    final selectedInk = neutralDark
+        ? const Color(0xFF25272C)
+        : const Color(0xFFF8F8FA);
+    final c = OpaqueColors(context);
 
     return CallAwareScreen(
       screenName: 'GroupDetailsScreen',
@@ -1100,8 +1137,10 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
                                 ),
                                 focusedBorder: OutlineInputBorder(
                                   borderRadius: BorderRadius.circular(12),
-                                  borderSide:
-                                      BorderSide(color: c.blue, width: 1.5),
+                                  borderSide: BorderSide(
+                                    color: c.blue,
+                                    width: 1.5,
+                                  ),
                                 ),
                               ),
                             ),
@@ -1118,7 +1157,8 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
                             TextField(
                               controller: _descriptionController,
                               focusNode: _descriptionFocusNode,
-                              onTapOutside: (_) => _descriptionFocusNode.unfocus(),
+                              onTapOutside: (_) =>
+                                  _descriptionFocusNode.unfocus(),
                               enabled: !_isCreating,
                               minLines: 2,
                               maxLines: 4,
@@ -1143,8 +1183,10 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
                                 ),
                                 focusedBorder: OutlineInputBorder(
                                   borderRadius: BorderRadius.circular(12),
-                                  borderSide:
-                                      BorderSide(color: c.blue, width: 1.5),
+                                  borderSide: BorderSide(
+                                    color: c.blue,
+                                    width: 1.5,
+                                  ),
                                 ),
                               ),
                             ),
@@ -1178,8 +1220,8 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
                                   if (index == 0) {
                                     final currentUser =
                                         FirebaseAuth.instance.currentUser;
-                                    final myName = currentUser
-                                                ?.displayName
+                                    final myName =
+                                        currentUser?.displayName
                                                 ?.trim()
                                                 .isNotEmpty ==
                                             true
@@ -1278,7 +1320,7 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
                           const SizedBox(height: 8),
                           Text(
                             _groupNameController.text.trim().isNotEmpty
-                               ? 'You’ll be the group admin.'
+                                ? 'You’ll be the group admin.'
                                 : 'Group name is required to create group.',
                             textAlign: TextAlign.center,
                             style: c.text(10, muted: true),
@@ -1293,10 +1335,7 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
           ),
           if (_isCreating) ...[
             const Positioned.fill(
-              child: ModalBarrier(
-                dismissible: false,
-                color: Color(0x55101826),
-              ),
+              child: ModalBarrier(dismissible: false, color: Color(0x55101826)),
             ),
             Positioned(
               left: 0,

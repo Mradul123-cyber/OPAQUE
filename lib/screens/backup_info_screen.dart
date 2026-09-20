@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/user_settings_provider.dart';
 import '../widgets/backup_design.dart';
-import '../widgets/notes_design.dart';
+import '../widgets/opaque_design.dart';
 import '../widgets/call_aware_screen.dart';
 
 /// Detailed help for the backup operations available in the app.
@@ -11,7 +11,7 @@ class BackupInfoScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     context.watch<UserSettingsProvider>();
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     Widget paragraph(String text) => Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Text(text, style: c.text(12, muted: true).copyWith(height: 1.8)),

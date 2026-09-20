@@ -31,7 +31,7 @@ class OpaqueToast {
     IconData? icon,
     bool? showIcon,
     Duration duration = const Duration(milliseconds: 2000),
-    double bottomMargin = 30.0,
+    double bottomMargin = 12.0,
   }) {
     if (!context.mounted) return;
 
@@ -66,7 +66,7 @@ class OpaqueToast {
     }
 
     final messenger = ScaffoldMessenger.of(context);
-    messenger.hideCurrentSnackBar();
+    messenger.removeCurrentSnackBar();
 
     Widget? leadingIcon;
     final bool shouldShowIcon = showIcon ?? (type != OpaqueToastType.normal || icon != null);
@@ -115,10 +115,11 @@ class OpaqueToast {
       SnackBar(
         elevation: 0,
         backgroundColor: Colors.transparent,
-        padding: EdgeInsets.zero,
-        behavior: SnackBarBehavior.floating,
+        // Fixed placement anchors above navigation/keyboard, rather than
+        // above the floating action button (including its expanded menu).
+        padding: EdgeInsets.fromLTRB(16, 0, 16, bottomMargin),
+        behavior: SnackBarBehavior.fixed,
         duration: duration,
-        margin: EdgeInsets.only(bottom: bottomMargin),
         content: Center(
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
@@ -167,7 +168,7 @@ class OpaqueToast {
     String message, {
     bool showIcon = true,
     Duration duration = const Duration(milliseconds: 2500),
-    double bottomMargin = 30.0,
+    double bottomMargin = 12.0,
   }) {
     show(
       context,
@@ -185,7 +186,7 @@ class OpaqueToast {
     String message, {
     bool showIcon = true,
     Duration duration = const Duration(milliseconds: 2500),
-    double bottomMargin = 30.0,
+    double bottomMargin = 12.0,
   }) {
     show(
       context,
@@ -203,7 +204,7 @@ class OpaqueToast {
     String message, {
     bool showIcon = true,
     Duration duration = const Duration(milliseconds: 2000),
-    double bottomMargin = 30.0,
+    double bottomMargin = 12.0,
   }) {
     show(
       context,
@@ -221,7 +222,7 @@ class OpaqueToast {
     String message, {
     bool showIcon = true,
     Duration duration = const Duration(milliseconds: 2000),
-    double bottomMargin = 30.0,
+    double bottomMargin = 12.0,
   }) {
     show(
       context,

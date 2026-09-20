@@ -4,7 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 
 import '../app_config.dart';
-import '../widgets/notes_design.dart';
+import '../widgets/opaque_design.dart';
 import '../widgets/opaque_toast.dart';
 import '../widgets/group_join_requests_sheet.dart';
 import 'group_info_screen.dart';
@@ -63,9 +63,14 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
       if (response.statusCode == 200 && mounted) {
         final data = json.decode(response.body) as Map<String, dynamic>;
         setState(() {
-          _editGroupInfo = (data['editGroupInfoPermission'] ?? 'all_members') == 'all_members';
-          _sendMessages = (data['sendMessagesPermission'] ?? 'all_members') == 'all_members';
-          _addMembers = (data['addMembersPermission'] ?? 'all_members') == 'all_members';
+          _editGroupInfo =
+              (data['editGroupInfoPermission'] ?? 'all_members') ==
+              'all_members';
+          _sendMessages =
+              (data['sendMessagesPermission'] ?? 'all_members') ==
+              'all_members';
+          _addMembers =
+              (data['addMembersPermission'] ?? 'all_members') == 'all_members';
           _requireAdminApproval = data['requireAdminApproval'] ?? false;
           _isLoading = false;
         });
@@ -88,7 +93,9 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
       final token = await user.getIdToken();
 
       final response = await http.get(
-        Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/join-requests'),
+        Uri.parse(
+          '${AppConfig.baseUrl}/groups/${widget.groupId}/join-requests',
+        ),
         headers: {
           'Authorization': 'Bearer $token',
           'Content-Type': 'application/json',
@@ -118,13 +125,19 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
 
       final body = <String, dynamic>{};
       if (editGroupInfo != null) {
-        body['editGroupInfoPermission'] = editGroupInfo ? 'all_members' : 'only_admins';
+        body['editGroupInfoPermission'] = editGroupInfo
+            ? 'all_members'
+            : 'only_admins';
       }
       if (sendMessages != null) {
-        body['sendMessagesPermission'] = sendMessages ? 'all_members' : 'only_admins';
+        body['sendMessagesPermission'] = sendMessages
+            ? 'all_members'
+            : 'only_admins';
       }
       if (addMembers != null) {
-        body['addMembersPermission'] = addMembers ? 'all_members' : 'only_admins';
+        body['addMembersPermission'] = addMembers
+            ? 'all_members'
+            : 'only_admins';
       }
       if (requireAdminApproval != null) {
         body['requireAdminApproval'] = requireAdminApproval;
@@ -144,7 +157,8 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
           if (editGroupInfo != null) _editGroupInfo = editGroupInfo;
           if (sendMessages != null) _sendMessages = sendMessages;
           if (addMembers != null) _addMembers = addMembers;
-          if (requireAdminApproval != null) _requireAdminApproval = requireAdminApproval;
+          if (requireAdminApproval != null)
+            _requireAdminApproval = requireAdminApproval;
           _isSaving = false;
         });
         OpaqueToast.success(context, 'Permissions updated');
@@ -176,7 +190,7 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
   }
 
   void _showPendingRequestsWarningDialog() {
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -191,7 +205,10 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
             Icon(Icons.shield_outlined, color: c.blue, size: 22),
             const SizedBox(width: 10),
             Expanded(
-              child: Text('Pending Join Requests', style: c.text(16, bold: true)),
+              child: Text(
+                'Pending Join Requests',
+                style: c.text(16, bold: true),
+              ),
             ),
           ],
         ),
@@ -208,7 +225,10 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
                   Navigator.pop(ctx);
                   _openJoinRequestsSheet();
                 },
-                child: Text('Review list', style: c.text(12, bold: true).copyWith(color: c.blue)),
+                child: Text(
+                  'Review list',
+                  style: c.text(12, bold: true).copyWith(color: c.blue),
+                ),
               ),
               const Spacer(),
               TextButton(
@@ -224,14 +244,22 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
                 child: OutlinedButton(
                   onPressed: () {
                     Navigator.pop(ctx);
-                    _batchReviewRequests(action: 'reject_all', disableApproval: true);
+                    _batchReviewRequests(
+                      action: 'reject_all',
+                      disableApproval: true,
+                    );
                   },
                   style: OutlinedButton.styleFrom(
                     side: BorderSide(color: Colors.red.withOpacity(0.5)),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
                     padding: const EdgeInsets.symmetric(vertical: 10),
                   ),
-                  child: Text('Deny All', style: c.text(12, bold: true).copyWith(color: Colors.red)),
+                  child: Text(
+                    'Deny All',
+                    style: c.text(12, bold: true).copyWith(color: Colors.red),
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
@@ -239,14 +267,26 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
                 child: FilledButton(
                   onPressed: () {
                     Navigator.pop(ctx);
-                    _batchReviewRequests(action: 'approve_all', disableApproval: true);
+                    _batchReviewRequests(
+                      action: 'approve_all',
+                      disableApproval: true,
+                    );
                   },
                   style: FilledButton.styleFrom(
                     backgroundColor: c.blue,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
                     padding: const EdgeInsets.symmetric(vertical: 10),
                   ),
-                  child: const Text('Approve All', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                  child: const Text(
+                    'Approve All',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
               ),
             ],
@@ -267,7 +307,9 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
       final token = await user.getIdToken();
 
       final response = await http.post(
-        Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/join-requests/batch'),
+        Uri.parse(
+          '${AppConfig.baseUrl}/groups/${widget.groupId}/join-requests/batch',
+        ),
         headers: {
           'Authorization': 'Bearer $token',
           'Content-Type': 'application/json',
@@ -286,11 +328,18 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
           }
           _isSaving = false;
         });
-        final actionText = action == 'approve_all' ? 'All requests approved' : 'All requests denied';
+        final actionText = action == 'approve_all'
+            ? 'All requests approved'
+            : 'All requests denied';
         OpaqueToast.success(context, '$actionText and approval disabled');
       } else if (mounted) {
         setState(() => _isSaving = false);
-        OpaqueToast.error(context, response.body.isNotEmpty ? response.body : 'Failed to process requests');
+        OpaqueToast.error(
+          context,
+          response.body.isNotEmpty
+              ? response.body
+              : 'Failed to process requests',
+        );
       }
     } catch (e) {
       if (mounted) {
@@ -315,7 +364,7 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
 
     return Scaffold(
       backgroundColor: c.surface,
@@ -340,7 +389,9 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
         ),
       ),
       body: _isLoading
-          ? Center(child: CircularProgressIndicator(color: c.blue, strokeWidth: 2))
+          ? Center(
+              child: CircularProgressIndicator(color: c.blue, strokeWidth: 2),
+            )
           : ListView(
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 20),
               children: [
@@ -371,7 +422,9 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
                 // ── SECTION 1: MEMBERS CAN ──
                 Text(
                   'MEMBERS CAN',
-                  style: c.text(11, muted: true, bold: true).copyWith(letterSpacing: 0.8),
+                  style: c
+                      .text(11, muted: true, bold: true)
+                      .copyWith(letterSpacing: 0.8),
                 ),
                 const SizedBox(height: 10),
                 Container(
@@ -391,7 +444,12 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
                             ? null
                             : (val) => _updatePermission(editGroupInfo: val),
                       ),
-                      Divider(height: 1, color: c.line, indent: 16, endIndent: 16),
+                      Divider(
+                        height: 1,
+                        color: c.line,
+                        indent: 16,
+                        endIndent: 16,
+                      ),
                       _buildSwitchTile(
                         c: c,
                         title: 'Send messages',
@@ -403,7 +461,12 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
                             ? null
                             : (val) => _updatePermission(sendMessages: val),
                       ),
-                      Divider(height: 1, color: c.line, indent: 16, endIndent: 16),
+                      Divider(
+                        height: 1,
+                        color: c.line,
+                        indent: 16,
+                        endIndent: 16,
+                      ),
                       _buildSwitchTile(
                         c: c,
                         title: 'Add other members',
@@ -421,7 +484,9 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
                 // ── SECTION 2: ADMINS CAN ──
                 Text(
                   'ADMINS CAN',
-                  style: c.text(11, muted: true, bold: true).copyWith(letterSpacing: 0.8),
+                  style: c
+                      .text(11, muted: true, bold: true)
+                      .copyWith(letterSpacing: 0.8),
                 ),
                 const SizedBox(height: 10),
                 Container(
@@ -443,11 +508,26 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
                             : (val) => _onToggleRequireAdminApproval(val),
                       ),
                       if (_requireAdminApproval) ...[
-                        Divider(height: 1, color: c.line, indent: 16, endIndent: 16),
+                        Divider(
+                          height: 1,
+                          color: c.line,
+                          indent: 16,
+                          endIndent: 16,
+                        ),
                         ListTile(
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                          leading: Icon(Icons.person_pin_outlined, color: c.blue, size: 22),
-                          title: Text('Pending join requests', style: c.text(14, bold: true)),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 4,
+                          ),
+                          leading: Icon(
+                            Icons.person_pin_outlined,
+                            color: c.blue,
+                            size: 22,
+                          ),
+                          title: Text(
+                            'Pending join requests',
+                            style: c.text(14, bold: true),
+                          ),
                           subtitle: Text(
                             _pendingRequestsCount > 0
                                 ? '$_pendingRequestsCount request(s) waiting for review'
@@ -459,7 +539,10 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
                             children: [
                               if (_pendingRequestsCount > 0)
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 3,
+                                  ),
                                   decoration: BoxDecoration(
                                     color: c.blue,
                                     borderRadius: BorderRadius.circular(10),
@@ -474,7 +557,11 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
                                   ),
                                 ),
                               const SizedBox(width: 8),
-                              Icon(Icons.chevron_right_rounded, color: c.muted, size: 20),
+                              Icon(
+                                Icons.chevron_right_rounded,
+                                color: c.muted,
+                                size: 20,
+                              ),
                             ],
                           ),
                           onTap: _openJoinRequestsSheet,
@@ -489,7 +576,7 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
   }
 
   Widget _buildSwitchTile({
-    required NotesColors c,
+    required OpaqueColors c,
     required String title,
     required String subtitle,
     required bool value,
@@ -505,7 +592,10 @@ class _GroupPermissionsScreenState extends State<GroupPermissionsScreen> {
               children: [
                 Text(title, style: c.text(14, bold: true)),
                 const SizedBox(height: 3),
-                Text(subtitle, style: c.text(12, muted: true).copyWith(height: 1.3)),
+                Text(
+                  subtitle,
+                  style: c.text(12, muted: true).copyWith(height: 1.3),
+                ),
               ],
             ),
           ),

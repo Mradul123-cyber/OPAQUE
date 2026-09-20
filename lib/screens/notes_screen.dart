@@ -1,3 +1,4 @@
+import '../widgets/opaque_design.dart';
 import '../widgets/notes_design.dart';
 import '../widgets/notes_password_sheet.dart';
 import '../widgets/opaque_navigation.dart';
@@ -154,7 +155,7 @@ class _NotesScreenState extends State<NotesScreen> {
   }
 
   Future<void> _deleteNote(Note note) async {
-    final confirmed = await showNotesConfirmation(
+    final confirmed = await showOpaqueConfirmation(
       context,
       title: 'Delete note?',
       body:
@@ -170,7 +171,7 @@ class _NotesScreenState extends State<NotesScreen> {
         if (mounted) await _loadNotes();
       } catch (_) {
         if (mounted)
-          await showNotesConfirmation(
+          await showOpaqueConfirmation(
             context,
             title: 'Couldn’t delete note',
             body: 'Your note is still here. Please try again.',
@@ -322,7 +323,9 @@ class _NotesScreenState extends State<NotesScreen> {
                                           Container(
                                             width: 7,
                                             height: 7,
-                                            margin: const EdgeInsets.only(right: 6),
+                                            margin: const EdgeInsets.only(
+                                              right: 6,
+                                            ),
                                             decoration: BoxDecoration(
                                               shape: BoxShape.circle,
                                               color: _getCategoryColor(
@@ -639,10 +642,11 @@ class _NotesScreenState extends State<NotesScreen> {
                                             if (note.category != null) ...[
                                               Builder(
                                                 builder: (context) {
-                                                  final catColor = _getCategoryColor(
-                                                    note.category,
-                                                    defaultColor: blue,
-                                                  );
+                                                  final catColor =
+                                                      _getCategoryColor(
+                                                        note.category,
+                                                        defaultColor: blue,
+                                                      );
                                                   return Container(
                                                     padding:
                                                         const EdgeInsets.symmetric(
@@ -651,16 +655,25 @@ class _NotesScreenState extends State<NotesScreen> {
                                                         ),
                                                     decoration: BoxDecoration(
                                                       color: dark
-                                                          ? catColor.withOpacity(0.18)
-                                                          : catColor.withOpacity(0.12),
+                                                          ? catColor
+                                                                .withOpacity(
+                                                                  0.18,
+                                                                )
+                                                          : catColor
+                                                                .withOpacity(
+                                                                  0.12,
+                                                                ),
                                                       borderRadius:
-                                                          BorderRadius.circular(5),
+                                                          BorderRadius.circular(
+                                                            5,
+                                                          ),
                                                     ),
                                                     child: Text(
                                                       note.category!,
                                                       style: TextStyle(
                                                         fontSize: 10,
-                                                        fontWeight: FontWeight.w500,
+                                                        fontWeight:
+                                                            FontWeight.w500,
                                                         color: catColor,
                                                       ),
                                                     ),
@@ -939,12 +952,12 @@ class _NotesScreenState extends State<NotesScreen> {
   }
 
   void _showNoteOptions(BuildContext context, Note note, bool isDark) {
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
-      builder: (sheetContext) => NotesSheet(
+      builder: (sheetContext) => OpaqueSheet(
         title: 'Note actions',
         description: note.title,
         child: Column(

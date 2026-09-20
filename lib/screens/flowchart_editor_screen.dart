@@ -1,4 +1,4 @@
-import '../widgets/notes_design.dart';
+import '../widgets/opaque_design.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_flow_chart/flutter_flow_chart.dart';
 import 'package:provider/provider.dart';
@@ -41,7 +41,7 @@ class _FlowchartEditorScreenState extends State<FlowchartEditorScreen> {
       dashboard = Dashboard(defaultArrowStyle: ArrowStyle.curve);
     }
 
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     // Set grid background parameters
     dashboard.setGridBackgroundParams(
       GridBackgroundParams(
@@ -57,7 +57,7 @@ class _FlowchartEditorScreenState extends State<FlowchartEditorScreen> {
   }
 
   void _addElement(String kind) {
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     final element = FlowElement(
       textColor: c.ink,
       textSize: 13,
@@ -108,7 +108,7 @@ class _FlowchartEditorScreenState extends State<FlowchartEditorScreen> {
       changed = dashboard.toJson() != _initialSnapshot;
     } catch (_) {}
     if (changed) {
-      final discard = await showNotesConfirmation(
+      final discard = await showOpaqueConfirmation(
         context,
         title: 'Discard changes?',
         body:
@@ -130,7 +130,7 @@ class _FlowchartEditorScreenState extends State<FlowchartEditorScreen> {
     if (_saving) return;
     _saving = true;
     try {
-      final save = await showNotesConfirmation(
+      final save = await showOpaqueConfirmation(
         context,
         title: 'Save flowchart?',
         body:
@@ -146,7 +146,7 @@ class _FlowchartEditorScreenState extends State<FlowchartEditorScreen> {
       });
     } catch (_) {
       if (mounted)
-        await showNotesConfirmation(
+        await showOpaqueConfirmation(
           context,
           title: 'Couldn’t save flowchart',
           body:
@@ -160,7 +160,7 @@ class _FlowchartEditorScreenState extends State<FlowchartEditorScreen> {
   }
 
   Future<void> _clearAll() async {
-    final clear = await showNotesConfirmation(
+    final clear = await showOpaqueConfirmation(
       context,
       title: 'Clear flowchart?',
       body:
@@ -175,7 +175,7 @@ class _FlowchartEditorScreenState extends State<FlowchartEditorScreen> {
   @override
   Widget build(BuildContext context) {
     context.watch<UserSettingsProvider>();
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     return PopScope(
       canPop: _leaving,
       onPopInvokedWithResult: (didPop, result) {
@@ -292,14 +292,14 @@ class _FlowchartEditorScreenState extends State<FlowchartEditorScreen> {
                 child: Row(
                   children: [
                     Expanded(
-                      child: NotesButton(
+                      child: OpaqueButton(
                         label: 'Clear all',
                         onPressed: _clearAll,
                       ),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: NotesButton(
+                      child: OpaqueButton(
                         label: 'Save flowchart',
                         primary: true,
                         onPressed: _save,
@@ -322,7 +322,7 @@ class _FlowchartEditorScreenState extends State<FlowchartEditorScreen> {
     );
     if (!mounted) return;
     if (action == 'delete') {
-      final remove = await showNotesConfirmation(
+      final remove = await showOpaqueConfirmation(
         context,
         title: 'Delete shape?',
         body: 'Remove this shape and its connections from the flowchart?',
@@ -356,8 +356,8 @@ class _FlowNodeDialogState extends State<_FlowNodeDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final c = NotesColors(context);
-    return NotesDialog(
+    final c = OpaqueColors(context);
+    return OpaqueDialog(
       title: 'Edit shape',
       icon: Icons.account_tree_outlined,
       body: TextField(
@@ -367,13 +367,13 @@ class _FlowNodeDialogState extends State<_FlowNodeDialog> {
         decoration: c.field('Shape text'),
       ),
       actions: [
-        NotesButton(
+        OpaqueButton(
           label: 'Delete',
           danger: true,
           onPressed: () => Navigator.pop(context, 'delete'),
         ),
-        NotesButton(label: 'Cancel', onPressed: () => Navigator.pop(context)),
-        NotesButton(
+        OpaqueButton(label: 'Cancel', onPressed: () => Navigator.pop(context)),
+        OpaqueButton(
           label: 'Save',
           primary: true,
           onPressed: () {

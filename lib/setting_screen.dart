@@ -1,4 +1,4 @@
-import 'widgets/notes_design.dart';
+import 'widgets/opaque_design.dart';
 import 'widgets/backup_design.dart';
 import 'widgets/opaque_toast.dart';
 // lib/setting_screen.dart
@@ -122,12 +122,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (!mounted) return;
 
       bool changed = false;
-      if (savedUsername != null && savedUsername.isNotEmpty && _username == null) {
+      if (savedUsername != null &&
+          savedUsername.isNotEmpty &&
+          _username == null) {
         _username = savedUsername;
         _cachedUsername = savedUsername;
         changed = true;
       }
-      if (savedDisplayName != null && savedDisplayName.isNotEmpty && _displayName == null) {
+      if (savedDisplayName != null &&
+          savedDisplayName.isNotEmpty &&
+          _displayName == null) {
         _displayName = savedDisplayName;
         _cachedDisplayName = savedDisplayName;
         _displayNameController.text = savedDisplayName;
@@ -177,8 +181,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _cachedDisplayName = fetchedDisplayName;
         }
 
-        final fetchedPrivacy = (data['avatar_privacy'] ?? data['avatarPrivacy']) as String?;
-        if (fetchedPrivacy != null && fetchedPrivacy.isNotEmpty && _avatarPrivacy != fetchedPrivacy) {
+        final fetchedPrivacy =
+            (data['avatar_privacy'] ?? data['avatarPrivacy']) as String?;
+        if (fetchedPrivacy != null &&
+            fetchedPrivacy.isNotEmpty &&
+            _avatarPrivacy != fetchedPrivacy) {
           _avatarPrivacy = fetchedPrivacy;
           changed = true;
         }
@@ -194,7 +201,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             await prefs.setString('cached_user_username', fetchedUsername);
           }
           if (fetchedDisplayName != null && fetchedDisplayName.isNotEmpty) {
-            await prefs.setString('cached_user_display_name', fetchedDisplayName);
+            await prefs.setString(
+              'cached_user_display_name',
+              fetchedDisplayName,
+            );
           }
         } catch (_) {}
 
@@ -244,7 +254,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     try {
       // Delete old avatar from Firebase Storage if replacing
-      if (_avatarUrl != null && _avatarUrl!.contains('firebasestorage.googleapis.com')) {
+      if (_avatarUrl != null &&
+          _avatarUrl!.contains('firebasestorage.googleapis.com')) {
         try {
           await FirebaseStorage.instance.refFromURL(_avatarUrl!).delete();
         } catch (_) {}
@@ -252,7 +263,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       // Generate opaque random UUID to completely hide Firebase UID from CDN URL
       final avatarId = const Uuid().v4();
-      final storageRef = FirebaseStorage.instance.ref().child('avatars/$avatarId.jpg');
+      final storageRef = FirebaseStorage.instance.ref().child(
+        'avatars/$avatarId.jpg',
+      );
       final metadata = SettableMetadata(
         contentType: 'image/jpeg',
         cacheControl: 'public, max-age=31536000',
@@ -326,7 +339,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _showAvatarPrivacyDialog() {
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -358,22 +371,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   if (isSelected)
                     Icon(Icons.check_circle, color: c.ink, size: 18)
                   else
-                    Icon(Icons.radio_button_unchecked, color: c.muted, size: 18),
+                    Icon(
+                      Icons.radio_button_unchecked,
+                      color: c.muted,
+                      size: 18,
+                    ),
                 ],
               ),
             ),
           );
         }
 
-        return NotesSheet(
+        return OpaqueSheet(
           title: 'Profile photo privacy',
           description: 'Choose who can see your profile photo.',
           showIcon: false,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              option('Everyone', 'Any user on Opaque can see your photo', 'everyone'),
-              option('My Contacts', 'Only accepted friends can see your photo', 'contacts'),
+              option(
+                'Everyone',
+                'Any user on Opaque can see your photo',
+                'everyone',
+              ),
+              option(
+                'My Contacts',
+                'Only accepted friends can see your photo',
+                'contacts',
+              ),
               option('Nobody', 'No one can see your photo', 'nobody'),
             ],
           ),
@@ -479,7 +504,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         });
         Navigator.of(context).pop();
       } else {
-        OpaqueToast.error(context, 'Failed to update display name: ${response.body}');
+        OpaqueToast.error(
+          context,
+          'Failed to update display name: ${response.body}',
+        );
       }
     } catch (e) {
       if (mounted) {
@@ -643,7 +671,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (sheetContext) => StatefulBuilder(
         builder: (ctx, updateSheet) {
           _profileSheetUpdater = updateSheet;
-          final c = NotesColors(ctx);
+          final c = OpaqueColors(ctx);
           Widget identity(IconData icon, String label, String value) =>
               Container(
                 padding: const EdgeInsets.symmetric(vertical: 14),
@@ -683,7 +711,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ],
                 ),
               );
-          return NotesSheet(
+          return OpaqueSheet(
             title: 'Your profile',
             description: 'How you appear to your friends.',
             showIcon: false,
@@ -811,7 +839,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 18),
                 SizedBox(
                   width: double.infinity,
-                  child: NotesButton(
+                  child: OpaqueButton(
                     label: saving ? 'Saving…' : 'Save changes',
                     primary: true,
                     onPressed: saving || photoBusy
@@ -847,8 +875,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 throw StateError('Update failed');
                               _cachedDisplayName = name;
                               try {
-                                final prefs = await SharedPreferences.getInstance();
-                                await prefs.setString('cached_user_display_name', name);
+                                final prefs =
+                                    await SharedPreferences.getInstance();
+                                await prefs.setString(
+                                  'cached_user_display_name',
+                                  name,
+                                );
                               } catch (_) {}
                               if (mounted) setState(() => _displayName = name);
                               if (ctx.mounted) Navigator.pop(ctx);
@@ -874,7 +906,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _profileSheetUpdater = null;
   }
 
-  Widget _opaqueAvatar(NotesColors c, double size) {
+  Widget _opaqueAvatar(OpaqueColors c, double size) {
     final name = _displayName ?? _currentUser?.displayName ?? '';
     final initials = name
         .trim()
@@ -923,8 +955,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       backgroundColor: Colors.transparent,
       builder: (sheetContext) => StatefulBuilder(
         builder: (ctx, updateSheet) {
-          final c = NotesColors(ctx);
-          return NotesSheet(
+          final c = OpaqueColors(ctx);
+          return OpaqueSheet(
             title: clearData ? 'Clear local data & log out?' : 'Log out?',
             description: clearData
                 ? 'This removes the app’s saved data from this device.'
@@ -968,14 +1000,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 Row(
                   children: [
                     Expanded(
-                      child: NotesButton(
+                      child: OpaqueButton(
                         label: 'Cancel',
                         onPressed: () => Navigator.pop(ctx, false),
                       ),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: NotesButton(
+                      child: OpaqueButton(
                         label: clearData ? 'Clear & log out' : 'Log out',
                         primary: true,
                         danger: clearData,
@@ -999,7 +1031,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     context.watch<UserSettingsProvider>();
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     Widget label(String text) => Padding(
       padding: const EdgeInsets.only(top: 22, bottom: 3),
       child: Text(
@@ -1122,8 +1154,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _avatarPrivacy == 'nobody'
                     ? 'Nobody'
                     : _avatarPrivacy == 'contacts'
-                        ? 'My contacts'
-                        : 'Everyone',
+                    ? 'My contacts'
+                    : 'Everyone',
                 _showAvatarPrivacyDialog,
               ),
               label('BACKUP & RESTORE'),
@@ -1322,8 +1354,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _navigateToStyle() {
     Navigator.pop(context, 'open_style');
   }
-
-
 
   Widget _buildAboutSection({
     required double sectionTitleSize,
@@ -1727,7 +1757,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               isDeleting = false;
                             });
                             if (dialogContext.mounted) {
-                              OpaqueToast.error(context, 'Failed to delete account: $e');
+                              OpaqueToast.error(
+                                context,
+                                'Failed to delete account: $e',
+                              );
                             }
                           }
                         },

@@ -1,5 +1,5 @@
 import '../widgets/backup_design.dart';
-import '../widgets/notes_design.dart';
+import '../widgets/opaque_design.dart';
 import '../services/user_settings_provider.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -1923,7 +1923,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
           BackupPassphraseSheet(title: title, hint: hint, confirm: !restoring),
     );
     if (!mounted || password == null || !restoring) return password;
-    final confirmed = await showNotesConfirmation(
+    final confirmed = await showOpaqueConfirmation(
       context,
       title: 'Restore this backup?',
       body:
@@ -1939,7 +1939,8 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
     if (!mounted) return;
     if (isError) {
       OpaqueToast.error(context, message);
-    } else if (message.toLowerCase().contains('cancel') || message.contains('...')) {
+    } else if (message.toLowerCase().contains('cancel') ||
+        message.contains('...')) {
       OpaqueToast.info(context, message);
     } else {
       OpaqueToast.success(context, message);
@@ -2024,7 +2025,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
     }
   }
 
-  NotesColors get _ui => NotesColors(context);
+  OpaqueColors get _ui => OpaqueColors(context);
   bool _restoreTab = false;
   String _destination = 'On this device';
   int? _mediaDays;
@@ -2055,7 +2056,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
   ) async {
     final choice = await showBackupSheet<String>(
       context: context,
-      builder: (ctx) => NotesSheet(
+      builder: (ctx) => OpaqueSheet(
         title: title,
         description: 'Choose what works for you.',
         icon: Icons.tune_rounded,
@@ -2103,7 +2104,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
     }
     final action = await showBackupSheet<String>(
       context: context,
-      builder: (ctx) => NotesSheet(
+      builder: (ctx) => OpaqueSheet(
         title: 'Google Drive',
         description: _googleDriveEmail ?? 'Connected account',
         icon: Icons.cloud_outlined,
@@ -2156,7 +2157,9 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
           border: Border(bottom: BorderSide(color: c.line)),
         ),
         child: Row(
-          crossAxisAlignment: subtitle != null ? CrossAxisAlignment.start : CrossAxisAlignment.center,
+          crossAxisAlignment: subtitle != null
+              ? CrossAxisAlignment.start
+              : CrossAxisAlignment.center,
           children: [
             Padding(
               padding: EdgeInsets.only(top: subtitle != null ? 2.0 : 0.0),
@@ -2170,9 +2173,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
                 children: [
                   Row(
                     children: [
-                      Expanded(
-                        child: Text(title, style: c.text(12)),
-                      ),
+                      Expanded(child: Text(title, style: c.text(12))),
                       if (value != null) ...[
                         const SizedBox(width: 8),
                         Text(
@@ -2233,7 +2234,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
   Future<void> _backupOptions(Map<String, dynamic> backup) async {
     final action = await showBackupSheet<String>(
       context: context,
-      builder: (ctx) => NotesSheet(
+      builder: (ctx) => OpaqueSheet(
         title: 'Backup options',
         description: backup['name'] as String,
         icon: Icons.inventory_2_outlined,

@@ -1,3 +1,4 @@
+import 'models/home_chat_order.dart';
 import 'widgets/opaque_chat_surfaces.dart';
 import 'package:zarq_messenger/screens/backup_management_screen.dart';
 import 'widgets/opaque_navigation.dart';
@@ -40,12 +41,12 @@ import 'package:zarq_messenger/widgets/opaque_header.dart';
 import 'models/chat_payloads.dart';
 
 // ─── Brand Colours ────────────────────────────────────────────────────────────
-const Color _kIndigo = Color(0xFF3D00B8);
 
 
-const Color _kWhite = Colors.white;
-const Color _kTextDark = Color(0xFF1A1A2E);
-const Color _kTextGrey = Color(0xFF8A8A9A);
+
+
+
+
 const Color _kDivider = Color(0xFFEEEEF4);
 const Color _kOnlineGreen = Color(0xFF22C55E);
 // ─────────────────────────────────────────────────────────────────────────────
@@ -57,6 +58,7 @@ class ConversationInfo {
   final String? creatorUid;
   final String? avatarUrl;
   final String? partnerUid;
+  final bool isFriend;
   final bool hasUnreadMessages;
   final DateTime? lastMessageTimestamp;
   final int unreadCount;
@@ -71,6 +73,7 @@ class ConversationInfo {
     this.creatorUid,
     this.avatarUrl,
     this.partnerUid,
+    this.isFriend = false,
     this.hasUnreadMessages = false,
     this.lastMessageTimestamp,
     this.unreadCount = 0,
@@ -87,6 +90,7 @@ class ConversationInfo {
       creatorUid: json['creatorUid'] as String?,
       avatarUrl: json['avatarUrl'] as String?,
       partnerUid: json['partnerUid'] as String?,
+      isFriend: json['isFriend'] == true,
       lastMessageTimestamp: json['lastMessageTimestamp'] != null
           ? DateTime.parse(json['lastMessageTimestamp'] as String)
           : null,
@@ -102,12 +106,14 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
-  bool _isGroupSelectionMode = false;
+  bool _isChatSelectionMode = false;
   Set<String> _pinnedChats = {};
   Map<String, int> _hiddenChats = {};
   bool _selectionBusy = false;
   String get _homePreferenceKey => 'opaque_home_${FirebaseAuth.instance.currentUser?.uid}';
-  ConversationInfo? _selectedConversation;
+  final Map<int, ConversationInfo> _selectedChats = {};
+  ConversationInfo? get _selectedConversation =>
+      _selectedChats.length == 1 ? _selectedChats.values.single : null;
 
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
@@ -323,20 +329,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  // ─── Group selection ───────────────────────────────────────────────────────
+  // ─── Chat selection ───────────────────────────────────────────────────────
 
-  void _enterGroupSelectionMode(ConversationInfo conversation) {
+  void _enterChatSelectionMode(ConversationInfo conversation) {
     setState(() {
-      _isGroupSelectionMode = true;
-      _selectedConversation = conversation;
+      if (_selectedChats.containsKey(conversation.conversationId)) {
+        _selectedChats.remove(conversation.conversationId);
+      } else {
+        _selectedChats[conversation.conversationId] = conversation;
+      }
+      _isChatSelectionMode = _selectedChats.isNotEmpty;
     });
   }
 
-  void _exitGroupSelectionMode() {
+  void _exitChatSelectionMode() {
     if (!mounted) return;
     setState(() {
-      _isGroupSelectionMode = false;
-      _selectedConversation = null;
+      _isChatSelectionMode = false;
+      _selectedChats.clear();
     });
   }
 
@@ -357,7 +367,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (deleting) { await _deleteGroup(conversation.conversationId); }
       else { await _leaveGroup(conversation.conversationId); }
     } finally {
-      if (mounted) { setState(() => _selectionBusy = false); _exitGroupSelectionMode(); }
+      if (mounted) { setState(() => _selectionBusy = false); _exitChatSelectionMode(); }
     }
   }
 
@@ -381,79 +391,126 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _toggleSelectedPin() async {
-    final conversation = _selectedConversation;
-    if (conversation == null || _selectionBusy) return;
-    final id = '${conversation.conversationId}';
+    if (_selectedChats.isEmpty || _selectionBusy) return;
+    final ids = _selectedChats.keys.map((id) => '$id').toSet();
+    final unpin = ids.every(_pinnedChats.contains);
     final pins = {..._pinnedChats};
-    if (!pins.remove(id)) pins.add(id);
+    if (unpin) { pins.removeAll(ids); } else { pins.addAll(ids); }
     setState(() => _selectionBusy = true);
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setStringList('${_homePreferenceKey}_pins', pins.toList());
       if (!mounted) return;
       setState(() => _pinnedChats = pins);
-      _showSnack(pins.contains(id) ? 'Chat pinned' : 'Chat unpinned');
-      _exitGroupSelectionMode();
+      _showSnack('${ids.length} ${ids.length == 1 ? 'chat' : 'chats'} ${unpin ? 'unpinned' : 'pinned'}');
+      _exitChatSelectionMode();
     } catch (_) { if (mounted) _showSnack('Could not update pin', isError: true); }
     finally { if (mounted) setState(() => _selectionBusy = false); }
   }
 
   Future<void> _deleteSelectedChat() async {
+    if (_selectedChats.isEmpty || _selectionBusy) return;
+    final selected = _selectedChats.values.toList();
+    final label = selected.length == 1 ? 'Delete chat' : 'Delete ${selected.length} chats';
+    final names = selected.map((chat) => '• ${chat.chatTitle}').join('\n');
+    if (!await _confirmHomeAction('$label?',
+      'Delete the saved message history on this device for:\n$names',
+      'Other people keep their copies. Chats return when newer messages arrive. This does not remove friends, leave groups or delete groups.',
+      label, Icons.delete_outline)) { return; }
+    if (!mounted) return;
+    setState(() => _selectionBusy = true);
+    final completed = <int>{};
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      for (final conversation in selected) {
+        await DatabaseService.deleteAllMessagesInConversation(conversation.conversationId);
+        final hidden = {..._hiddenChats, '${conversation.conversationId}':
+          conversation.lastMessageTimestamp?.millisecondsSinceEpoch ?? 0};
+        if (!await prefs.setString('${_homePreferenceKey}_hidden', jsonEncode(hidden))) {
+          throw StateError('Could not save chat visibility');
+        }
+        _hiddenChats = hidden;
+        completed.add(conversation.conversationId);
+      }
+      if (mounted) { _showSnack('${completed.length} ${completed.length == 1 ? 'chat deleted' : 'chats deleted'} from this device'); }
+    } catch (_) {
+      if (mounted) _showSnack('Deleted ${completed.length} of ${selected.length} chats. Please retry the remaining selection.', isError: true);
+    } finally {
+      if (mounted) { setState(() {
+        _selectedChats.removeWhere((id, _) => completed.contains(id));
+        _isChatSelectionMode = _selectedChats.isNotEmpty;
+        _selectionBusy = false;
+      }); }
+    }
+  }
+
+  Future<void> _toggleSelectedBlock() async {
     final conversation = _selectedConversation;
-    if (conversation == null || _selectionBusy) return;
-    if (!await _confirmHomeAction('Delete chat?',
-      'Delete the saved message history for “${conversation.chatTitle}” on this device.',
-      'Your friend keeps their copies. The chat returns when a newer message arrives. This does not remove your friend.',
-      'Delete chat', Icons.delete_outline)) return;
+    final uid = conversation?.partnerUid;
+    if (_selectionBusy || conversation == null || conversation.isGroup || uid == null || uid.isEmpty) return;
+    final unblock = _blockedUsers.contains(uid);
+    final action = unblock ? 'Unblock friend' : 'Block friend';
+    if (!await _confirmHomeAction('$action?',
+      unblock ? 'Allow messages from ${conversation.chatTitle} to appear in this chat again.'
+        : 'Hide messages from ${conversation.chatTitle} in this chat and prevent sending messages to them on this device.',
+      'Your saved chat history is kept. You can change this from the chat menu anytime.',
+      action, unblock ? Icons.do_not_disturb_off_rounded : Icons.block_rounded)) { return; }
     if (!mounted) return;
     setState(() => _selectionBusy = true);
     try {
-      await DatabaseService.deleteAllMessagesInConversation(conversation.conversationId);
-      final hidden = {..._hiddenChats, '${conversation.conversationId}':
-        (conversation.lastMessageTimestamp ?? DateTime.fromMillisecondsSinceEpoch(0)).millisecondsSinceEpoch};
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('${_homePreferenceKey}_hidden', jsonEncode(hidden));
+      final blocked = (prefs.getStringList('blocked_users') ?? []).toSet();
+      if (unblock) { blocked.remove(uid); } else { blocked.add(uid); }
+      if (!await prefs.setStringList('blocked_users', blocked.toList())) {
+        throw StateError('Could not save blocked users');
+      }
       if (!mounted) return;
-      setState(() => _hiddenChats = hidden);
-      _exitGroupSelectionMode();
-      _showSnack('Chat deleted from this device');
-    } catch (_) { if (mounted) _showSnack('Could not delete chat', isError: true); }
-    finally { if (mounted) setState(() => _selectionBusy = false); }
+      setState(() { _blockedUsers.clear(); _blockedUsers.addAll(blocked); });
+      _showSnack(unblock ? 'Friend unblocked' : 'Friend blocked');
+      _exitChatSelectionMode();
+    } catch (_) {
+      if (mounted) _showSnack('Could not update blocking. Please try again.', isError: true);
+    } finally {
+      if (mounted) setState(() => _selectionBusy = false);
+    }
   }
 
   Future<void> _removeSelectedFriend() async {
-    if (_selectionBusy) return;
-    // Home has a display name/UID, while removal requires a username.
-    // Ask for the exact friend instead of guessing from non-unique display names.
+    final conversation = _selectedConversation;
+    final uid = conversation?.partnerUid;
+    if (_selectionBusy || conversation == null || conversation.isGroup) return;
+    if (uid == null || uid.isEmpty) {
+      _showSnack('Refresh your chats and try again.', isError: true);
+      return;
+    }
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
+    if (!await _confirmHomeAction('Remove friend?',
+      'Remove ${conversation.chatTitle} from your friends?',
+      'This does not delete saved messages or block this person.',
+      'Remove friend', Icons.person_remove_outlined)) { return; }
+    if (!mounted) return;
     setState(() => _selectionBusy = true);
     try {
       final token = await user.getIdToken();
-      final response = await http.get(Uri.parse('${AppConfig.baseUrl}/friends/list'),
-        headers: {'Authorization': 'Bearer $token'});
-      if (response.statusCode != 200) throw Exception();
-      final friends = (jsonDecode(response.body) as List).cast<Map<String, dynamic>>();
-      if (!mounted) return;
-      if (friends.isEmpty) { _showSnack('No friends to remove'); return; }
-      final username = await showDialog<String>(context: context, builder: (ctx) => OpaqueChatDialog(
-        title: const Text('Choose friend to remove'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Text('Confirm the username of the friend you want to remove.'),
-          for (final friend in friends) ListTile(
-            title: Text('@${friend['username']}'),
-            subtitle: friend['displayName'] == null ? null : Text('${friend['displayName']}'),
-            onTap: () => Navigator.pop(ctx, friend['username'] as String)),
-        ]), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel'))]));
-      if (!mounted || username == null) return;
-      if (!await _confirmHomeAction('Remove friend?', 'Remove @$username from your friends?',
-        'This does not delete saved messages or block this person.', 'Remove friend', Icons.person_remove_outlined)) return;
       final result = await http.post(Uri.parse('${AppConfig.baseUrl}/friends/remove'),
         headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-        body: jsonEncode({'targetUsername': username}));
-      if (result.statusCode != 200) throw Exception();
+        body: jsonEncode({'targetUid': uid}));
       if (!mounted) return;
-      _showSnack('Friend removed'); _exitGroupSelectionMode();
+      if (result.statusCode == 404 && result.body.trim() == 'Friendship not found') {
+        context.read<HomeProvider>().markFriendRemoved(uid);
+        _showSnack('This person is no longer in your friends.');
+        _exitChatSelectionMode();
+        return;
+      }
+      if (result.statusCode != 200) {
+        _showSnack('Could not remove friend. Please try again.', isError: true);
+        return;
+      }
+      context.read<HomeProvider>().markFriendRemoved(uid);
+      setState(() => _friendsOpenRequest++);
+      _showSnack('Friend removed');
+      _exitChatSelectionMode();
       context.read<HomeProvider>().fetchInitialConversations();
     } catch (_) { if (mounted) _showSnack('Could not remove friend', isError: true); }
     finally { if (mounted) setState(() => _selectionBusy = false); }
@@ -465,7 +522,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final token = await user.getIdToken();
     try {
       final response = await http.delete(
-        Uri.parse('${AppConfig.baseUrl}/groups/delete/$conversationId'),
+        Uri.parse('${AppConfig.baseUrl}/groups/$conversationId/delete'),
         headers: {'Authorization': 'Bearer $token'},
       );
       if (mounted) {
@@ -490,7 +547,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final token = await user.getIdToken();
     try {
       final response = await http.post(
-        Uri.parse('${AppConfig.baseUrl}/groups/leave/$conversationId'),
+        Uri.parse('${AppConfig.baseUrl}/groups/$conversationId/leave'),
         headers: {'Authorization': 'Bearer $token'},
       );
       if (mounted) {
@@ -609,29 +666,39 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   ) {
     final user = FirebaseAuth.instance.currentUser;
     final bool isCreatorOfSelectedGroup =
-        _isGroupSelectionMode &&
+        _isChatSelectionMode &&
         _selectedConversation != null &&
         _selectedConversation!.creatorUid == user?.uid;
 
-    if (_isGroupSelectionMode) {
-      final selected = _selectedConversation!;
-      final pinned = _pinnedChats.contains('${selected.conversationId}');
+    if (_isChatSelectionMode) {
+      final selected = _selectedConversation;
+      final canRemoveFriend = selected != null && !selected.isGroup &&
+        context.watch<HomeProvider>().conversations.any((chat) =>
+          chat.conversationId == selected.conversationId && chat.isFriend);
+      final pinned = _selectedChats.keys.every((id) => _pinnedChats.contains('$id'));
       return AppBar(
         backgroundColor: isDark ? const Color(0xFF19202A) : Colors.white,
         foregroundColor: textColor, surfaceTintColor: Colors.transparent,
         elevation: 0, toolbarHeight: 60, titleSpacing: 0,
         leading: IconButton(tooltip: 'Cancel selection', icon: const Icon(Icons.close_rounded, size: 21),
-          onPressed: _selectionBusy ? null : _exitGroupSelectionMode),
+          onPressed: _selectionBusy ? null : _exitChatSelectionMode),
         title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('1 selected', style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600)),
-          Text(selected.chatTitle, maxLines: 1, overflow: TextOverflow.ellipsis,
+          Text('${_selectedChats.length} selected', style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600)),
+          Text(selected?.chatTitle ?? 'Tap chats to add or remove', maxLines: 1, overflow: TextOverflow.ellipsis,
             style: GoogleFonts.inter(fontSize: 11, color: isDark ? const Color(0xFF97A3B6) : const Color(0xFF73747C))),
         ]),
         actions: [
           if (_selectionBusy) const Padding(padding: EdgeInsets.all(16),
             child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)))
           else ...[
-            IconButton(tooltip: pinned ? 'Unpin chat' : 'Pin chat',
+            if (selected != null && !selected.isGroup)
+              IconButton(
+                tooltip: _blockedUsers.contains(selected.partnerUid) ? 'Unblock friend' : 'Block friend',
+                icon: Icon(_blockedUsers.contains(selected.partnerUid)
+                  ? Icons.do_not_disturb_off_rounded : Icons.block_rounded, size: 20),
+                onPressed: selected.partnerUid == null || selected.partnerUid!.isEmpty
+                  ? null : _toggleSelectedBlock),
+            IconButton(tooltip: pinned ? 'Unpin selected chats' : 'Pin selected chats',
               icon: Icon(pinned ? Icons.push_pin : Icons.push_pin_outlined, size: 20), onPressed: _toggleSelectedPin),
             PopupMenuButton<String>(tooltip: 'Selected chat actions',
               color: isDark ? const Color(0xFF19202A) : Colors.white,
@@ -639,17 +706,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               icon: const Icon(Icons.more_vert_rounded, size: 21),
               onSelected: (action) {
-                if (action == 'open') { _exitGroupSelectionMode(); _navigateToChat(selected); }
+                if (action == 'open' && selected != null) { _exitChatSelectionMode(); _navigateToChat(selected); }
                 if (action == 'remove') _removeSelectedFriend();
                 if (action == 'chat_delete') _deleteSelectedChat();
                 if (action == 'delete' || action == 'leave') _showGroupActionDialog(action: action);
               },
               itemBuilder: (_) => [
-                _popupItem(value: 'open', icon: Icons.chat_bubble_outline, label: 'Open chat', color: textColor, textColor: textColor),
-                if (!selected.isGroup) ...[
+                if (selected != null) _popupItem(value: 'open', icon: Icons.chat_bubble_outline, label: 'Open chat', color: textColor, textColor: textColor),
+                if (canRemoveFriend) ...[
                   _popupItem(value: 'remove', icon: Icons.person_remove_outlined, label: 'Remove friend', color: textColor, textColor: textColor),
-                  _popupItem(value: 'chat_delete', icon: Icons.delete_outline, label: 'Delete chat', color: const Color(0xFFCE7480), textColor: textColor),
-                ] else
+                ],
+                _popupItem(value: 'chat_delete', icon: Icons.delete_outline, label: _selectedChats.length == 1 ? 'Delete chat' : 'Delete chats', color: const Color(0xFFCE7480), textColor: textColor),
+                if (selected != null && selected.isGroup)
                   _popupItem(value: isCreatorOfSelectedGroup ? 'delete' : 'leave',
                     icon: isCreatorOfSelectedGroup ? Icons.delete_outline : Icons.logout_rounded,
                     label: isCreatorOfSelectedGroup ? 'Delete group' : 'Leave group',
@@ -810,15 +878,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Widget _buildConversationList(List<ConversationInfo> conversations, bool isReady, bool isDark, Color cardColor, Color textColor, Color textGreyColor, Color dividerColor) {
     final query = _searchController.text.trim().toLowerCase();
-    final visible = conversations.where((convo) => (!_hiddenChats.containsKey('${convo.conversationId}') ||
-      (convo.lastMessageTimestamp?.millisecondsSinceEpoch ?? 0) > _hiddenChats['${convo.conversationId}']!) && convo.chatTitle.toLowerCase().contains(query)
+    final visible = conversations.where((convo) => (query.isNotEmpty || !isHomeChatHidden(convo.lastMessageTimestamp, _hiddenChats['${convo.conversationId}'])) && convo.chatTitle.toLowerCase().contains(query)
       && (_conversationFilter == 'All' || (_conversationFilter == 'Unread' && (convo.unreadCount > 0 || convo.hasUnreadMessages)) || (_conversationFilter == 'Groups' && convo.isGroup))).toList();
     visible.sort((a, b) {
-      final pinOrder = (_pinnedChats.contains('${b.conversationId}') ? 1 : 0)
-        - (_pinnedChats.contains('${a.conversationId}') ? 1 : 0);
-      if (pinOrder != 0) return pinOrder;
-      final comparison = (b.lastMessageTimestamp ?? DateTime(1970)).compareTo(a.lastMessageTimestamp ?? DateTime(1970));
-      return comparison != 0 ? comparison : b.conversationId.compareTo(a.conversationId);
+      return compareHomeChats(
+        aId: a.conversationId, bId: b.conversationId,
+        aTime: a.lastMessageTimestamp, bTime: b.lastMessageTimestamp,
+        aPinned: _pinnedChats.contains('${a.conversationId}'),
+        bPinned: _pinnedChats.contains('${b.conversationId}'));
     });
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
@@ -865,15 +932,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Widget _buildConversationTile(ConversationInfo convo, bool isDark, Color cardColor, Color textColor, Color textGreyColor, Color dividerColor) {
     final unread = convo.unreadCount > 0 || convo.hasUnreadMessages;
-    return Material(color: _isGroupSelectionMode && _selectedConversation?.conversationId == convo.conversationId
+    return Material(color: _isChatSelectionMode && _selectedChats.containsKey(convo.conversationId)
       ? (isDark ? const Color(0xFF283241) : const Color(0xFFF1F2F5)) : Colors.transparent,
       borderRadius: BorderRadius.circular(12), child: InkWell(
-        borderRadius: BorderRadius.circular(12), onTap: () { setState(() => _addMenuOpen = false); if (_isGroupSelectionMode) { if (!_selectionBusy) _enterGroupSelectionMode(convo); } else { _navigateToChat(convo); } },
-        onLongPress: _selectionBusy ? null : () { _searchFocusNode.unfocus(); setState(() => _addMenuOpen = false); _enterGroupSelectionMode(convo); },
+        borderRadius: BorderRadius.circular(12), onTap: () { setState(() => _addMenuOpen = false); if (_isChatSelectionMode) { if (!_selectionBusy) _enterChatSelectionMode(convo); } else { _navigateToChat(convo); } },
+        onLongPress: _selectionBusy ? null : () { _searchFocusNode.unfocus(); setState(() => _addMenuOpen = false); _enterChatSelectionMode(convo); },
         child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16), child: Row(children: [
           Stack(children: [_buildAvatar(convo, isDark, cardColor),
-            if (_isGroupSelectionMode && _selectedConversation?.conversationId == convo.conversationId)
-              const Positioned(right: 0, bottom: 0, child: Icon(Icons.check_circle, size: 18, color: Color(0xFF88BCA8))),
+            if (_isChatSelectionMode && _selectedChats.containsKey(convo.conversationId))
+              Positioned(right: 0, bottom: 0, child: Container(
+                width: 18, height: 18,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF258447), shape: BoxShape.circle,
+                  border: Border.all(color: Colors.black, width: 1.2)),
+                child: const Icon(Icons.check_rounded, size: 13, color: Colors.black))),
           ]), SizedBox(width: MediaQuery.sizeOf(context).width < 350 ? 9 : 12),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(convo.chatTitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: GoogleFonts.inter(fontSize: 14, letterSpacing: -.15, fontWeight: unread ? FontWeight.w600 : FontWeight.w500, color: textColor)),
@@ -971,8 +1043,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         final Color textGreyColor = isDark ? const Color(0xFF97A3B6) : const Color(0xFF7C7D85);
         final Color dividerColor = isDark ? Colors.white10 : _kDivider;
 
-        return PopScope(canPop: !_isGroupSelectionMode, onPopInvokedWithResult: (didPop, result) {
-          if (!didPop && !_selectionBusy) _exitGroupSelectionMode();
+        return PopScope(canPop: !_isChatSelectionMode, onPopInvokedWithResult: (didPop, result) {
+          if (!didPop && !_selectionBusy) _exitChatSelectionMode();
         }, child: CallAwareScreen(
           screenName: 'HomeScreen',
           child: Scaffold(
@@ -1023,8 +1095,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 const NotesScreen(embedded: true),
               ],
             ),
-            floatingActionButton: _currentNavIndex == 0 && !_isGroupSelectionMode ? _buildAddMenu(isDark) : null,
-            bottomNavigationBar: _isGroupSelectionMode
+            floatingActionButton: _currentNavIndex == 0 && !_isChatSelectionMode ? _buildAddMenu(isDark) : null,
+            bottomNavigationBar: _isChatSelectionMode
                 ? null
                 : _buildBottomNavigationBar(
                     isReady,

@@ -1,3 +1,4 @@
+import '../widgets/opaque_design.dart';
 import '../widgets/notes_design.dart';
 import '../widgets/opaque_navigation.dart';
 import 'dart:convert';
@@ -160,7 +161,7 @@ class _CreateNoteScreenState extends State<CreateNoteScreen>
     if (_isLoading) return;
     final title = _titleController.text.trim();
     if (title.isEmpty) {
-      await showNotesConfirmation(
+      await showOpaqueConfirmation(
         context,
         title: 'Add a title',
         body: 'Give this note a title before saving.',
@@ -174,7 +175,7 @@ class _CreateNoteScreenState extends State<CreateNoteScreen>
     );
     final plainText = _quillController.document.toPlainText().trim();
     if (plainText.isEmpty) {
-      await showNotesConfirmation(
+      await showOpaqueConfirmation(
         context,
         title: 'Add some content',
         body: 'Write something in your note before saving.',
@@ -228,7 +229,7 @@ class _CreateNoteScreenState extends State<CreateNoteScreen>
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        final retry = await showNotesConfirmation(
+        final retry = await showOpaqueConfirmation(
           context,
           title: 'Couldn’t save your note',
           body: 'Your changes are still here. Try saving again.',
@@ -245,12 +246,12 @@ class _CreateNoteScreenState extends State<CreateNoteScreen>
   }
 
   Future<void> _pickCategory() async {
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (sheetContext) => NotesSheet(
+      builder: (sheetContext) => OpaqueSheet(
         title: 'Category',
         description: 'Keep related notes together.',
         child: Column(
@@ -333,7 +334,7 @@ class _CreateNoteScreenState extends State<CreateNoteScreen>
   }
 
   Future<void> _removeFlowchart() async {
-    final remove = await showNotesConfirmation(
+    final remove = await showOpaqueConfirmation(
       context,
       title: 'Remove flowchart?',
       body:
@@ -365,7 +366,7 @@ class _CreateNoteScreenState extends State<CreateNoteScreen>
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
         if (_hasChanges && context.mounted) {
-          final shouldPop = await showNotesConfirmation(
+          final shouldPop = await showOpaqueConfirmation(
             context,
             title: 'Discard changes?',
             body:
@@ -459,7 +460,9 @@ class _CreateNoteScreenState extends State<CreateNoteScreen>
                         TextButton(
                           style: TextButton.styleFrom(
                             backgroundColor: _selectedCategory != null
-                                ? _getCategoryColor(_selectedCategory!).withOpacity(isDark ? 0.18 : 0.12)
+                                ? _getCategoryColor(
+                                    _selectedCategory!,
+                                  ).withOpacity(isDark ? 0.18 : 0.12)
                                 : soft,
                             foregroundColor: _selectedCategory != null
                                 ? _getCategoryColor(_selectedCategory!)
@@ -481,7 +484,9 @@ class _CreateNoteScreenState extends State<CreateNoteScreen>
                                   margin: const EdgeInsets.only(right: 6),
                                   decoration: BoxDecoration(
                                     shape: BoxShape.circle,
-                                    color: _getCategoryColor(_selectedCategory!),
+                                    color: _getCategoryColor(
+                                      _selectedCategory!,
+                                    ),
                                   ),
                                 ),
                               ],

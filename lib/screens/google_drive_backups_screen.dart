@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 import '../services/backup_service.dart';
 import '../services/user_settings_provider.dart';
 import '../widgets/backup_design.dart';
-import '../widgets/notes_design.dart';
+import '../widgets/opaque_design.dart';
 import '../widgets/call_aware_screen.dart';
 import 'backup_info_screen.dart';
 import '../widgets/opaque_toast.dart';
@@ -21,7 +21,8 @@ class GoogleDriveBackupsScreen extends StatefulWidget {
   final ValueChanged<String> onRestore;
 
   @override
-  State<GoogleDriveBackupsScreen> createState() => _GoogleDriveBackupsScreenState();
+  State<GoogleDriveBackupsScreen> createState() =>
+      _GoogleDriveBackupsScreenState();
 }
 
 class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
@@ -64,10 +65,11 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
     final fileId = backup.id;
     if (fileId == null) return;
 
-    final confirmed = await showNotesConfirmation(
+    final confirmed = await showOpaqueConfirmation(
       context,
-      title: 'Delete cloud backup',
-      body: 'Are you sure you want to delete this backup from Google Drive? This action cannot be undone.',
+      title: 'Delete cloud backup?',
+      body:
+          'Are you sure you want to delete this backup from Google Drive? This action cannot be undone.',
       confirm: 'Delete',
       danger: true,
       icon: Icons.delete_outline,
@@ -96,7 +98,7 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
   Future<void> _showBackupOptions(drive.File backup) async {
     final action = await showBackupSheet<String>(
       context: context,
-      builder: (ctx) => NotesSheet(
+      builder: (ctx) => OpaqueSheet(
         title: 'Cloud backup options',
         description: backup.name ?? 'Google Drive backup',
         icon: Icons.cloud_outlined,
@@ -135,18 +137,36 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
   void _startRestore(drive.File backup) {
     final fileId = backup.id;
     if (fileId == null) return;
-    Navigator.pop(context); // Close the Google Drive screen to show restore progress
+    Navigator.pop(
+      context,
+    ); // Close the Google Drive screen to show restore progress
     widget.onRestore(fileId);
   }
 
   String _formatDateTime(DateTime dt) {
     final now = DateTime.now();
-    final isToday = dt.year == now.year && dt.month == now.month && dt.day == now.day;
-    final isYesterday = dt.year == now.year && dt.month == now.month && dt.day == now.day - 1;
-    final time = '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    final isToday =
+        dt.year == now.year && dt.month == now.month && dt.day == now.day;
+    final isYesterday =
+        dt.year == now.year && dt.month == now.month && dt.day == now.day - 1;
+    final time =
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
     if (isToday) return 'Today at $time';
     if (isYesterday) return 'Yesterday at $time';
-    final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
     return '${months[dt.month - 1]} ${dt.day}, ${dt.year} at $time';
   }
 
@@ -156,7 +176,7 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
     String? subtitle,
     bool danger = false,
   }) {
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 14),
       decoration: BoxDecoration(
@@ -176,10 +196,12 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
               children: [
                 Text(
                   title,
-                  style: c.text(12).copyWith(
-                    color: danger ? const Color(0xFFBF6974) : c.ink,
-                    fontWeight: danger ? FontWeight.w600 : FontWeight.w400,
-                  ),
+                  style: c
+                      .text(12)
+                      .copyWith(
+                        color: danger ? const Color(0xFFBF6974) : c.ink,
+                        fontWeight: danger ? FontWeight.w600 : FontWeight.w400,
+                      ),
                 ),
                 if (subtitle != null) ...[
                   const SizedBox(height: 2),
@@ -196,7 +218,7 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
   @override
   Widget build(BuildContext context) {
     context.watch<UserSettingsProvider>();
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
 
     return CallAwareScreen(
       screenName: 'GoogleDriveBackupsScreen',
@@ -244,7 +266,11 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
                           color: c.blue.withOpacity(0.12),
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: Icon(Icons.cloud_outlined, color: c.blue, size: 20),
+                        child: Icon(
+                          Icons.cloud_outlined,
+                          color: c.blue,
+                          size: 20,
+                        ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -266,7 +292,10 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
                         ),
                       ),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
                         decoration: BoxDecoration(
                           color: c.surface,
                           borderRadius: BorderRadius.circular(20),
@@ -300,7 +329,9 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
                     children: [
                       Text(
                         'AVAILABLE BACKUPS',
-                        style: c.text(9, muted: true).copyWith(letterSpacing: 1.3),
+                        style: c
+                            .text(9, muted: true)
+                            .copyWith(letterSpacing: 1.3),
                       ),
                       if (!_isLoading && _backups.isNotEmpty)
                         Text(
@@ -342,9 +373,11 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
     );
   }
 
-  Widget _buildBackupCard(drive.File backup, NotesColors c) {
+  Widget _buildBackupCard(drive.File backup, OpaqueColors c) {
     final localDate = backup.createdTime?.toLocal();
-    final dateStr = localDate != null ? _formatDateTime(localDate) : 'Unknown date';
+    final dateStr = localDate != null
+        ? _formatDateTime(localDate)
+        : 'Unknown date';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -396,7 +429,10 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
                       ),
                       const SizedBox(height: 8),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
                         decoration: BoxDecoration(
                           color: c.surface,
                           borderRadius: BorderRadius.circular(8),
@@ -405,11 +441,17 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.photo_library_outlined, size: 11, color: c.blue),
+                            Icon(
+                              Icons.photo_library_outlined,
+                              size: 11,
+                              color: c.blue,
+                            ),
                             const SizedBox(width: 5),
                             Text(
                               'Includes media & conversations',
-                              style: c.text(10, muted: true).copyWith(color: c.blue),
+                              style: c
+                                  .text(10, muted: true)
+                                  .copyWith(color: c.blue),
                             ),
                           ],
                         ),
@@ -432,20 +474,33 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
               children: [
                 TextButton.icon(
                   onPressed: () => _confirmAndDelete(backup),
-                  icon: const Icon(Icons.delete_outline, size: 15, color: Color(0xFFBF6974)),
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    size: 15,
+                    color: Color(0xFFBF6974),
+                  ),
                   label: Text(
                     'Delete',
                     style: c.text(11).copyWith(color: const Color(0xFFBF6974)),
                   ),
                   style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
                   ),
                 ),
                 const Spacer(),
                 FilledButton.icon(
                   onPressed: () => _startRestore(backup),
-                  icon: const Icon(Icons.settings_backup_restore_rounded, size: 15, color: Colors.white),
+                  icon: const Icon(
+                    Icons.settings_backup_restore_rounded,
+                    size: 15,
+                    color: Colors.white,
+                  ),
                   label: const Text(
                     'Restore',
                     style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
@@ -453,8 +508,13 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
                   style: FilledButton.styleFrom(
                     backgroundColor: const Color(0xFF507FC3),
                     foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
                   ),
                 ),
               ],
@@ -465,7 +525,7 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
     );
   }
 
-  Widget _buildEmptyState(NotesColors c) {
+  Widget _buildEmptyState(OpaqueColors c) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 48),
       child: Column(
@@ -480,10 +540,7 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
             child: Icon(Icons.cloud_off_outlined, color: c.muted, size: 24),
           ),
           const SizedBox(height: 16),
-          Text(
-            'No backups found',
-            style: c.text(14, bold: true),
-          ),
+          Text('No backups found', style: c.text(14, bold: true)),
           const SizedBox(height: 8),
           Text(
             'Backups saved to Google Drive will appear here.\nYou can create one by selecting "Google Drive" under Save to.',
@@ -498,7 +555,9 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
             style: OutlinedButton.styleFrom(
               foregroundColor: c.blue,
               side: BorderSide(color: c.line),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
           ),
         ],
@@ -506,7 +565,7 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
     );
   }
 
-  Widget _buildErrorState(NotesColors c) {
+  Widget _buildErrorState(OpaqueColors c) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 40),
       child: Column(
@@ -518,7 +577,11 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
               color: const Color(0xFFBF6974).withOpacity(0.12),
               borderRadius: BorderRadius.circular(14),
             ),
-            child: const Icon(Icons.error_outline, color: Color(0xFFBF6974), size: 24),
+            child: const Icon(
+              Icons.error_outline,
+              color: Color(0xFFBF6974),
+              size: 24,
+            ),
           ),
           const SizedBox(height: 16),
           Text(
@@ -538,7 +601,9 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
             style: OutlinedButton.styleFrom(
               foregroundColor: c.blue,
               side: BorderSide(color: c.line),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
           ),
         ],
@@ -546,7 +611,11 @@ class _GoogleDriveBackupsScreenState extends State<GoogleDriveBackupsScreen> {
     );
   }
 
-  Widget _buildNote(String text, {required IconData icon, required NotesColors c}) {
+  Widget _buildNote(
+    String text, {
+    required IconData icon,
+    required OpaqueColors c,
+  }) {
     return Padding(
       padding: const EdgeInsets.only(top: 8),
       child: Row(

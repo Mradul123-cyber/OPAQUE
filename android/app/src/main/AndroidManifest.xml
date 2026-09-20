@@ -43,7 +43,7 @@
     <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove"/>
 
     <application
-        android:label="Zarq Messenger"
+        android:label="Opaque"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
@@ -69,7 +69,7 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
             <!-- Share intent filter for receiving shared content -->
-            <intent-filter android:label="Share with Zarq">
+            <intent-filter android:label="Share with Opaque">
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
@@ -78,7 +78,7 @@
                 <data android:mimeType="application/*" />
             </intent-filter>
             <!-- Share multiple files -->
-            <intent-filter android:label="Share with Zarq">
+            <intent-filter android:label="Share with Opaque">
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />

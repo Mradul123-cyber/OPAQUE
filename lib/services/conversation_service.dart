@@ -59,6 +59,7 @@ class ConversationService {
               creatorUid: convo.creatorUid,
               avatarUrl: convo.avatarUrl,
               partnerUid: convo.partnerUid,
+              isFriend: convo.isFriend,
               hasUnreadMessages: unreadCount > 0,
               unreadCount: unreadCount,
               lastMessageTimestamp: lastMsg?.timestamp,

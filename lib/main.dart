@@ -45,7 +45,9 @@ import 'widgets/global_call_overlay.dart';
 import 'widgets/opaque_toast.dart';
 import 'chat_screen.dart';
 import 'setting_screen.dart';
+import 'screens/backup_management_screen.dart';
 import 'screens/share_conversation_picker_screen.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 // Import the NavigationHandler
 import 'services/navigation_handler.dart';
@@ -420,8 +422,8 @@ class _MyAppState extends State<MyApp> {
     return Consumer<UserSettingsProvider>(
       builder: (context, userSettings, _) {
         return MaterialApp(
-          title: 'Zarq Messenger',
-          theme: userSettings.isDarkMode ? zarqDarkTheme : zarqLightTheme,
+          title: 'OPAQUE',
+          theme: userSettings.isDarkMode ? opaqueDarkTheme : opaqueLightTheme,
           themeMode: userSettings.isDarkMode ? ThemeMode.dark : ThemeMode.light,
           navigatorKey: MyApp.navigatorKey,
           localizationsDelegates: const [FlutterQuillLocalizations.delegate],
@@ -499,7 +501,10 @@ class AuthGate extends StatelessWidget {
           if (interactive || !snapshot.hasData) return const LoginScreen();
           final user = snapshot.data!;
           if (OpaqueAuthService.needsEmailVerification(user)) {
-            return OpaqueAuthScreen(key: ValueKey('verify_${user.uid}'), user: user);
+            return OpaqueAuthScreen(
+              key: ValueKey('verify_${user.uid}'),
+              user: user,
+            );
           }
           return AuthWrapper(key: ValueKey(user.uid), user: user);
         },
@@ -1053,7 +1058,8 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     }
   }
 
-  Future<bool> _checkIfProfileExists() => OpaqueAuthService.profileExists(widget.user);
+  Future<bool> _checkIfProfileExists() =>
+      OpaqueAuthService.profileExists(widget.user);
 
   // Check for backups after login (only for new users or after clear data)
   Future<void> _checkForBackupsAfterLogin() async {
@@ -1063,7 +1069,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     if (!mounted) return;
 
     try {
-      // TEMPORARY: Check for backups in BOTH MediaStore (new) and file system (old)
+      // Check for backups in MediaStore
       debugPrint(
         '[BackupDetection] 🔍 Checking for backups (MediaStore + old files)...',
       );
@@ -1106,85 +1112,329 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
       // Show restore dialog
       if (mounted) {
-        _showBackupRestoreDialog(backupFiles);
+        final targetContext = MyApp.navigatorKey.currentContext ?? context;
+        _showBackupRestoreDialog(targetContext, backupFiles);
       }
     } catch (e) {
-      // print('[BackupDetection] Error checking backups: $e');
+      debugPrint('[BackupDetection] Error checking backups: $e');
     }
   }
 
-  void _showBackupRestoreDialog(List<Map<String, dynamic>> backups) {
+  void _showBackupRestoreDialog(
+    BuildContext targetContext,
+    List<Map<String, dynamic>> backups,
+  ) {
     final mostRecentBackup = backups.first;
     final backupDate = DateTime.fromMillisecondsSinceEpoch(
       mostRecentBackup['dateModified'] as int,
     ).toLocal();
-    final backupSize = ((mostRecentBackup['size'] as int) / (1024 * 1024))
-        .toStringAsFixed(2);
-    final backupName = mostRecentBackup['name'] as String;
+    final backupSize = MediaStoreBackupService.formatBytes(
+      mostRecentBackup['size'] as int? ?? 0,
+    );
+    final backupName =
+        mostRecentBackup['name'] as String? ?? 'Encrypted Backup';
+
+    final months = const [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    final formattedDate =
+        '${backupDate.day} ${months[backupDate.month - 1]} ${backupDate.year}, ${backupDate.hour.toString().padLeft(2, '0')}:${backupDate.minute.toString().padLeft(2, '0')}';
 
     showDialog(
-      context: context,
+      context: targetContext,
       barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF0a1128).withOpacity(0.95),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(15),
-          side: BorderSide(color: Colors.cyanAccent.withOpacity(0.5)),
-        ),
-        title: const Row(
-          children: [
-            Icon(Icons.backup, color: Colors.cyanAccent),
-            SizedBox(width: 12),
-            Text('Backup Found!', style: TextStyle(color: Colors.white)),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'We found ${backups.length} backup(s). Would you like to restore?',
-              style: const TextStyle(color: Colors.white70),
-            ),
-            const SizedBox(height: 16),
-            const Divider(color: Colors.white30),
-            const SizedBox(height: 12),
-            Text(
-              'Most Recent: $backupName',
-              style: const TextStyle(color: Colors.white, fontSize: 13),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Date: ${backupDate.day}/${backupDate.month}/${backupDate.year} ${backupDate.hour}:${backupDate.minute.toString().padLeft(2, '0')}',
-              style: const TextStyle(color: Colors.white54, fontSize: 12),
-            ),
-            Text(
-              'Size: $backupSize MB',
-              style: const TextStyle(color: Colors.white54, fontSize: 12),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Skip', style: TextStyle(color: Colors.white54)),
+      builder: (context) {
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final surfaceColor = isDark ? const Color(0xFF19202A) : Colors.white;
+        final cardColor = isDark
+            ? const Color(0xFF222B38)
+            : const Color(0xFFF4F6F9);
+        final borderColor = isDark
+            ? const Color(0xFF2E3847)
+            : const Color(0xFFE5E7EB);
+        final primaryTextColor = isDark
+            ? const Color(0xFFE0E6EF)
+            : const Color(0xFF1A1C22);
+        final secondaryTextColor = isDark
+            ? const Color(0xFF97A3B6)
+            : const Color(0xFF73747C);
+        final brandAccent = isDark
+            ? const Color(0xFF9BBCFF)
+            : const Color(0xFF335FE8);
+        final lockAccent = isDark
+            ? const Color(0xFF88BCA8)
+            : const Color(0xFF2E7D5B);
+
+        return Dialog(
+          backgroundColor: surfaceColor,
+          surfaceTintColor: Colors.transparent,
+          elevation: 6,
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 24,
+            vertical: 24,
           ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.cyanAccent,
-              foregroundColor: Colors.black,
-            ),
-            onPressed: () {
-              Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const SettingsScreen()),
-              );
-            },
-            child: const Text('Go to Settings'),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+            side: BorderSide(color: borderColor),
           ),
-        ],
-      ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 400),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(22, 24, 22, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: brandAccent.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: brandAccent.withOpacity(0.2),
+                          ),
+                        ),
+                        child: Icon(
+                          Icons.settings_backup_restore_rounded,
+                          color: brandAccent,
+                          size: 22,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'OPAQUE BACKUP',
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 1.2,
+                                color: brandAccent,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Backup Found',
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 19,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: -0.4,
+                                color: primaryTextColor,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    'We detected an encrypted backup from your previous account session. Would you like to restore your chats and media?',
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 13,
+                      height: 1.45,
+                      color: secondaryTextColor,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: cardColor,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: borderColor),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 3,
+                              ),
+                              decoration: BoxDecoration(
+                                color: lockAccent.withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.lock_outline_rounded,
+                                    size: 12,
+                                    color: lockAccent,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'Encrypted Backup',
+                                    style: TextStyle(
+                                      fontFamily: 'Inter',
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w600,
+                                      color: lockAccent,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const Spacer(),
+                            if (backups.length > 1)
+                              Text(
+                                '${backups.length} backups available',
+                                style: TextStyle(
+                                  fontFamily: 'Inter',
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w500,
+                                  color: secondaryTextColor,
+                                ),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          backupName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontFamily: 'Inter',
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w600,
+                            color: primaryTextColor,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Divider(height: 1, color: borderColor),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.schedule_rounded,
+                              size: 14,
+                              color: secondaryTextColor,
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                formattedDate,
+                                style: TextStyle(
+                                  fontFamily: 'Inter',
+                                  fontSize: 12,
+                                  color: secondaryTextColor,
+                                ),
+                              ),
+                            ),
+                            Icon(
+                              Icons.sd_storage_outlined,
+                              size: 14,
+                              color: secondaryTextColor,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              backupSize,
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                                color: secondaryTextColor,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 22),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: primaryTextColor,
+                            side: BorderSide(color: borderColor),
+                            padding: const EdgeInsets.symmetric(vertical: 13),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          onPressed: () => Navigator.pop(context),
+                          child: Text(
+                            'Skip',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              color: secondaryTextColor,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: brandAccent,
+                            foregroundColor: isDark
+                                ? const Color(0xFF0F172A)
+                                : Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 13),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            elevation: 0,
+                          ),
+                          onPressed: () {
+                            Navigator.pop(context);
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) =>
+                                    const BackupManagementScreen(),
+                              ),
+                            );
+                          },
+                          child: Text(
+                            'Review & Restore',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: isDark
+                                  ? const Color(0xFF0F172A)
+                                  : Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -1202,10 +1452,19 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
         if (snapshot.hasError) {
           return AuthStartupView(
             error: OpaqueAuthService.errorMessage(snapshot.error!),
-            onRetry: () { if (mounted) setState(() { _initializationFuture = _initializeUserServices(); }); },
+            onRetry: () {
+              if (mounted)
+                setState(() {
+                  _initializationFuture = _initializeUserServices();
+                });
+            },
             onSignOut: () async {
               await FirebaseAuth.instance.signOut();
-              if (mounted) Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const AuthGate()), (_) => false);
+              if (mounted)
+                Navigator.of(context).pushAndRemoveUntil(
+                  MaterialPageRoute(builder: (_) => const AuthGate()),
+                  (_) => false,
+                );
             },
           );
         }
@@ -1218,7 +1477,10 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
           return OpaqueAuthScreen(
             user: widget.user,
             onComplete: () {
-              if (mounted) setState(() { _initializationFuture = _initializeUserServices(); });
+              if (mounted)
+                setState(() {
+                  _initializationFuture = _initializeUserServices();
+                });
             },
           );
         }
@@ -1254,44 +1516,165 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
   void _showPermissionDeniedDialog() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF0a1128).withOpacity(0.95),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(15),
-          side: BorderSide(color: Colors.cyanAccent.withOpacity(0.5)),
-        ),
-        title: const Text(
-          'Storage Permission Required',
-          style: TextStyle(color: Colors.white),
-        ),
-        content: const Text(
-          'Storage permission is needed to detect and restore backups. Please grant permission in app settings.',
-          style: TextStyle(color: Colors.white70),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Colors.white70),
-            ),
+      builder: (context) {
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final surfaceColor = isDark ? const Color(0xFF19202A) : Colors.white;
+        final borderColor = isDark
+            ? const Color(0xFF2E3847)
+            : const Color(0xFFE5E7EB);
+        final primaryTextColor = isDark
+            ? const Color(0xFFE0E6EF)
+            : const Color(0xFF1A1C22);
+        final secondaryTextColor = isDark
+            ? const Color(0xFF97A3B6)
+            : const Color(0xFF73747C);
+        final brandAccent = isDark
+            ? const Color(0xFF9BBCFF)
+            : const Color(0xFF335FE8);
+
+        return Dialog(
+          backgroundColor: surfaceColor,
+          surfaceTintColor: Colors.transparent,
+          elevation: 6,
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 24,
+            vertical: 24,
           ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              openAppSettings();
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.cyanAccent),
-            child: const Text(
-              'Open Settings',
-              style: TextStyle(
-                color: Colors.black87,
-                fontWeight: FontWeight.bold,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+            side: BorderSide(color: borderColor),
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 380),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(22, 24, 22, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: brandAccent.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: brandAccent.withOpacity(0.2),
+                          ),
+                        ),
+                        child: Icon(
+                          Icons.folder_shared_outlined,
+                          color: brandAccent,
+                          size: 22,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'PERMISSIONS',
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 1.2,
+                                color: brandAccent,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Storage Permission',
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: -0.3,
+                                color: primaryTextColor,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    'Storage permission is needed to detect and restore backups. Please grant permission in app settings.',
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 13,
+                      height: 1.45,
+                      color: secondaryTextColor,
+                    ),
+                  ),
+                  const SizedBox(height: 22),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: primaryTextColor,
+                            side: BorderSide(color: borderColor),
+                            padding: const EdgeInsets.symmetric(vertical: 13),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          onPressed: () => Navigator.pop(context),
+                          child: Text(
+                            'Cancel',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              color: secondaryTextColor,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: brandAccent,
+                            foregroundColor: isDark
+                                ? const Color(0xFF0F172A)
+                                : Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 13),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            elevation: 0,
+                          ),
+                          onPressed: () {
+                            Navigator.pop(context);
+                            openAppSettings();
+                          },
+                          child: Text(
+                            'Open Settings',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: isDark
+                                  ? const Color(0xFF0F172A)
+                                  : Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -1349,202 +1732,555 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF0a1128).withOpacity(0.95),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(15),
-          side: BorderSide(color: Colors.cyanAccent.withOpacity(0.5)),
-        ),
-        title: Row(
-          children: [
-            const Icon(Icons.backup, color: Colors.cyanAccent),
-            const SizedBox(width: 12),
-            const Text('Backups Found!', style: TextStyle(color: Colors.white)),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'We found ${backups.length} backup(s). Would you like to restore?',
-              style: const TextStyle(color: Colors.white70),
-            ),
-            const SizedBox(height: 16),
-            const Divider(color: Colors.white30),
-            const SizedBox(height: 8),
-            const Text(
-              'Most Recent Backup:',
-              style: TextStyle(
-                color: Colors.cyanAccent,
-                fontWeight: FontWeight.bold,
-                fontSize: 12,
-              ),
-            ),
-            const SizedBox(height: 8),
-            _buildBackupInfo(backups.first),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Skip', style: TextStyle(color: Colors.white70)),
+      builder: (context) {
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final surfaceColor = isDark ? const Color(0xFF19202A) : Colors.white;
+        final borderColor = isDark
+            ? const Color(0xFF2E3847)
+            : const Color(0xFFE5E7EB);
+        final primaryTextColor = isDark
+            ? const Color(0xFFE0E6EF)
+            : const Color(0xFF1A1C22);
+        final secondaryTextColor = isDark
+            ? const Color(0xFF97A3B6)
+            : const Color(0xFF73747C);
+        final brandAccent = isDark
+            ? const Color(0xFF9BBCFF)
+            : const Color(0xFF335FE8);
+
+        return Dialog(
+          backgroundColor: surfaceColor,
+          surfaceTintColor: Colors.transparent,
+          elevation: 6,
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 24,
+            vertical: 24,
           ),
-          if (backups.length > 1)
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _showBackupsList(backups);
-              },
-              child: const Text(
-                'View All',
-                style: TextStyle(color: Colors.orangeAccent),
-              ),
-            ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _restoreBackup(backups.first['uri'] as String);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.cyanAccent),
-            child: const Text(
-              'Restore',
-              style: TextStyle(
-                color: Colors.black87,
-                fontWeight: FontWeight.bold,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+            side: BorderSide(color: borderColor),
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 400),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(22, 24, 22, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: brandAccent.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: brandAccent.withOpacity(0.2),
+                          ),
+                        ),
+                        child: Icon(
+                          Icons.settings_backup_restore_rounded,
+                          color: brandAccent,
+                          size: 22,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'OPAQUE BACKUP',
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 1.2,
+                                color: brandAccent,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Backup Found',
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 19,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: -0.4,
+                                color: primaryTextColor,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    'We detected an encrypted backup from your previous account session. Would you like to restore your chats and media?',
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 13,
+                      height: 1.45,
+                      color: secondaryTextColor,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  _buildBackupInfo(backups.first),
+                  const SizedBox(height: 22),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: primaryTextColor,
+                            side: BorderSide(color: borderColor),
+                            padding: const EdgeInsets.symmetric(vertical: 13),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          onPressed: () => Navigator.pop(context),
+                          child: Text(
+                            'Skip',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              color: secondaryTextColor,
+                            ),
+                          ),
+                        ),
+                      ),
+                      if (backups.length > 1) ...[
+                        const SizedBox(width: 8),
+                        OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: brandAccent,
+                            side: BorderSide(
+                              color: brandAccent.withOpacity(0.4),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              vertical: 13,
+                              horizontal: 12,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          onPressed: () {
+                            Navigator.pop(context);
+                            _showBackupsList(backups);
+                          },
+                          child: Text(
+                            'View All',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: brandAccent,
+                            ),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: FilledButton(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: brandAccent,
+                            foregroundColor: isDark
+                                ? const Color(0xFF0F172A)
+                                : Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 13),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            elevation: 0,
+                          ),
+                          onPressed: () {
+                            Navigator.pop(context);
+                            _restoreBackup(backups.first['uri'] as String);
+                          },
+                          child: Text(
+                            'Restore',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: isDark
+                                  ? const Color(0xFF0F172A)
+                                  : Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
   Widget _buildBackupInfo(Map<String, dynamic> backup) {
-    final fileName = backup['name'] as String;
-    final size = MediaStoreBackupService.formatBytes(backup['size'] as int);
+    final fileName = backup['name'] as String? ?? 'Encrypted Backup';
+    final size = MediaStoreBackupService.formatBytes(
+      backup['size'] as int? ?? 0,
+    );
     final date = DateTime.fromMillisecondsSinceEpoch(
-      backup['dateModified'] as int,
+      backup['dateModified'] as int? ?? 0,
     ).toLocal();
 
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.cyanAccent.withOpacity(0.3)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            fileName,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-            ),
-            overflow: TextOverflow.ellipsis,
+    final months = const [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    final formattedDate =
+        '${date.day} ${months[date.month - 1]} ${date.year}, ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+
+    return Builder(
+      builder: (context) {
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final cardColor = isDark
+            ? const Color(0xFF222B38)
+            : const Color(0xFFF4F6F9);
+        final borderColor = isDark
+            ? const Color(0xFF2E3847)
+            : const Color(0xFFE5E7EB);
+        final primaryTextColor = isDark
+            ? const Color(0xFFE0E6EF)
+            : const Color(0xFF1A1C22);
+        final secondaryTextColor = isDark
+            ? const Color(0xFF97A3B6)
+            : const Color(0xFF73747C);
+        final lockAccent = isDark
+            ? const Color(0xFF88BCA8)
+            : const Color(0xFF2E7D5B);
+
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: cardColor,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: borderColor),
           ),
-          const SizedBox(height: 6),
-          Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(Icons.access_time, color: Colors.white54, size: 14),
-              const SizedBox(width: 6),
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: lockAccent.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.lock_outline_rounded,
+                          size: 12,
+                          color: lockAccent,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Encrypted Backup',
+                          style: TextStyle(
+                            fontFamily: 'Inter',
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w600,
+                            color: lockAccent,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
               Text(
-                '${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute.toString().padLeft(2, '0')}',
-                style: const TextStyle(color: Colors.white54, fontSize: 12),
+                fileName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontFamily: 'Inter',
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w600,
+                  color: primaryTextColor,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Divider(height: 1, color: borderColor),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Icon(
+                    Icons.schedule_rounded,
+                    size: 14,
+                    color: secondaryTextColor,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      formattedDate,
+                      style: TextStyle(
+                        fontFamily: 'Inter',
+                        fontSize: 12,
+                        color: secondaryTextColor,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    Icons.sd_storage_outlined,
+                    size: 14,
+                    color: secondaryTextColor,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    size,
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: secondaryTextColor,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Icon(Icons.storage, color: Colors.white54, size: 14),
-              const SizedBox(width: 6),
-              Text(
-                size,
-                style: const TextStyle(color: Colors.white54, fontSize: 12),
-              ),
-            ],
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 
   void _showBackupsList(List<Map<String, dynamic>> backups) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF0a1128).withOpacity(0.95),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(15),
-          side: BorderSide(color: Colors.cyanAccent.withOpacity(0.5)),
-        ),
-        title: const Text(
-          'Select Backup to Restore',
-          style: TextStyle(color: Colors.white),
-        ),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: ListView.builder(
-            shrinkWrap: true,
-            itemCount: backups.length,
-            itemBuilder: (context, index) {
-              final backup = backups[index];
-              final fileName = backup['name'] as String;
-              final size = MediaStoreBackupService.formatBytes(
-                backup['size'] as int,
-              );
-              final date = DateTime.fromMillisecondsSinceEpoch(
-                backup['dateModified'] as int,
-              ).toLocal();
-              final uri = backup['uri'] as String;
+      builder: (context) {
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final surfaceColor = isDark ? const Color(0xFF19202A) : Colors.white;
+        final cardColor = isDark
+            ? const Color(0xFF222B38)
+            : const Color(0xFFF4F6F9);
+        final borderColor = isDark
+            ? const Color(0xFF2E3847)
+            : const Color(0xFFE5E7EB);
+        final primaryTextColor = isDark
+            ? const Color(0xFFE0E6EF)
+            : const Color(0xFF1A1C22);
+        final secondaryTextColor = isDark
+            ? const Color(0xFF97A3B6)
+            : const Color(0xFF73747C);
+        final brandAccent = isDark
+            ? const Color(0xFF9BBCFF)
+            : const Color(0xFF335FE8);
 
-              return Card(
-                color: Colors.white.withOpacity(0.1),
-                margin: const EdgeInsets.only(bottom: 8),
-                child: ListTile(
-                  leading: Icon(
-                    index == 0 ? Icons.backup : Icons.folder,
-                    color: index == 0 ? Colors.cyanAccent : Colors.white54,
-                  ),
-                  title: Text(
-                    fileName,
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  subtitle: Text(
-                    '${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute.toString().padLeft(2, '0')} • $size',
-                    style: const TextStyle(color: Colors.white54, fontSize: 11),
-                  ),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.restore, color: Colors.cyanAccent),
-                    onPressed: () {
-                      Navigator.pop(context);
-                      _restoreBackup(uri);
-                    },
-                  ),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _restoreBackup(uri);
-                  },
-                ),
-              );
-            },
+        final months = const [
+          'Jan',
+          'Feb',
+          'Mar',
+          'Apr',
+          'May',
+          'Jun',
+          'Jul',
+          'Aug',
+          'Sep',
+          'Oct',
+          'Nov',
+          'Dec',
+        ];
+
+        return Dialog(
+          backgroundColor: surfaceColor,
+          surfaceTintColor: Colors.transparent,
+          elevation: 6,
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 24,
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Colors.white70),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+            side: BorderSide(color: borderColor),
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420, maxHeight: 520),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 22, 20, 18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: brandAccent.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Icon(
+                          Icons.history_rounded,
+                          color: brandAccent,
+                          size: 20,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Available Backups',
+                          style: TextStyle(
+                            fontFamily: 'Inter',
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: -0.3,
+                            color: primaryTextColor,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Flexible(
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: backups.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (context, index) {
+                        final backup = backups[index];
+                        final fileName = backup['name'] as String? ?? 'Backup';
+                        final size = MediaStoreBackupService.formatBytes(
+                          backup['size'] as int? ?? 0,
+                        );
+                        final date = DateTime.fromMillisecondsSinceEpoch(
+                          backup['dateModified'] as int? ?? 0,
+                        ).toLocal();
+                        final formattedDate =
+                            '${date.day} ${months[date.month - 1]} ${date.year}, ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+                        final uri = backup['uri'] as String;
+
+                        return Material(
+                          color: cardColor,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            side: BorderSide(color: borderColor),
+                          ),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(14),
+                            onTap: () {
+                              Navigator.pop(context);
+                              _restoreBackup(uri);
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 12,
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    index == 0
+                                        ? Icons.settings_backup_restore_rounded
+                                        : Icons.folder_outlined,
+                                    color: index == 0
+                                        ? brandAccent
+                                        : secondaryTextColor,
+                                    size: 20,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          fileName,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontFamily: 'Inter',
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w600,
+                                            color: primaryTextColor,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 3),
+                                        Text(
+                                          '$formattedDate • $size',
+                                          style: TextStyle(
+                                            fontFamily: 'Inter',
+                                            fontSize: 11,
+                                            color: secondaryTextColor,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Icon(
+                                    Icons.arrow_forward_ios_rounded,
+                                    size: 13,
+                                    color: secondaryTextColor,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: primaryTextColor,
+                        side: BorderSide(color: borderColor),
+                        padding: const EdgeInsets.symmetric(vertical: 13),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                      onPressed: () => Navigator.pop(context),
+                      child: Text(
+                        'Cancel',
+                        style: TextStyle(
+                          fontFamily: 'Inter',
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: secondaryTextColor,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -1562,21 +2298,73 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => const AlertDialog(
-          backgroundColor: Color(0xFF0a1128),
-          content: Row(
-            children: [
-              CircularProgressIndicator(color: Colors.cyanAccent),
-              SizedBox(width: 20),
-              Expanded(
-                child: Text(
-                  'Restoring backup...\nThis may take a moment.',
-                  style: TextStyle(color: Colors.white),
-                ),
+        builder: (context) {
+          final isDark = Theme.of(context).brightness == Brightness.dark;
+          final surfaceColor = isDark ? const Color(0xFF19202A) : Colors.white;
+          final borderColor = isDark
+              ? const Color(0xFF2E3847)
+              : const Color(0xFFE5E7EB);
+          final primaryTextColor = isDark
+              ? const Color(0xFFE0E6EF)
+              : const Color(0xFF1A1C22);
+          final secondaryTextColor = isDark
+              ? const Color(0xFF97A3B6)
+              : const Color(0xFF73747C);
+          final brandAccent = isDark
+              ? const Color(0xFF9BBCFF)
+              : const Color(0xFF335FE8);
+
+          return Dialog(
+            backgroundColor: surfaceColor,
+            surfaceTintColor: Colors.transparent,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+              side: BorderSide(color: borderColor),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 22),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 28,
+                    height: 28,
+                    child: CircularProgressIndicator(
+                      color: brandAccent,
+                      strokeWidth: 2.5,
+                    ),
+                  ),
+                  const SizedBox(width: 20),
+                  Expanded(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Restoring backup...',
+                          style: TextStyle(
+                            fontFamily: 'Inter',
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                            color: primaryTextColor,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          'Decrypting database and media...',
+                          style: TextStyle(
+                            fontFamily: 'Inter',
+                            fontSize: 12,
+                            color: secondaryTextColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       );
 
       final backupService = BackupService();
@@ -1616,7 +2404,10 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
         Navigator.of(context).pop(); // Close progress dialog
 
         // Show success message briefly before restarting
-        OpaqueToast.success(context, 'Backup restored successfully! Restarting app...');
+        OpaqueToast.success(
+          context,
+          'Backup restored successfully! Restarting app...',
+        );
 
         // Wait for toast to show, then restart
         await Future.delayed(const Duration(seconds: 2));
@@ -1652,59 +2443,202 @@ class _BackupDetectionWrapperState extends State<BackupDetectionWrapper> {
       context: context,
       builder: (ctx) {
         final controller = TextEditingController();
-        return AlertDialog(
-          backgroundColor: const Color(0xFF0a1128).withOpacity(0.95),
+        final isDark = Theme.of(ctx).brightness == Brightness.dark;
+        final surfaceColor = isDark ? const Color(0xFF19202A) : Colors.white;
+        final cardColor = isDark
+            ? const Color(0xFF222B38)
+            : const Color(0xFFF4F6F9);
+        final borderColor = isDark
+            ? const Color(0xFF2E3847)
+            : const Color(0xFFE5E7EB);
+        final primaryTextColor = isDark
+            ? const Color(0xFFE0E6EF)
+            : const Color(0xFF1A1C22);
+        final secondaryTextColor = isDark
+            ? const Color(0xFF97A3B6)
+            : const Color(0xFF73747C);
+        final brandAccent = isDark
+            ? const Color(0xFF9BBCFF)
+            : const Color(0xFF335FE8);
+
+        return Dialog(
+          backgroundColor: surfaceColor,
+          surfaceTintColor: Colors.transparent,
+          elevation: 6,
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 24,
+            vertical: 24,
+          ),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(15),
-            side: BorderSide(color: Colors.cyanAccent.withOpacity(0.5)),
+            borderRadius: BorderRadius.circular(24),
+            side: BorderSide(color: borderColor),
           ),
-          title: const Text(
-            'Enter Backup Passphrase',
-            style: TextStyle(color: Colors.white),
-          ),
-          content: TextField(
-            controller: controller,
-            obscureText: true,
-            autofocus: true,
-            style: const TextStyle(color: Colors.white),
-            decoration: InputDecoration(
-              hintText: 'Backup passphrase',
-              hintStyle: TextStyle(color: Colors.white.withOpacity(0.5)),
-              enabledBorder: UnderlineInputBorder(
-                borderSide: BorderSide(
-                  color: Colors.cyanAccent.withOpacity(0.5),
-                ),
-              ),
-              focusedBorder: const UnderlineInputBorder(
-                borderSide: BorderSide(color: Colors.cyanAccent),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 380),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(22, 24, 22, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: brandAccent.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: brandAccent.withOpacity(0.2),
+                          ),
+                        ),
+                        child: Icon(
+                          Icons.lock_outline_rounded,
+                          color: brandAccent,
+                          size: 22,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'SECURITY',
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 1.2,
+                                color: brandAccent,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Enter Passphrase',
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: -0.3,
+                                color: primaryTextColor,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    'Enter your 64-character or custom passphrase to decrypt and restore this backup.',
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 13,
+                      height: 1.45,
+                      color: secondaryTextColor,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: controller,
+                    obscureText: true,
+                    autofocus: true,
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 14,
+                      color: primaryTextColor,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: 'Backup passphrase',
+                      hintStyle: TextStyle(
+                        fontFamily: 'Inter',
+                        fontSize: 13,
+                        color: secondaryTextColor,
+                      ),
+                      filled: true,
+                      fillColor: cardColor,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 14,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: BorderSide(color: borderColor),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: BorderSide(color: borderColor),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: BorderSide(color: brandAccent, width: 1.5),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 22),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: primaryTextColor,
+                            side: BorderSide(color: borderColor),
+                            padding: const EdgeInsets.symmetric(vertical: 13),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          onPressed: () => Navigator.pop(ctx),
+                          child: Text(
+                            'Cancel',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              color: secondaryTextColor,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: brandAccent,
+                            foregroundColor: isDark
+                                ? const Color(0xFF0F172A)
+                                : Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 13),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            elevation: 0,
+                          ),
+                          onPressed: () {
+                            password = controller.text;
+                            Navigator.pop(ctx);
+                          },
+                          child: Text(
+                            'Restore',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: isDark
+                                  ? const Color(0xFF0F172A)
+                                  : Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text(
-                "Cancel",
-                style: TextStyle(color: Colors.white70),
-              ),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                password = controller.text;
-                Navigator.pop(ctx);
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.cyanAccent,
-              ),
-              child: const Text(
-                "Restore",
-                style: TextStyle(
-                  color: Colors.black87,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ],
         );
       },
     );

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'notes_design.dart';
+import 'opaque_design.dart';
 
 class BackupHeader extends StatelessWidget implements PreferredSizeWidget {
   const BackupHeader({super.key, this.onHelp});
@@ -8,7 +8,7 @@ class BackupHeader extends StatelessWidget implements PreferredSizeWidget {
   Size get preferredSize => const Size.fromHeight(60);
   @override
   Widget build(BuildContext context) {
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     return AppBar(
       backgroundColor: c.surface,
       foregroundColor: c.muted,
@@ -113,7 +113,7 @@ class BackupDialog extends StatelessWidget {
   final ShapeBorder? shape;
   @override
   Widget build(BuildContext context) {
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
       child: Container(
@@ -207,7 +207,7 @@ class BackupSymbol extends StatelessWidget {
   final IconData icon;
   @override
   Widget build(BuildContext context) {
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     return Container(
       width: 38,
       height: 38,
@@ -259,8 +259,8 @@ class _BackupPassphraseSheetState extends State<BackupPassphraseSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final c = NotesColors(context);
-    return NotesSheet(
+    final c = OpaqueColors(context);
+    return OpaqueSheet(
       title: widget.title,
       description: widget.confirm
           ? 'Keep your passphrase safe. You’ll need it to restore.'
@@ -319,7 +319,7 @@ class _BackupPassphraseSheetState extends State<BackupPassphraseSheet> {
           const SizedBox(height: 18),
           SizedBox(
             width: double.infinity,
-            child: NotesButton(
+            child: OpaqueButton(
               label: widget.confirm ? 'Continue' : 'Restore backup',
               primary: true,
               onPressed: _submit,
@@ -345,7 +345,7 @@ class BackupAction extends StatelessWidget {
   final bool primary;
   @override
   Widget build(BuildContext context) {
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
     return TextButton.icon(
       onPressed: onPressed,
       icon: Icon(icon, size: 16),

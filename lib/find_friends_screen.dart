@@ -759,8 +759,8 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
             }).toList();
             _isLoading = false;
             _statusMessage = _searchResults.isEmpty
-                ? "No Zarq users found from your contacts."
-                : "Found ${_searchResults.length} Zarq users from your contacts!";
+                ? "No Opaque users found from your contacts."
+                : "Found ${_searchResults.length} Opaque users from your contacts!";
           });
 
           // print('[CONTACT_SYNC] ✅ Successfully created ${_searchResults.length} Friend objects');

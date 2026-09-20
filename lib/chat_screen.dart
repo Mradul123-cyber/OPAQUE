@@ -1394,18 +1394,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       return;
     }
 
+    _focusNode.unfocus();
     setState(() {
+      _attachmentsOpen = false;
       _isRecordingVoice = true;
     });
   }
 
   // Send voice message with E2EE
   Future<void> _sendVoiceMessage(String audioPath, int duration) async{
-    setState(() {
-      _isRecordingVoice = false;
-    });
+    if (!mounted) return;
 
     if (!widget.conversationInfo.isGroup && _recipientUid == null) {
+      setState(() => _isRecordingVoice = false);
       OpaqueToast.error(context, 'Recipient not found');
       return;
     }
@@ -1638,6 +1639,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       if (mounted) {
         OpaqueToast.error(context, 'Failed to send voice message: $e');
       }
+    } finally {
+      if (mounted) setState(() => _isRecordingVoice = false);
     }
   }
 

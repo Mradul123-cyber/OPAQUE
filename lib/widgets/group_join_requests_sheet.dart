@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:cached_network_image/cached_network_image.dart';
 
 import '../app_config.dart';
-import 'notes_design.dart';
+import 'opaque_design.dart';
 import 'opaque_toast.dart';
 
 class GroupJoinRequestItem {
@@ -84,7 +84,9 @@ class _GroupJoinRequestsSheetState extends State<GroupJoinRequestsSheet> {
       final token = await user.getIdToken();
 
       final response = await http.get(
-        Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/join-requests'),
+        Uri.parse(
+          '${AppConfig.baseUrl}/groups/${widget.groupId}/join-requests',
+        ),
         headers: {
           'Authorization': 'Bearer $token',
           'Content-Type': 'application/json',
@@ -95,7 +97,10 @@ class _GroupJoinRequestsSheetState extends State<GroupJoinRequestsSheet> {
         final list = json.decode(response.body) as List? ?? [];
         setState(() {
           _requests = list
-              .map((item) => GroupJoinRequestItem.fromJson(item as Map<String, dynamic>))
+              .map(
+                (item) =>
+                    GroupJoinRequestItem.fromJson(item as Map<String, dynamic>),
+              )
               .toList();
           _isLoading = false;
         });
@@ -119,7 +124,9 @@ class _GroupJoinRequestsSheetState extends State<GroupJoinRequestsSheet> {
       final token = await user.getIdToken();
 
       final response = await http.post(
-        Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/join-requests/${req.id}/review'),
+        Uri.parse(
+          '${AppConfig.baseUrl}/groups/${widget.groupId}/join-requests/${req.id}/review',
+        ),
         headers: {
           'Authorization': 'Bearer $token',
           'Content-Type': 'application/json',
@@ -160,7 +167,9 @@ class _GroupJoinRequestsSheetState extends State<GroupJoinRequestsSheet> {
       final token = await user.getIdToken();
 
       final response = await http.post(
-        Uri.parse('${AppConfig.baseUrl}/groups/${widget.groupId}/join-requests/batch'),
+        Uri.parse(
+          '${AppConfig.baseUrl}/groups/${widget.groupId}/join-requests/batch',
+        ),
         headers: {
           'Authorization': 'Bearer $token',
           'Content-Type': 'application/json',
@@ -193,7 +202,7 @@ class _GroupJoinRequestsSheetState extends State<GroupJoinRequestsSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final c = NotesColors(context);
+    final c = OpaqueColors(context);
 
     return Container(
       constraints: BoxConstraints(
@@ -228,7 +237,10 @@ class _GroupJoinRequestsSheetState extends State<GroupJoinRequestsSheet> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Pending join requests', style: c.text(16, bold: true)),
+                        Text(
+                          'Pending join requests',
+                          style: c.text(16, bold: true),
+                        ),
                         const SizedBox(height: 2),
                         Text(
                           '${_requests.length} participant(s) waiting for approval',
@@ -249,137 +261,204 @@ class _GroupJoinRequestsSheetState extends State<GroupJoinRequestsSheet> {
             // Content
             Expanded(
               child: _isLoading
-                  ? Center(child: CircularProgressIndicator(color: c.blue, strokeWidth: 2))
+                  ? Center(
+                      child: CircularProgressIndicator(
+                        color: c.blue,
+                        strokeWidth: 2,
+                      ),
+                    )
                   : _requests.isEmpty
-                      ? Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.how_to_reg_outlined, size: 44, color: c.muted),
-                              const SizedBox(height: 10),
-                              Text('No pending requests', style: c.text(14, bold: true)),
-                              const SizedBox(height: 4),
-                              Text(
-                                'New requests to join ${widget.groupName} will appear here.',
-                                style: c.text(12, muted: true),
-                                textAlign: TextAlign.center,
-                              ),
-                            ],
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.how_to_reg_outlined,
+                            size: 44,
+                            color: c.muted,
                           ),
-                        )
-                      : Column(
-                          children: [
-                            if (_requests.length > 1) ...[
-                              Padding(
-                                padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                          const SizedBox(height: 10),
+                          Text(
+                            'No pending requests',
+                            style: c.text(14, bold: true),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'New requests to join ${widget.groupName} will appear here.',
+                            style: c.text(12, muted: true),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    )
+                  : Column(
+                      children: [
+                        if (_requests.length > 1) ...[
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                            child: Row(
+                              children: [
+                                TextButton.icon(
+                                  onPressed: _isBatchProcessing
+                                      ? null
+                                      : () => _batchReview('reject_all'),
+                                  icon: const Icon(
+                                    Icons.close_rounded,
+                                    size: 16,
+                                    color: Colors.red,
+                                  ),
+                                  label: Text(
+                                    'Deny All',
+                                    style: c
+                                        .text(12, bold: true)
+                                        .copyWith(color: Colors.red),
+                                  ),
+                                ),
+                                const Spacer(),
+                                TextButton.icon(
+                                  onPressed: _isBatchProcessing
+                                      ? null
+                                      : () => _batchReview('approve_all'),
+                                  icon: Icon(
+                                    Icons.done_all_rounded,
+                                    size: 16,
+                                    color: c.blue,
+                                  ),
+                                  label: Text(
+                                    'Approve All',
+                                    style: c
+                                        .text(12, bold: true)
+                                        .copyWith(color: c.blue),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Divider(height: 1, color: c.line),
+                        ],
+                        Expanded(
+                          child: ListView.separated(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 8,
+                            ),
+                            itemCount: _requests.length,
+                            separatorBuilder: (_, __) =>
+                                Divider(height: 1, color: c.line),
+                            itemBuilder: (context, index) {
+                              final req = _requests[index];
+                              final isProcessing = _processingIds.contains(
+                                req.id,
+                              );
+
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 10,
+                                ),
                                 child: Row(
                                   children: [
-                                    TextButton.icon(
-                                      onPressed: _isBatchProcessing ? null : () => _batchReview('reject_all'),
-                                      icon: const Icon(Icons.close_rounded, size: 16, color: Colors.red),
-                                      label: Text('Deny All', style: c.text(12, bold: true).copyWith(color: Colors.red)),
+                                    // Avatar
+                                    CircleAvatar(
+                                      radius: 20,
+                                      backgroundColor: c.soft,
+                                      backgroundImage:
+                                          req.avatarUrl != null &&
+                                              req.avatarUrl!.isNotEmpty
+                                          ? CachedNetworkImageProvider(
+                                              req.avatarUrl!,
+                                            )
+                                          : null,
+                                      child:
+                                          req.avatarUrl == null ||
+                                              req.avatarUrl!.isEmpty
+                                          ? Text(
+                                              req
+                                                      .displayNameOrUsername
+                                                      .isNotEmpty
+                                                  ? req.displayNameOrUsername[0]
+                                                        .toUpperCase()
+                                                  : '?',
+                                              style: c.text(14, bold: true),
+                                            )
+                                          : null,
                                     ),
-                                    const Spacer(),
-                                    TextButton.icon(
-                                      onPressed: _isBatchProcessing ? null : () => _batchReview('approve_all'),
-                                      icon: Icon(Icons.done_all_rounded, size: 16, color: c.blue),
-                                      label: Text('Approve All', style: c.text(12, bold: true).copyWith(color: c.blue)),
+                                    const SizedBox(width: 12),
+
+                                    // Name and requested by
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            req.displayNameOrUsername,
+                                            style: c.text(14, bold: true),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            '@${req.username} · Added by ${req.requestedBy}',
+                                            style: c.text(11, muted: true),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ],
+                                      ),
                                     ),
+                                    const SizedBox(width: 8),
+
+                                    // Action buttons
+                                    if (isProcessing)
+                                      SizedBox(
+                                        width: 24,
+                                        height: 24,
+                                        child: CircularProgressIndicator(
+                                          color: c.blue,
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    else
+                                      Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          // Reject Button
+                                          IconButton(
+                                            icon: const Icon(
+                                              Icons.close_rounded,
+                                              size: 20,
+                                              color: Colors.red,
+                                            ),
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            onPressed: () =>
+                                                _reviewRequest(req, 'reject'),
+                                            tooltip: 'Reject',
+                                          ),
+                                          const SizedBox(width: 4),
+                                          // Approve Button
+                                          IconButton(
+                                            icon: const Icon(
+                                              Icons.check_rounded,
+                                              size: 20,
+                                              color: Colors.green,
+                                            ),
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            onPressed: () =>
+                                                _reviewRequest(req, 'approve'),
+                                            tooltip: 'Approve',
+                                          ),
+                                        ],
+                                      ),
                                   ],
                                 ),
-                              ),
-                              Divider(height: 1, color: c.line),
-                            ],
-                            Expanded(
-                              child: ListView.separated(
-                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                itemCount: _requests.length,
-                                separatorBuilder: (_, __) => Divider(height: 1, color: c.line),
-                                itemBuilder: (context, index) {
-                                  final req = _requests[index];
-                                  final isProcessing = _processingIds.contains(req.id);
-
-                                  return Padding(
-                                    padding: const EdgeInsets.symmetric(vertical: 10),
-                                    child: Row(
-                                      children: [
-                                        // Avatar
-                                        CircleAvatar(
-                                          radius: 20,
-                                          backgroundColor: c.soft,
-                                          backgroundImage: req.avatarUrl != null && req.avatarUrl!.isNotEmpty
-                                              ? CachedNetworkImageProvider(req.avatarUrl!)
-                                              : null,
-                                          child: req.avatarUrl == null || req.avatarUrl!.isEmpty
-                                              ? Text(
-                                                  req.displayNameOrUsername.isNotEmpty
-                                                      ? req.displayNameOrUsername[0].toUpperCase()
-                                                      : '?',
-                                                  style: c.text(14, bold: true),
-                                                )
-                                              : null,
-                                        ),
-                                        const SizedBox(width: 12),
-
-                                        // Name and requested by
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Text(
-                                                req.displayNameOrUsername,
-                                                style: c.text(14, bold: true),
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                              const SizedBox(height: 2),
-                                              Text(
-                                                '@${req.username} · Added by ${req.requestedBy}',
-                                                style: c.text(11, muted: true),
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                        const SizedBox(width: 8),
-
-                                        // Action buttons
-                                        if (isProcessing)
-                                          SizedBox(
-                                            width: 24,
-                                            height: 24,
-                                            child: CircularProgressIndicator(color: c.blue, strokeWidth: 2),
-                                          )
-                                        else
-                                          Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              // Reject Button
-                                              IconButton(
-                                                icon: const Icon(Icons.close_rounded, size: 20, color: Colors.red),
-                                                visualDensity: VisualDensity.compact,
-                                                onPressed: () => _reviewRequest(req, 'reject'),
-                                                tooltip: 'Reject',
-                                              ),
-                                              const SizedBox(width: 4),
-                                              // Approve Button
-                                              IconButton(
-                                                icon: const Icon(Icons.check_rounded, size: 20, color: Colors.green),
-                                                visualDensity: VisualDensity.compact,
-                                                onPressed: () => _reviewRequest(req, 'approve'),
-                                                tooltip: 'Approve',
-                                              ),
-                                            ],
-                                          ),
-                                      ],
-                                    ),
-                                  );
-                                },
-                              ),
-                            ),
-                          ],
+                              );
+                            },
+                          ),
                         ),
+                      ],
+                    ),
             ),
           ],
         ),

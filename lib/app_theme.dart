@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-final ThemeData zarqLightTheme = ThemeData(
+final ThemeData opaqueLightTheme = ThemeData(
   brightness: Brightness.light,
   primaryColor: const Color(0xFF3D00B8),
   scaffoldBackgroundColor: const Color(0xFFF7F7FB),
@@ -45,7 +45,7 @@ final ThemeData zarqLightTheme = ThemeData(
   ),
 );
 
-final ThemeData zarqDarkTheme = ThemeData(
+final ThemeData opaqueDarkTheme = ThemeData(
   brightness: Brightness.dark,
   primaryColor: const Color(0xFF3D00B8),
   scaffoldBackgroundColor: const Color(0xFF0a0e21),
