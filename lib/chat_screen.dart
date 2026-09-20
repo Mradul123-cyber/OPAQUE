@@ -1,3 +1,4 @@
+import 'widgets/chat_date_separator.dart';
 import 'widgets/opaque_toast.dart';
 import 'widgets/opaque_chat_surfaces.dart';
 import 'widgets/opaque_info_design.dart';
@@ -138,6 +139,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   bool _isOtherUserTyping = false;
   String? _typingUserUid;
   Timer? _typingTimer;
+  Timer? _dateSeparatorTimer;
+  DateTime _dateLabelNow = DateTime.now();
   bool _isCurrentlyTyping = false;
 
   // Typing animation controller
@@ -202,6 +205,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _scheduleDateLabelRefresh();
 
     _chatProvider = Provider.of<ChatProvider>(context, listen: false);
     _apiService = Provider.of<ConversationService>(context, listen: false);
@@ -2847,6 +2851,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _dateSeparatorTimer?.cancel();
     _messageSubscription?.cancel();
     _chatProvider.setCurrentConversationId(null);
     _controller.dispose();
@@ -2858,6 +2863,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     super.dispose();
   }
 
+  void _scheduleDateLabelRefresh() {
+    _dateSeparatorTimer?.cancel();
+    _dateSeparatorTimer = Timer(untilNextChatDay(DateTime.now()), () {
+      if (!mounted) return;
+      setState(() => _dateLabelNow = DateTime.now());
+      _scheduleDateLabelRefresh();
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      setState(() => _dateLabelNow = DateTime.now());
+      _scheduleDateLabelRefresh();
+    } else {
+      _dateSeparatorTimer?.cancel();
+    }
+  }
   // Handle sending typing indicator
   void _handleTypingIndicator() {
     // Cancel previous timer
@@ -3123,6 +3146,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                           return true;
                         }).toList();
 
+                        // Hidden poll-vote payloads must not create date-only rows.
+                        messages = messages.where((m) => ChatPayloadParser.getPayloadType(m.content) != ChatPayloadParser.typePollVote).toList();
+
                         // Filter messages based on search query
                         if (_isSearching && _searchQuery.isNotEmpty) {
                           messages = messages.where((message) {
@@ -3199,7 +3225,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                             final reversedIndex = messages.length - 1 - index;
                             final message = messages[reversedIndex];
                             final dark = Theme.of(context).brightness == Brightness.dark;
-                            return Dismissible(
+                            return Column(
+                              key: ValueKey('day_row_${message.id}'),
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (startsChatDay(message.timestamp,
+                                    reversedIndex > 0 ? messages[reversedIndex - 1].timestamp : null))
+                                  ChatDateSeparator(timestamp: message.timestamp, now: _dateLabelNow),
+                                Dismissible(
                               key: Key('msg_${message.id}'),
                               direction: DismissDirection.startToEnd,
                               dismissThresholds: const {
@@ -3231,6 +3264,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                                 ),
                               ),
                               child: _buildMessageBubble(message, reversedIndex, messages.length),
+                            ),
+                              ],
                             );
                           },
                         );
@@ -3499,6 +3534,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         child: Consumer<ChatProvider>(builder: (context, provider, child) {
           final count = provider.messages.where((m) => !_blockedUsers.contains(m.senderUid)
             && !(m.hasAttachment && m.status == MessageStatus.decryptFailed)
+            && ChatPayloadParser.getPayloadType(m.content) != ChatPayloadParser.typePollVote
             && m.content.toLowerCase().contains(_searchQuery)).length;
           return Text(_searchQuery.isEmpty ? 'Search messages in this conversation'
             : '$count ${count == 1 ? 'matching message' : 'matching messages'}',
