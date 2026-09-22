@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:permission_handler/permission_handler.dart';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -23,6 +24,23 @@ class AutoBackupManager {
       isInDebugMode: kDebugMode,
     );
     debugPrint('[AutoBackupManager] Workmanager initialized');
+  }
+
+  static Future<Map<String, dynamic>> nativeStatus() async {
+    if (!Platform.isAndroid) return {};
+    final result = await _nativeBackupChannel.invokeMapMethod<String, dynamic>('getNativeBackupStatus');
+    return result ?? {};
+  }
+
+  static Future<void> cancelNativeRun(String run) async {
+    await _nativeBackupChannel.invokeMethod('cancelNativeBackupRun', {'run': run});
+  }
+
+  static Future<bool> ensureBackupStoragePermission() async {
+    if (!Platform.isAndroid) return true;
+    final status = await nativeStatus();
+    if (status['needsStoragePermission'] != true) return true;
+    return (await Permission.storage.request()).isGranted;
   }
 
   /// Enable native auto-backup (Android only - Play Store compliant)
@@ -72,26 +90,9 @@ class AutoBackupManager {
       debugPrint('╚════════════════════════════════════════════╝');
       debugPrint('');
 
-      // Step 1: Store user UID
-      await _nativeBackupChannel.invokeMethod('storeUserUid', {
-        'userUid': userUid,
-      });
-      debugPrint('[AutoBackupManager] ✅ Stored user UID');
-
-      // Step 2: Store database password
-      await _nativeBackupChannel.invokeMethod('storeDatabasePassword', {
-        'dbPassword': dbPassword,
-      });
-      debugPrint('[AutoBackupManager] ✅ Stored database password');
-
-      // Step 3: Store backup passphrase
-      await _nativeBackupChannel.invokeMethod('storeAutoBackupPassphrase', {
-        'passphrase': passphrase,
-      });
-      debugPrint('[AutoBackupManager] ✅ Stored backup passphrase');
-
+      // Account credentials and scheduling are committed together by native code.
       // Step 4: Schedule native auto-backup with WorkManager
-      await _nativeBackupChannel.invokeMethod('scheduleNativeAutoBackup', {
+      final scheduled = await _nativeBackupChannel.invokeMethod<bool>('scheduleNativeAutoBackup', {
         'userUid': userUid,
         'dbPassword': dbPassword,
         'passphrase': passphrase,
@@ -99,6 +100,7 @@ class AutoBackupManager {
         'minute': minute,
         'intervalHours': intervalHours,
       });
+      if (scheduled != true) return false;
       debugPrint('[AutoBackupManager] ✅ Native auto-backup scheduled successfully!');
       debugPrint('');
 
@@ -255,7 +257,7 @@ class AutoBackupManager {
     final now = DateTime.now();
 
     // Calculate next 7:59 PM (19:59)
-    DateTime nextBackupTime = DateTime(now.year, now.month, now.day, 19, 59); // Today at 7:59 PM
+    DateTime nextBackupTime = DateTime(now.year, now.month, now.day, settings.hour, settings.minute); // Today at 7:59 PM
 
     // If it's already past 7:59 PM today, schedule for tomorrow at 7:59 PM
     if (now.isAfter(nextBackupTime)) {
@@ -304,8 +306,8 @@ class AutoBackupManager {
       nextBackupDate.year,
       nextBackupDate.month,
       nextBackupDate.day,
-      00, // 12 am
-      30, // 30 minutes
+      settings.hour,
+      settings.minute,
     );
 
     // If scheduled time is in the past, use next 11:13 PM
@@ -373,6 +375,7 @@ class AutoBackupManager {
 @pragma('vm:entry-point')
 void callbackDispatcher() {
   Workmanager().executeTask((task, inputData) async {
+    if (Platform.isAndroid) return true; // Android uses account-bound native workers.
     final startTime = DateTime.now();
     debugPrint('');
     debugPrint('╔════════════════════════════════════════════════════════════╗');

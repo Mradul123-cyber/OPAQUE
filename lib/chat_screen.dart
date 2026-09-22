@@ -20,6 +20,7 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as path;
 import 'package:provider/provider.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:zarq_messenger/message_model.dart' as signal_lib;
@@ -38,6 +39,8 @@ import 'services/database_service.dart';
 import 'services/websocket_service.dart';
 import 'services/device_service.dart';
 import 'services/file_service.dart';
+import 'services/navigation_handler.dart';
+import 'services/chat_sound_service.dart';
 import 'models/message_reaction.dart';
 import 'widgets/message_reactions_widget.dart';
 import 'widgets/encryption_animation_widget.dart';
@@ -86,6 +89,7 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, TickerProviderStateMixin {
   static const platform = MethodChannel('com.zarq/signal');
+  static final DateFormat _bubbleTimeFormat = DateFormat('HH:mm');
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final FocusNode _focusNode = FocusNode();
@@ -104,6 +108,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   final Set<int> _decryptedMessageIds = {};
   final Set<int> _selectedMessageIds = {};
   final Set<int> _animatedMessageIds = {}; // Track which messages have been animated
+  final Set<int> _justSentMessageIds = {}; // Track outgoing messages needing slide-in entrance
+  final Set<int> _justReceivedMessageIds = {}; // Track live incoming messages needing entrance animation
+  void _addOptimisticMessage(Message msg) {
+    _justSentMessageIds.add(msg.id);
+    _chatProvider.addMessage(msg);
+  }
+  void _onMessageSentSuccess(int tempMessageId, Message sentMessage) {
+    _chatProvider.updateMessageStatus(tempMessageId, sentMessage);
+    ChatSoundService.instance.playMessageSent();
+  }
   final Map<int, GlobalKey> _messageKeys = {};
   int? _highlightedMessageId;
   bool _isMultiSelectionMode = false;
@@ -112,12 +126,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   bool _sessionEstablished = false;
   bool _establishingSession = false;
   String? _recipientUid;
+  String? _recipientAvatarUrl;
+  int? _cachedRecipientDeviceId;
   bool _backgroundTasksCompleted = false;
   bool _groupEncryptionSetup = false;
 
   // Voice message recording state
   bool _isRecordingVoice = false;
-  bool _hasTextInput = false;
+  final ValueNotifier<bool> _hasTextInputNotifier = ValueNotifier<bool>(false);
+  bool get _hasTextInput => _hasTextInputNotifier.value;
   bool _attachmentsOpen = false;
   bool _sharingBusy = false;
   final Set<String> _pendingPollVotes = {};
@@ -139,7 +156,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   Message? _editingMessage;
 
   // Typing indicator state
-  bool _isOtherUserTyping = false;
+  final ValueNotifier<bool> _isOtherUserTypingNotifier = ValueNotifier<bool>(false);
   String? _typingUserUid;
   Timer? _typingTimer;
   Timer? _dateSeparatorTimer;
@@ -154,8 +171,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   bool _isRecipientOnline = false;
   DateTime? _recipientLastSeen;
 
-  // Cache for downloaded images
+  // Cache for downloaded images (bounded to 40 items to prevent RAM ballooning)
   final Map<int, Uint8List> _imageCache = {};
+
+  void _cacheImage(int id, Uint8List data) {
+    if (_imageCache.length >= 40) {
+      _imageCache.remove(_imageCache.keys.first);
+    }
+    _imageCache[id] = data;
+  }
 
   // Cache for downloaded videos (stores file paths, not bytes)
   final Map<int, String> _videoCache = {};
@@ -216,6 +240,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     _websocketService = Provider.of<WebSocketService>(context, listen: false);
 
     _chatProvider.setCurrentConversationId(widget.conversationInfo.conversationId);
+    NavigationHandler.setActiveConversation(widget.conversationInfo.conversationId);
+
+    // 🚀 Pre-warm recipient UID & session immediately so first message sends instantly
+    _recipientAvatarUrl = widget.conversationInfo.avatarUrl;
+    if (!widget.conversationInfo.isGroup && widget.conversationInfo.partnerUid != null) {
+      _recipientUid = widget.conversationInfo.partnerUid;
+      // Immediately check device cache or DB in background to warm up session
+      _getRecipientDeviceId(_recipientUid!).then((deviceId) {
+        if (deviceId != null && mounted) {
+          SignalService.hasSession(
+            recipientUid: _recipientUid!,
+            deviceId: deviceId,
+          ).then((hasSession) {
+            if (mounted && hasSession) {
+              _sessionEstablished = true;
+            }
+          });
+        }
+      });
+    }
 
     // 🚀 FIX: Mark messages as read IMMEDIATELY to clear badge instantly
     _markMessagesAsRead();
@@ -227,36 +271,35 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     _loadWallpaper();
     _loadMutePreference();
     _loadEncryptionBannerPreference();
+    ChatSoundService.instance.initialize();
 
     // Load failed media IDs from persistent storage
     loadFailedMediaIds();
 
-    // Initialize typing animation controller (WhatsApp-style bouncing dots)
+    // Initialize typing animation controller (fluid bouncy wave dots)
     _typingAnimationController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1400),
+      duration: const Duration(milliseconds: 1050),
     )..repeat();
 
-    // Create 3 bouncing dot animations with staggered delays
+    // Create 3 bouncing dot animations with staggered wave delays
     _typingDotAnimations = List.generate(3, (index) {
-      final start = index * 0.2; // Stagger each dot by 20% of cycle
+      final start = index * 0.15; // Stagger each dot by 15% of cycle
+      const activeWindow = 0.45;
+      final end = (start + activeWindow).clamp(0.0, 1.0);
       return TweenSequence<double>([
         TweenSequenceItem(
-          tween: Tween(begin: 0.0, end: -8.0).chain(CurveTween(curve: Curves.easeOut)),
-          weight: 25.0,
+          tween: Tween(begin: 0.0, end: 1.0).chain(CurveTween(curve: Curves.easeOutQuad)),
+          weight: 50.0,
         ),
         TweenSequenceItem(
-          tween: Tween(begin: -8.0, end: 0.0).chain(CurveTween(curve: Curves.easeIn)),
-          weight: 25.0,
-        ),
-        TweenSequenceItem(
-          tween: ConstantTween(0.0),
+          tween: Tween(begin: 1.0, end: 0.0).chain(CurveTween(curve: Curves.easeInQuad)),
           weight: 50.0,
         ),
       ]).animate(
         CurvedAnimation(
           parent: _typingAnimationController,
-          curve: Interval(start, start + 0.5 > 1.0 ? 1.0 : start + 0.5, curve: Curves.linear),
+          curve: Interval(start, end, curve: Curves.linear),
         ),
       );
     });
@@ -265,11 +308,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     _scrollController.addListener(_onScroll);
 
     // Listen to text input changes for voice/send button toggle and typing indicators
-    // Listen to text input changes for voice/send button toggle and typing indicators
     _controller.addListener(() {
-      setState(() {
-        _hasTextInput = _controller.text.trim().isNotEmpty;
-      });
+      final hasText = _controller.text.trim().isNotEmpty;
+      if (_hasTextInputNotifier.value != hasText) {
+        _hasTextInputNotifier.value = hasText;
+      }
       _handleTypingIndicator();
     });
 
@@ -408,8 +451,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   }
 
   Future<void> _addSingleMessageToUI(int messageId) async {
-    final allMessages = await _dbService.getAllMessagesInConversation(widget.conversationInfo.conversationId);
-    var newMessage = allMessages.where((msg) => msg.id == messageId).firstOrNull;
+    var newMessage = await _dbService.getMessageById(messageId);
 
     if (newMessage != null && !await _dbService.isMessageDeletedForMe(messageId)) {
       // Check if there's pending attachment data for this message
@@ -433,6 +475,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         _pendingAttachments.remove(messageId);
       }
 
+      if (newMessage.senderUid != _currentUserUid) {
+        _justReceivedMessageIds.add(newMessage.id);
+        ChatSoundService.instance.playMessageReceived();
+      }
       _chatProvider.addMessage(newMessage);
       _scrollToBottom();
 
@@ -487,6 +533,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       final status = MessageStatus.values.firstWhere(
             (s) => s.toString().split('.').last == statusString,
       );
+      final isMySendingMessage = _chatProvider.messages.any(
+        (m) => m.id == messageId && m.status == MessageStatus.sending && m.senderUid == _currentUserUid,
+      );
+      if (isMySendingMessage && status == MessageStatus.sent) {
+        ChatSoundService.instance.playMessageSent();
+      }
       _chatProvider.updateMessageStatusById(messageId, status);
     } catch (e) {
       // print("[ChatScreen] Error updating message status: $e");
@@ -550,6 +602,56 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
           _websocketService.queryPresenceStatus(_recipientUid!);
         } catch (e) {
           print('[ChatScreen] ⚠️ Presence query failed (offline?): $e');
+        }
+
+        // Fetch recipient's avatar in background if missing or outdated
+        if (_recipientAvatarUrl == null || _recipientAvatarUrl!.isEmpty) {
+          try {
+            final user = FirebaseAuth.instance.currentUser;
+            if (user != null) {
+              final token = await user.getIdToken();
+              // 1. Check friends list
+              final resp = await http.get(
+                Uri.parse('${AppConfig.baseUrl}/friends/list'),
+                headers: {'Authorization': 'Bearer $token'},
+              ).timeout(const Duration(seconds: 4));
+              if (resp.statusCode == 200) {
+                final List<dynamic> friends = jsonDecode(resp.body);
+                for (final f in friends) {
+                  final uName = f['username']?.toString();
+                  final dName = f['displayName']?.toString();
+                  if (uName == widget.conversationInfo.chatTitle || dName == widget.conversationInfo.chatTitle) {
+                    final av = (f['avatarUrl'] ?? f['avatar_url'] ?? f['profile_picture_url'] ?? f['avatar']) as String?;
+                    if (av != null && av.isNotEmpty && mounted) {
+                      setState(() => _recipientAvatarUrl = av);
+                      break;
+                    }
+                  }
+                }
+              }
+              // 2. If still missing, check /users/search
+              if ((_recipientAvatarUrl == null || _recipientAvatarUrl!.isEmpty) && widget.conversationInfo.chatTitle.isNotEmpty) {
+                final searchResp = await http.get(
+                  Uri.parse('${AppConfig.baseUrl}/users/search?q=${Uri.encodeComponent(widget.conversationInfo.chatTitle)}'),
+                  headers: {'Authorization': 'Bearer $token'},
+                ).timeout(const Duration(seconds: 4));
+                if (searchResp.statusCode == 200) {
+                  final List<dynamic> users = jsonDecode(searchResp.body);
+                  for (final u in users) {
+                    final uName = u['username']?.toString();
+                    final dName = u['displayName']?.toString();
+                    if (uName == widget.conversationInfo.chatTitle || dName == widget.conversationInfo.chatTitle) {
+                      final av = (u['avatarUrl'] ?? u['avatar_url'] ?? u['profile_picture_url'] ?? u['avatar']) as String?;
+                      if (av != null && av.isNotEmpty && mounted) {
+                        setState(() => _recipientAvatarUrl = av);
+                        break;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } catch (_) {}
         }
 
         // Load blocked users (may fail offline)
@@ -777,6 +879,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     if (!widget.conversationInfo.isGroup && _recipientUid == null) return;
 
     _controller.clear();
+    // Immediately cancel typing indicator so recipient's UI updates instantly
+    _typingTimer?.cancel();
+    if (_isCurrentlyTyping) {
+      _isCurrentlyTyping = false;
+      _websocketService.sendTypingIndicator(
+        conversationId: widget.conversationInfo.conversationId,
+        isTyping: false,
+      );
+    }
     // Keep keyboard open after sending message
     // FocusScope.of(context).unfocus(); // Commented out to keep keyboard visible
 
@@ -800,7 +911,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     // Clear reply state
     _cancelReply();
 
-    _chatProvider.addMessage(optimisticMessage);
+    _addOptimisticMessage(optimisticMessage);
+    _syncHomeLastMessage(messageText, optimisticMessage.timestamp);
     _scrollToBottom();
 
     try {
@@ -824,39 +936,73 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         myDeviceId = await SignalService.getDeviceId();
       } else {
         // 1-ON-1 ENCRYPTION - Use existing Signal Protocol
-        // print('[ChatScreen] Encrypting 1-on-1 message');
-
-        recipientDeviceId = await _getRecipientDeviceId(_recipientUid!);
+        recipientDeviceId = _cachedRecipientDeviceId ?? await _getRecipientDeviceId(_recipientUid!);
         if (recipientDeviceId == null) throw Exception('No recipient device ID');
+        _cachedRecipientDeviceId = recipientDeviceId;
 
         myDeviceId = await SignalService.getDeviceId();
         if (myDeviceId == null) throw Exception('No device ID');
 
-        bool hasValidSendingSession = await SignalService.isSessionValidForSending(
-          recipientUid: _recipientUid!,
-          deviceId: recipientDeviceId,
-        );
-
-        if (!hasValidSendingSession) {
-          final prekeyBundle = await DeviceService.fetchPrekeyBundle(
-            targetUid: _recipientUid!,
-            deviceId: recipientDeviceId,
-          );
-
-          if (prekeyBundle == null) throw Exception('No prekey bundle');
-
-          encryptedMessage = await SignalService.encryptMessageWithSessionSetup(
-            recipientUid: _recipientUid!,
-            plaintext: messageText,
-            prekeyBundle: prekeyBundle,
-            deviceId: recipientDeviceId,
-          );
-        } else {
+        // Fast-path: Directly attempt encryption with known device ID
+        try {
           encryptedMessage = await SignalService.encryptMessage(
             recipientUid: _recipientUid!,
             plaintext: messageText,
             deviceId: recipientDeviceId,
           );
+          if (encryptedMessage != null) {
+            _sessionEstablished = true;
+          }
+        } catch (_) {
+          _sessionEstablished = false;
+          encryptedMessage = null;
+        }
+
+        if (encryptedMessage == null) {
+          bool hasValidSendingSession = await SignalService.isSessionValidForSending(
+            recipientUid: _recipientUid!,
+            deviceId: recipientDeviceId,
+          );
+
+          if (!hasValidSendingSession) {
+            var prekeyBundle = await DeviceService.fetchPrekeyBundle(
+              targetUid: _recipientUid!,
+              deviceId: recipientDeviceId,
+            );
+
+            // If no bundle found, the cached device ID may be stale (user re-registered).
+            // Transparently invalidate and fetch a fresh device ID, then retry — all within
+            // this same send attempt so the user never has to hit send twice.
+            if (prekeyBundle == null) {
+              DeviceService.invalidateActiveDeviceIdCache(_recipientUid!);
+              _cachedRecipientDeviceId = null;
+              final freshDeviceId = await DeviceService.getActiveDeviceId(_recipientUid!);
+              if (freshDeviceId != null && freshDeviceId != recipientDeviceId) {
+                recipientDeviceId = freshDeviceId;
+                _cachedRecipientDeviceId = freshDeviceId;
+                prekeyBundle = await DeviceService.fetchPrekeyBundle(
+                  targetUid: _recipientUid!,
+                  deviceId: freshDeviceId,
+                );
+              }
+            }
+
+            if (prekeyBundle == null) throw Exception('No prekey bundle');
+
+            encryptedMessage = await SignalService.encryptMessageWithSessionSetup(
+              recipientUid: _recipientUid!,
+              plaintext: messageText,
+              prekeyBundle: prekeyBundle,
+              deviceId: recipientDeviceId,
+            );
+          } else {
+            encryptedMessage = await SignalService.encryptMessage(
+              recipientUid: _recipientUid!,
+              plaintext: messageText,
+              deviceId: recipientDeviceId,
+            );
+          }
+          _sessionEstablished = true;
         }
       }
 
@@ -887,13 +1033,32 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         repliedMessageSenderName: optimisticMessage.repliedMessageSenderName,
       );
 
-      _chatProvider.updateMessageStatus(tempMessageId, sentMessage);
+      _onMessageSentSuccess(tempMessageId, sentMessage);
+      _syncHomeLastMessage(messageText, sentMessage.timestamp);
     } catch (e) {
-      final failedMessage = optimisticMessage.copyWith(status: MessageStatus.failed);
-      _chatProvider.updateMessageStatus(tempMessageId, failedMessage);
+      _cachedRecipientDeviceId = null;
+      _sessionEstablished = false;
+      final errText = e.toString().replaceFirst('Exception: ', '').trim();
+      final isPrivacyRestricted = errText.contains('not accepting messages') ||
+          errText.contains('messaging_restricted') ||
+          errText.contains('not_friends') ||
+          errText.contains('only accepts messages from friends');
+
+      if (isPrivacyRestricted) {
+        _chatProvider.removeMessage(tempMessageId);
+        _controller.text = messageText;
+      } else {
+        final failedMessage = optimisticMessage.copyWith(status: MessageStatus.failed);
+        _chatProvider.updateMessageStatus(tempMessageId, failedMessage);
+      }
 
       if (mounted) {
-        OpaqueToast.error(context, 'Failed to send message');
+        OpaqueToast.error(
+          context,
+          errText.isNotEmpty && !errText.contains('Failed to send message: 5')
+              ? errText
+              : 'Failed to send message',
+        );
       }
     }
   }
@@ -958,10 +1123,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       if (encryptedMessage == null) throw Exception('Encryption failed');
 
       // 2. Call backend edit endpoint
+      final myDeviceId = await SignalService.getDeviceId();
       await DeviceService.editMessage(
         messageId: messageId,
         conversationId: conversationId,
         contentB64: encryptedMessage,
+        senderDeviceId: myDeviceId,
       );
 
       // 3. Update SQLite with new ciphertext and edited timestamp
@@ -1074,8 +1241,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       isQuickReply: false,
     );
 
-    _chatProvider.addMessage(optimisticMessage);
-    if (!isPollVote) _scrollToBottom();
+    _addOptimisticMessage(optimisticMessage);
+    if (!isPollVote) {
+      _syncHomeLastMessage(rawPayload, optimisticMessage.timestamp);
+      _scrollToBottom();
+    }
 
     try {
       String? encryptedMessage;
@@ -1149,12 +1319,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         isQuickReply: false,
       );
 
-      _chatProvider.updateMessageStatus(tempMessageId, sentMessage);
+      _onMessageSentSuccess(tempMessageId, sentMessage);
     } catch (e) {
-      final failedMessage = optimisticMessage.copyWith(status: MessageStatus.failed);
-      _chatProvider.updateMessageStatus(tempMessageId, failedMessage);
+      final errText = e.toString().replaceFirst('Exception: ', '').trim();
+      final isPrivacyRestricted = errText.contains('not accepting messages') ||
+          errText.contains('messaging_restricted') ||
+          errText.contains('not_friends') ||
+          errText.contains('only accepts messages from friends');
+
+      if (isPrivacyRestricted) {
+        _chatProvider.removeMessage(tempMessageId);
+      } else {
+        final failedMessage = optimisticMessage.copyWith(status: MessageStatus.failed);
+        _chatProvider.updateMessageStatus(tempMessageId, failedMessage);
+      }
       if (mounted) {
-        OpaqueToast.error(context, 'Failed to send message');
+        OpaqueToast.error(
+          context,
+          errText.isNotEmpty && !errText.contains('Failed to send message: 5')
+              ? errText
+              : 'Failed to send message',
+        );
       }
     }
   }
@@ -1431,7 +1616,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         audioDuration: duration,
       );
 
-      _chatProvider.addMessage(optimisticMessage);
+      _addOptimisticMessage(optimisticMessage);
+      _syncHomeLastMessage('[Voice message]', optimisticMessage.timestamp);
       _scrollToBottom();
 
       final myDeviceId = await SignalService.getDeviceId();
@@ -1449,36 +1635,55 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         );
       } else {
         // 1-ON-1: Encrypt with Signal Protocol
-        recipientDeviceId = await _getRecipientDeviceId(_recipientUid!);
+        recipientDeviceId = _cachedRecipientDeviceId ?? await _getRecipientDeviceId(_recipientUid!);
         if (recipientDeviceId == null) {
           throw Exception('Recipient device not found');
         }
+        _cachedRecipientDeviceId = recipientDeviceId;
 
-        bool hasValidSendingSession = await SignalService.isSessionValidForSending(
-          recipientUid: _recipientUid!,
-          deviceId: recipientDeviceId,
-        );
-
-        if (!hasValidSendingSession) {
-          final prekeyBundle = await DeviceService.fetchPrekeyBundle(
-            targetUid: _recipientUid!,
-            deviceId: recipientDeviceId,
-          );
-
-          if (prekeyBundle == null) throw Exception('No prekey bundle');
-
-          encryptedMessage = await SignalService.encryptMessageWithSessionSetup(
-            recipientUid: _recipientUid!,
-            plaintext: '[Voice message]',
-            prekeyBundle: prekeyBundle,
-            deviceId: recipientDeviceId,
-          );
-        } else {
+        // Fast-path: Directly attempt encryption with known device ID
+        try {
           encryptedMessage = await SignalService.encryptMessage(
             recipientUid: _recipientUid!,
             plaintext: '[Voice message]',
             deviceId: recipientDeviceId,
           );
+          if (encryptedMessage != null) {
+            _sessionEstablished = true;
+          }
+        } catch (_) {
+          _sessionEstablished = false;
+          encryptedMessage = null;
+        }
+
+        if (encryptedMessage == null) {
+          bool hasValidSendingSession = await SignalService.isSessionValidForSending(
+            recipientUid: _recipientUid!,
+            deviceId: recipientDeviceId,
+          );
+
+          if (!hasValidSendingSession) {
+            final prekeyBundle = await DeviceService.fetchPrekeyBundle(
+              targetUid: _recipientUid!,
+              deviceId: recipientDeviceId,
+            );
+
+            if (prekeyBundle == null) throw Exception('No prekey bundle');
+
+            encryptedMessage = await SignalService.encryptMessageWithSessionSetup(
+              recipientUid: _recipientUid!,
+              plaintext: '[Voice message]',
+              prekeyBundle: prekeyBundle,
+              deviceId: recipientDeviceId,
+            );
+          } else {
+            encryptedMessage = await SignalService.encryptMessage(
+              recipientUid: _recipientUid!,
+              plaintext: '[Voice message]',
+              deviceId: recipientDeviceId,
+            );
+          }
+          _sessionEstablished = true;
         }
       }
 
@@ -1512,7 +1717,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         audioDuration: duration,
       );
 
-      _chatProvider.updateMessageStatus(tempMessageId, sentMessage);
+      _onMessageSentSuccess(tempMessageId, sentMessage);
 
       actualMessageId = messageId; // Update to real ID after message is confirmed
 
@@ -1681,7 +1886,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         hasAttachment: false,
       );
 
-      _chatProvider.addMessage(optimisticMessage);
+      _addOptimisticMessage(optimisticMessage);
+      _syncHomeLastMessage('[Image]', optimisticMessage.timestamp);
       _scrollToBottom();
 
       final myDeviceId = await SignalService.getDeviceId();
@@ -1699,40 +1905,62 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         );
       } else {
         // 1-ON-1: Encrypt with Signal Protocol
-        recipientDeviceId = await _getRecipientDeviceId(_recipientUid!);
+        recipientDeviceId = _cachedRecipientDeviceId ?? await _getRecipientDeviceId(_recipientUid!);
         if (recipientDeviceId == null) {
           throw Exception('Recipient device not found');
         }
+        _cachedRecipientDeviceId = recipientDeviceId;
 
-        bool hasValidSendingSession = await SignalService.isSessionValidForSending(
-          recipientUid: _recipientUid!,
-          deviceId: recipientDeviceId,
-        );
-
-        if (!hasValidSendingSession) {
-          final prekeyBundle = await DeviceService.fetchPrekeyBundle(
-            targetUid: _recipientUid!,
-            deviceId: recipientDeviceId,
-          );
-
-          if (prekeyBundle == null) throw Exception('No prekey bundle');
-
-          encryptedMessage = await SignalService.encryptMessageWithSessionSetup(
-            recipientUid: _recipientUid!,
-            plaintext: '[Image]',
-            prekeyBundle: prekeyBundle,
-            deviceId: recipientDeviceId,
-          );
-        } else {
+        // Fast-path: Directly attempt encryption with known device ID
+        try {
           encryptedMessage = await SignalService.encryptMessage(
             recipientUid: _recipientUid!,
             plaintext: '[Image]',
             deviceId: recipientDeviceId,
           );
+          if (encryptedMessage != null) {
+            _sessionEstablished = true;
+          }
+        } catch (_) {
+          _sessionEstablished = false;
+          encryptedMessage = null;
+        }
+
+        if (encryptedMessage == null) {
+          bool hasValidSendingSession = await SignalService.isSessionValidForSending(
+            recipientUid: _recipientUid!,
+            deviceId: recipientDeviceId,
+          );
+
+          if (!hasValidSendingSession) {
+            final prekeyBundle = await DeviceService.fetchPrekeyBundle(
+              targetUid: _recipientUid!,
+              deviceId: recipientDeviceId,
+            );
+
+            if (prekeyBundle == null) throw Exception('No prekey bundle');
+
+            encryptedMessage = await SignalService.encryptMessageWithSessionSetup(
+              recipientUid: _recipientUid!,
+              plaintext: '[Image]',
+              prekeyBundle: prekeyBundle,
+              deviceId: recipientDeviceId,
+            );
+          } else {
+            encryptedMessage = await SignalService.encryptMessage(
+              recipientUid: _recipientUid!,
+              plaintext: '[Image]',
+              deviceId: recipientDeviceId,
+            );
+          }
+          _sessionEstablished = true;
         }
       }
 
       if (encryptedMessage == null) throw Exception('Encryption failed');
+
+      // Start image preparation (single read + compress + dimensions) immediately in parallel
+      final imagePrepFuture = FileService.prepareImageForSending(pickedFile.path);
 
       // Send encrypted placeholder message
       final response = await DeviceService.sendMessage(
@@ -1761,17 +1989,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         hasAttachment: false,
       );
 
-      _chatProvider.updateMessageStatus(tempMessageId, sentMessage);
+      _onMessageSentSuccess(tempMessageId, sentMessage);
 
-      // Now compress, encrypt and upload the image
-      // Get dimensions
-      final dimensions = await FileService.getImageDimensions(pickedFile.path);
-
-      // Compress image
-      final compressedData = await FileService.compressImage(pickedFile.path);
-      if (compressedData == null) {
-        throw Exception('Compression failed');
+      // Await pre-started image preparation
+      final preparedImage = await imagePrepFuture;
+      if (preparedImage == null) {
+        throw Exception('Image preparation failed');
       }
+
+      final compressedData = preparedImage['bytes'] as Uint8List;
+      final dimensions = <String, int>{
+        'width': preparedImage['width'] as int,
+        'height': preparedImage['height'] as int,
+      };
 
       // STEP 1: Encrypt image with AES-256-GCM
       final encryptionResult = FileService.encryptImageData(
@@ -1854,7 +2084,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       final attachmentId = result['attachment_id'] as int;
 
       // Cache the decrypted image for sender
-      _imageCache[attachmentId] = compressedData;
+      _cacheImage(attachmentId, compressedData);
       await FileService.saveImageToPersistentStorage(compressedData, attachmentId);
 
       // Store message with encryption metadata and E2EE backup metadata
@@ -1939,7 +2169,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         attachmentType: 'video',
       );
 
-      _chatProvider.addMessage(optimisticMessage);
+      _addOptimisticMessage(optimisticMessage);
+      _syncHomeLastMessage('[Video]', optimisticMessage.timestamp);
       _scrollToBottom();
 
       // STEP 3: Generate thumbnail for preview (after message is shown)
@@ -1967,33 +2198,52 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         );
       } else {
         // 1-ON-1: Encrypt with Signal Protocol
-        recipientDeviceId = await _getRecipientDeviceId(_recipientUid!);
+        recipientDeviceId = _cachedRecipientDeviceId ?? await _getRecipientDeviceId(_recipientUid!);
         if (recipientDeviceId == null) throw Exception('Recipient device not found');
+        _cachedRecipientDeviceId = recipientDeviceId;
 
-        bool hasValidSendingSession = await SignalService.isSessionValidForSending(
-          recipientUid: _recipientUid!,
-          deviceId: recipientDeviceId,
-        );
-
-        if (!hasValidSendingSession) {
-          final prekeyBundle = await DeviceService.fetchPrekeyBundle(
-            targetUid: _recipientUid!,
-            deviceId: recipientDeviceId,
-          );
-          if (prekeyBundle == null) throw Exception('No prekey bundle');
-
-          encryptedMessage = await SignalService.encryptMessageWithSessionSetup(
-            recipientUid: _recipientUid!,
-            plaintext: '[Video]',
-            prekeyBundle: prekeyBundle,
-            deviceId: recipientDeviceId,
-          );
-        } else {
+        // Fast-path: Directly attempt encryption with known device ID
+        try {
           encryptedMessage = await SignalService.encryptMessage(
             recipientUid: _recipientUid!,
             plaintext: '[Video]',
             deviceId: recipientDeviceId,
           );
+          if (encryptedMessage != null) {
+            _sessionEstablished = true;
+          }
+        } catch (_) {
+          _sessionEstablished = false;
+          encryptedMessage = null;
+        }
+
+        if (encryptedMessage == null) {
+          bool hasValidSendingSession = await SignalService.isSessionValidForSending(
+            recipientUid: _recipientUid!,
+            deviceId: recipientDeviceId,
+          );
+
+          if (!hasValidSendingSession) {
+            final prekeyBundle = await DeviceService.fetchPrekeyBundle(
+              targetUid: _recipientUid!,
+              deviceId: recipientDeviceId,
+            );
+            if (prekeyBundle == null) throw Exception('No prekey bundle');
+
+            encryptedMessage = await SignalService.encryptMessageWithSessionSetup(
+              recipientUid: _recipientUid!,
+              plaintext: '[Video]',
+              prekeyBundle: prekeyBundle,
+              deviceId: recipientDeviceId,
+            );
+          } else {
+            encryptedMessage = await SignalService.encryptMessage(
+              recipientUid: _recipientUid!,
+              plaintext: '[Video]',
+              deviceId: recipientDeviceId,
+            );
+          }
+          _sessionEstablished = true;
         }
       }
 
@@ -2025,7 +2275,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         attachmentType: 'video',
       );
 
-      _chatProvider.updateMessageStatus(tempMessageId, sentMessage);
+      _onMessageSentSuccess(tempMessageId, sentMessage);
 
       // Copy thumbnail from temp ID to real ID
       if (tempMessageId != null && _thumbnailCache.containsKey(tempMessageId)) {
@@ -2243,7 +2493,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         attachmentType: 'document',
       );
 
-      _chatProvider.addMessage(optimisticMessage);
+      _addOptimisticMessage(optimisticMessage);
+      _syncHomeLastMessage('📄 $fileName', optimisticMessage.timestamp);
       _scrollToBottom();
 
       final myDeviceId = await SignalService.getDeviceId();
@@ -2261,33 +2512,52 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         );
       } else {
         // 1-ON-1: Encrypt with Signal Protocol
-        recipientDeviceId = await _getRecipientDeviceId(_recipientUid!);
+        recipientDeviceId = _cachedRecipientDeviceId ?? await _getRecipientDeviceId(_recipientUid!);
         if (recipientDeviceId == null) throw Exception('Recipient device not found');
+        _cachedRecipientDeviceId = recipientDeviceId;
 
-        bool hasValidSendingSession = await SignalService.isSessionValidForSending(
-          recipientUid: _recipientUid!,
-          deviceId: recipientDeviceId,
-        );
-
-        if (!hasValidSendingSession) {
-          final prekeyBundle = await DeviceService.fetchPrekeyBundle(
-            targetUid: _recipientUid!,
-            deviceId: recipientDeviceId,
-          );
-          if (prekeyBundle == null) throw Exception('No prekey bundle');
-
-          encryptedMessage = await SignalService.encryptMessageWithSessionSetup(
-            recipientUid: _recipientUid!,
-            plaintext: '📄 $fileName',
-            prekeyBundle: prekeyBundle,
-            deviceId: recipientDeviceId,
-          );
-        } else {
+        // Fast-path: Directly attempt encryption with known device ID
+        try {
           encryptedMessage = await SignalService.encryptMessage(
             recipientUid: _recipientUid!,
             plaintext: '📄 $fileName',
             deviceId: recipientDeviceId,
           );
+          if (encryptedMessage != null) {
+            _sessionEstablished = true;
+          }
+        } catch (_) {
+          _sessionEstablished = false;
+          encryptedMessage = null;
+        }
+
+        if (encryptedMessage == null) {
+          bool hasValidSendingSession = await SignalService.isSessionValidForSending(
+            recipientUid: _recipientUid!,
+            deviceId: recipientDeviceId,
+          );
+
+          if (!hasValidSendingSession) {
+            final prekeyBundle = await DeviceService.fetchPrekeyBundle(
+              targetUid: _recipientUid!,
+              deviceId: recipientDeviceId,
+            );
+            if (prekeyBundle == null) throw Exception('No prekey bundle');
+
+            encryptedMessage = await SignalService.encryptMessageWithSessionSetup(
+              recipientUid: _recipientUid!,
+              plaintext: '📄 $fileName',
+              prekeyBundle: prekeyBundle,
+              deviceId: recipientDeviceId,
+            );
+          } else {
+            encryptedMessage = await SignalService.encryptMessage(
+              recipientUid: _recipientUid!,
+              plaintext: '📄 $fileName',
+              deviceId: recipientDeviceId,
+            );
+          }
+          _sessionEstablished = true;
         }
       }
 
@@ -2319,7 +2589,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         attachmentType: 'document',
       );
 
-      _chatProvider.updateMessageStatus(tempMessageId, sentMessage);
+      _onMessageSentSuccess(tempMessageId, sentMessage);
 
       // Read document bytes
       final documentBytes = await File(filePath).readAsBytes();
@@ -2414,8 +2684,28 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   }
 
   Future<int?> _getRecipientDeviceId(String recipientUid) async {
+    if (_cachedRecipientDeviceId != null) {
+      return _cachedRecipientDeviceId;
+    }
     try {
-      return await DeviceService.getActiveDeviceId(recipientUid);
+      // 1. Check local DB for known device ID from prior messages (instant, zero network latency)
+      final localDeviceId = await _dbService.getLatestRecipientDeviceId(
+        widget.conversationInfo.conversationId,
+        recipientUid,
+      );
+      if (localDeviceId != null && localDeviceId > 0) {
+        _cachedRecipientDeviceId = localDeviceId;
+        DeviceService.cacheActiveDeviceId(recipientUid, localDeviceId);
+        return localDeviceId;
+      }
+
+      // 2. Fall back to network lookup
+      final remoteDeviceId = await DeviceService.getActiveDeviceId(recipientUid);
+      if (remoteDeviceId != null) {
+        _cachedRecipientDeviceId = remoteDeviceId;
+        return remoteDeviceId;
+      }
+      return null;
     } catch (e) {
       return null;
     }
@@ -2427,13 +2717,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     try {
       final recipientDeviceId = await _getRecipientDeviceId(_recipientUid!);
       if (recipientDeviceId == null) return;
+      _cachedRecipientDeviceId = recipientDeviceId;
 
       final hasSession = await SignalService.hasSession(
         recipientUid: _recipientUid!,
         deviceId: recipientDeviceId,
       );
 
-      if (mounted) setState(() => _sessionEstablished = hasSession);
+      if (mounted) {
+        _sessionEstablished = hasSession;
+      }
     } catch (e) {
       // print('[ChatScreen] Error checking session: $e');
     }
@@ -2567,7 +2860,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         hasAttachment: false,
       );
 
-      _chatProvider.addMessage(optimisticMessage);
+      _addOptimisticMessage(optimisticMessage);
+      _syncHomeLastMessage('[Image]', optimisticMessage.timestamp);
       _scrollToBottom();
 
       final myDeviceId = await SignalService.getDeviceId();
@@ -2642,7 +2936,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         hasAttachment: false,
       );
 
-      _chatProvider.updateMessageStatus(tempMessageId, sentMessage);
+      _onMessageSentSuccess(tempMessageId, sentMessage);
 
       // Process the shared image file
       final dimensions = await FileService.getImageDimensions(filePath);
@@ -2720,7 +3014,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
       final attachmentId = result['attachment_id'] as int;
 
-      _imageCache[attachmentId] = compressedData;
+      _cacheImage(attachmentId, compressedData);
       await FileService.saveImageToPersistentStorage(compressedData, attachmentId);
 
       final messageWithEncryption = sentMessage.copyWith(
@@ -2794,7 +3088,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         hasAttachment: false,
       );
 
-      _chatProvider.addMessage(optimisticMessage);
+      _addOptimisticMessage(optimisticMessage);
       _scrollToBottom();
 
       // Use the same logic as _sendVideoMessage but with the shared file path
@@ -2890,7 +3184,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         return false;
       }
 
-      // Get all messages in this conversation
+      // Fast path: check in-memory messages first before hitting disk
+      final memCurrentUserHasSent = _chatProvider.messages.any((msg) => msg.senderUid == currentUserUid);
+      final memRecipientHasSent = _chatProvider.messages.any((msg) => msg.senderUid == _recipientUid);
+      if (memCurrentUserHasSent && memRecipientHasSent) {
+        return true;
+      }
+
+      // Fallback: query database if in-memory list doesn't have both
       final dbService = DatabaseService.instance;
       final allMessages = await dbService.getAllMessagesInConversation(widget.conversationInfo.conversationId);
 
@@ -2941,7 +3242,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         recipientName: widget.conversationInfo.chatTitle,
         conversationId: widget.conversationInfo.conversationId,
         callType: CallType.voice,
-        recipientAvatarUrl: widget.conversationInfo.avatarUrl,
+        recipientAvatarUrl: _recipientAvatarUrl ?? widget.conversationInfo.avatarUrl,
       );
     } catch (e, stackTrace) {
       // print('[ChatScreen] Error starting voice call: $e');
@@ -2996,7 +3297,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         recipientName: widget.conversationInfo.chatTitle,
         conversationId: widget.conversationInfo.conversationId,
         callType: CallType.video,
-        recipientAvatarUrl: widget.conversationInfo.avatarUrl,
+        recipientAvatarUrl: _recipientAvatarUrl ?? widget.conversationInfo.avatarUrl,
       );
     } catch (e, stackTrace) {
       // print('[ChatScreen] Error starting video call: $e');
@@ -3016,10 +3317,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     _dateSeparatorTimer?.cancel();
     _messageSubscription?.cancel();
     _chatProvider.setCurrentConversationId(null);
+    NavigationHandler.clearActiveConversation();
     _controller.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
     _searchController.dispose();
+    _hasTextInputNotifier.dispose();
+    _isOtherUserTypingNotifier.dispose();
     _typingTimer?.cancel();
     _typingAnimationController.dispose(); // Dispose typing animation controller
     super.dispose();
@@ -3085,11 +3389,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   void _handleTypingIndicatorReceived(String senderUid, bool isTyping) {
     // print('[ChatScreen] ⌨️ Typing indicator: sender=$senderUid, typing=$isTyping');
     if (mounted) {
-      setState(() {
-        _isOtherUserTyping = isTyping;
-        _typingUserUid = isTyping ? senderUid : null;
-      });
-      // print('[ChatScreen] ⌨️ Typing state updated: showing=$_isOtherUserTyping');
+      _isOtherUserTypingNotifier.value = isTyping;
+      _typingUserUid = isTyping ? senderUid : null;
     }
   }
 
@@ -3291,31 +3592,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                         ? const Center(child: CircularProgressIndicator())
                         : Consumer<ChatProvider>(
                       builder: (context, chatProvider, child) {
-                        var messages = [...chatProvider.messages]
-                          ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+                        final isQueryActive = _isSearching && _searchQuery.isNotEmpty;
+                        final queryLower = isQueryActive ? _searchQuery.toLowerCase() : '';
 
-                        // Filter out messages from blocked users
-                        messages = messages.where((message) {
-                          return !_blockedUsers.contains(message.senderUid);
-                        }).toList();
-
-                        // Filter out media messages that failed to decrypt (better UX)
-                        messages = messages.where((message) {
-                          // Hide media messages with decryption failures
-                          if (message.hasAttachment && message.status == MessageStatus.decryptFailed) {
-                            return false;
-                          }
-                          return true;
-                        }).toList();
-
-                        // Hidden poll-vote payloads must not create date-only rows.
-                        messages = messages.where((m) => ChatPayloadParser.getPayloadType(m.content) != ChatPayloadParser.typePollVote).toList();
-
-                        // Filter messages based on search query
-                        if (_isSearching && _searchQuery.isNotEmpty) {
-                          messages = messages.where((message) {
-                            return message.content.toLowerCase().contains(_searchQuery);
-                          }).toList();
+                        final rawMessages = chatProvider.messages;
+                        final List<Message> messages;
+                        if (!isQueryActive && _blockedUsers.isEmpty) {
+                          messages = rawMessages.where((m) =>
+                            !(m.hasAttachment && m.status == MessageStatus.decryptFailed) &&
+                            ChatPayloadParser.getPayloadType(m.content) != ChatPayloadParser.typePollVote
+                          ).toList(growable: false);
+                        } else {
+                          messages = rawMessages.where((m) {
+                            if (_blockedUsers.contains(m.senderUid)) return false;
+                            if (m.hasAttachment && m.status == MessageStatus.decryptFailed) return false;
+                            if (ChatPayloadParser.getPayloadType(m.content) == ChatPayloadParser.typePollVote) return false;
+                            if (isQueryActive && !m.content.toLowerCase().contains(queryLower)) return false;
+                            return true;
+                          }).toList()..sort((a, b) => a.timestamp.compareTo(b.timestamp));
                         }
 
                         if (messages.isEmpty && _isSearching) {
@@ -3387,87 +3681,116 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                             final reversedIndex = messages.length - 1 - index;
                             final message = messages[reversedIndex];
                             final dark = Theme.of(context).brightness == Brightness.dark;
-                            return Column(
-                              key: ValueKey('day_row_${message.id}'),
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (startsChatDay(message.timestamp,
-                                    reversedIndex > 0 ? messages[reversedIndex - 1].timestamp : null))
-                                  ChatDateSeparator(timestamp: message.timestamp, now: _dateLabelNow),
-                                Dismissible(
-                              key: Key('msg_${message.id}'),
-                              direction: DismissDirection.startToEnd,
-                              dismissThresholds: const {
-                                DismissDirection.startToEnd: 0.15,
-                              },
-                              movementDuration: const Duration(milliseconds: 150),
-                              resizeDuration: const Duration(milliseconds: 150),
-                              confirmDismiss: (direction) async {
-                                if (direction == DismissDirection.startToEnd) {
-                                  HapticFeedback.lightImpact();
-                                  _setReplyToMessage(message);
-                                }
-                                return false; // Don't actually dismiss
-                              },
-                              background: Container(
-                                alignment: Alignment.centerLeft,
-                                padding: const EdgeInsets.only(left: 20),
-                                child: Container(
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    color: dark ? const Color(0xFF283241) : const Color(0xFFE2E7F0),
-                                    shape: BoxShape.circle,
+                            return RepaintBoundary(
+                              key: ValueKey('boundary_${message.id}'),
+                              child: Column(
+                                key: ValueKey('day_row_${message.id}'),
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (startsChatDay(message.timestamp,
+                                      reversedIndex > 0 ? messages[reversedIndex - 1].timestamp : null))
+                                    ChatDateSeparator(timestamp: message.timestamp, now: _dateLabelNow),
+                                  Dismissible(
+                                    key: Key('msg_${message.id}'),
+                                    direction: DismissDirection.startToEnd,
+                                    dismissThresholds: const {
+                                      DismissDirection.startToEnd: 0.15,
+                                    },
+                                    movementDuration: const Duration(milliseconds: 150),
+                                    resizeDuration: const Duration(milliseconds: 150),
+                                    confirmDismiss: (direction) async {
+                                      if (direction == DismissDirection.startToEnd) {
+                                        HapticFeedback.lightImpact();
+                                        _setReplyToMessage(message);
+                                      }
+                                      return false; // Don't actually dismiss
+                                    },
+                                    background: Container(
+                                      alignment: Alignment.centerLeft,
+                                      padding: const EdgeInsets.only(left: 20),
+                                      child: Container(
+                                        padding: const EdgeInsets.all(8),
+                                        decoration: BoxDecoration(
+                                          color: dark ? const Color(0xFF283241) : const Color(0xFFE2E7F0),
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: Icon(
+                                          Icons.reply_rounded,
+                                          color: dark ? Colors.white70 : const Color(0xFF424D60),
+                                          size: 18,
+                                        ),
+                                      ),
+                                    ),
+                                    child: MessageEntranceAnimationWrapper(
+                                      key: ValueKey('entrance_${message.id}'),
+                                      shouldAnimate: (message.senderUid == _currentUserUid && _justSentMessageIds.remove(message.id)) ||
+                                          (message.senderUid != _currentUserUid && _justReceivedMessageIds.remove(message.id)),
+                                      type: message.senderUid == _currentUserUid
+                                          ? MessageEntranceType.outgoing
+                                          : MessageEntranceType.incoming,
+                                      child: _buildMessageBubble(message, reversedIndex, messages.length),
+                                    ),
                                   ),
-                                  child: Icon(
-                                    Icons.reply_rounded,
-                                    color: dark ? Colors.white70 : const Color(0xFF424D60),
-                                    size: 18,
-                                  ),
-                                ),
+                                ],
                               ),
-                              child: _buildMessageBubble(message, reversedIndex, messages.length),
-                            ),
-                              ],
                             );
                           },
                         );
                       },
                     ),
                   ),
-                  if (_isOtherUserTyping)
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      alignment: Alignment.centerLeft,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(18),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.05),
-                              blurRadius: 5,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            _buildTypingAnimation(),
-                            const SizedBox(width: 8),
-                            Text(
-                              'typing...',
-                              style: TextStyle(
-                                color: Colors.grey[600],
-                                fontSize: 14,
-                                fontStyle: FontStyle.italic,
+                  ValueListenableBuilder<bool>(
+                    valueListenable: _isOtherUserTypingNotifier,
+                    builder: (context, isOtherTyping, _) {
+                      final dark = Theme.of(context).brightness == Brightness.dark;
+                      return AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 180),
+                        transitionBuilder: (child, animation) {
+                          return FadeTransition(
+                            opacity: animation,
+                            child: ScaleTransition(
+                              scale: Tween<double>(begin: 0.65, end: 1.0).animate(
+                                CurvedAnimation(parent: animation, curve: Curves.easeOutBack),
                               ),
+                              alignment: Alignment.centerLeft,
+                              child: child,
                             ),
-                          ],
-                        ),
-                      ),
-                    ),
+                          );
+                        },
+                        child: isOtherTyping
+                            ? Container(
+                                key: const ValueKey('typing_indicator_bubble'),
+                                padding: const EdgeInsets.only(left: 16, bottom: 8, top: 4),
+                                alignment: Alignment.centerLeft,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                                  decoration: BoxDecoration(
+                                    color: dark ? const Color(0xFF243040) : const Color(0xFFF1F3F6),
+                                    borderRadius: const BorderRadius.only(
+                                      topLeft: Radius.circular(16),
+                                      topRight: Radius.circular(16),
+                                      bottomRight: Radius.circular(16),
+                                      bottomLeft: Radius.circular(4),
+                                    ),
+                                    border: Border.all(
+                                      color: dark ? const Color(0xFF334255) : const Color(0xFFE2E6EC),
+                                      width: 0.8,
+                                    ),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withOpacity(dark ? 0.20 : 0.05),
+                                        blurRadius: 5,
+                                        offset: const Offset(0, 2),
+                                      ),
+                                    ],
+                                  ),
+                                  child: _buildTypingAnimation(),
+                                ),
+                              )
+                            : const SizedBox.shrink(key: ValueKey('typing_indicator_none')),
+                      );
+                    },
+                  ),
                   _buildInputArea(),
                 ],
               ),
@@ -3521,12 +3844,34 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         child: Row(
           children: [
             // Show avatar for both 1-1 chats and groups
-            if (widget.conversationInfo.avatarUrl != null)
+            if ((_recipientAvatarUrl ?? widget.conversationInfo.avatarUrl) != null && (_recipientAvatarUrl ?? widget.conversationInfo.avatarUrl)!.isNotEmpty)
               Padding(
                 padding: EdgeInsets.only(right: padding2 * 0.8),
-                child: CircleAvatar(
-                  radius: avatarRadius,
-                  backgroundImage: NetworkImage(widget.conversationInfo.avatarUrl!),
+                child: ClipOval(
+                  child: CachedNetworkImage(
+                    imageUrl: (_recipientAvatarUrl ?? widget.conversationInfo.avatarUrl)!,
+                    width: avatarRadius * 2,
+                    height: avatarRadius * 2,
+                    fit: BoxFit.cover,
+                    placeholder: (_, _) => CircleAvatar(
+                      radius: avatarRadius,
+                      backgroundColor: dark ? const Color(0xFF28364D) : const Color(0xFFEAF0FC),
+                      child: Icon(
+                        widget.conversationInfo.isGroup ? Icons.group : Icons.person,
+                        color: const Color(0xFF52668E),
+                        size: appBarTitleSize * 0.9,
+                      ),
+                    ),
+                    errorWidget: (_, _, _) => CircleAvatar(
+                      radius: avatarRadius,
+                      backgroundColor: dark ? const Color(0xFF28364D) : const Color(0xFFEAF0FC),
+                      child: Icon(
+                        widget.conversationInfo.isGroup ? Icons.group : Icons.person,
+                        color: const Color(0xFF52668E),
+                        size: appBarTitleSize * 0.9,
+                      ),
+                    ),
+                  ),
                 ),
               )
             else
@@ -3973,31 +4318,23 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
             ]),
           )),
           const SizedBox(width: 7),
-          Container(width: 42, height: 42,
-            decoration: BoxDecoration(borderRadius: BorderRadius.circular(15),
-              gradient: LinearGradient(
-                colors: _editingMessage != null
-                    ? const [Color(0xFF4CAF50), Color(0xFF388E3C)]
-                    : const [Color(0xFF537BCA), Color(0xFF3C62AB)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              )),
-            child: IconButton(
-              tooltip: _editingMessage != null
-                  ? 'Save edit'
-                  : (_hasTextInput ? 'Send message' : 'Record voice message'),
-              icon: _editingMessage != null
-                  ? const Icon(Icons.check, size: 21, color: Colors.white)
-                  : OpaqueIcon(_hasTextInput ? 'arrow-up' : 'mic', size: 19, color: Colors.white),
-              onPressed: () {
-                if (_attachmentsOpen) setState(() => _attachmentsOpen = false);
-                if (_editingMessage != null || _hasTextInput) {
+          ValueListenableBuilder<bool>(
+            valueListenable: _hasTextInputNotifier,
+            builder: (context, hasText, _) {
+              return _SendActionButton(
+                isEditing: _editingMessage != null,
+                hasText: hasText,
+                onSend: () {
+                  if (_attachmentsOpen) setState(() => _attachmentsOpen = false);
                   _sendMessage();
-                } else {
+                },
+                onVoice: () {
+                  if (_attachmentsOpen) setState(() => _attachmentsOpen = false);
                   _startVoiceRecording();
-                }
-              },
-            )),
+                },
+              );
+            },
+          ),
         ]),
         AnimatedSize(duration: const Duration(milliseconds: 220), alignment: Alignment.topCenter,
           child: !_attachmentsOpen ? const SizedBox.shrink() : Container(
@@ -4060,7 +4397,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     final rightInset = isMe ? math.max(dynamicHorizontal, safePadding.right) : dynamicHorizontal * 2;
 
     // 🚨 1. Dynamic styling access 🚨
-    final userSettings = Provider.of<UserSettingsProvider>(context);
+    final userSettings = Provider.of<UserSettingsProvider>(context, listen: false);
     final styleKey = userSettings.bubbleStyleKey;
     final colorStartHex = userSettings.colorStartHex; // Get dynamic start color
     final colorEndHex = userSettings.colorEndHex;     // Get dynamic end color
@@ -4129,8 +4466,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     double bodyTextSize,
     double tinyTextSize,
   ) {
-    final structured = LocationPayload.tryParse(message.content) != null || ContactPayload.tryParse(message.content) != null || PollPayload.tryParse(message.content) != null;
-    final contactCard = ContactPayload.tryParse(message.content) != null;
+    final isContentJson = message.content.startsWith('{') && message.content.endsWith('}');
+    LocationPayload? locPayload;
+    ContactPayload? contPayload;
+    PollPayload? pollPayload;
+    if (isContentJson && message.content != 'This message was deleted') {
+      locPayload = LocationPayload.tryParse(message.content);
+      if (locPayload == null) {
+        contPayload = ContactPayload.tryParse(message.content);
+        if (contPayload == null) {
+          pollPayload = PollPayload.tryParse(message.content);
+        }
+      }
+    }
+    final structured = locPayload != null || contPayload != null || pollPayload != null;
+    final contactCard = contPayload != null;
     final dark = Theme.of(context).brightness == Brightness.dark;
     final userSettings = Provider.of<UserSettingsProvider>(context, listen: false);
     final animationStyle = userSettings.encryptionAnimationStyle;
@@ -4259,27 +4609,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                 if (message.hasAttachment && message.attachmentType == 'audio' && message.content != 'This message was deleted')
                   _buildVoiceMessageAttachment(message),
                 // Display Location payload (hide if message is deleted)
-                if (message.content != 'This message was deleted' && LocationPayload.tryParse(message.content) != null)
+                if (locPayload != null)
                   ChatLocationBubble(
-                    payload: LocationPayload.tryParse(message.content)!,
+                    payload: locPayload,
                     isMe: isMe,
                   ),
                 // Display Contact payload (hide if message is deleted)
-                if (message.content != 'This message was deleted' && ContactPayload.tryParse(message.content) != null)
+                if (contPayload != null)
                   ChatContactBubble(
-                    payload: ContactPayload.tryParse(message.content)!,
+                    payload: contPayload,
                     isMe: isMe,
                     metadata: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Text(DateFormat('HH:mm').format(message.timestamp.toLocal()), style: TextStyle(fontSize: 9, color: dark ? const Color(0xFF9DA7B6) : const Color(0xFF858A94))),
+                      Text(_bubbleTimeFormat.format(message.timestamp.toLocal()), style: TextStyle(fontSize: 9, color: dark ? const Color(0xFF9DA7B6) : const Color(0xFF858A94))),
                       if (isMe) ...[const SizedBox(width: 4), _buildMessageStatusIcon(message, 'modern_card')],
                     ]),
                   ),
                 // Display Poll payload (hide if message is deleted)
-                if (message.content != 'This message was deleted' && PollPayload.tryParse(message.content) != null)
-                  _buildPollBubble(PollPayload.tryParse(message.content)!, isMe),
+                if (pollPayload != null)
+                  _buildPollBubble(pollPayload, isMe),
                 // Display text content - Show placeholders for pending attachments, hide them only when attachment is actually shown
                 if (message.content != 'This message was deleted' &&
-                    !ChatPayloadParser.isStructuredPayload(message.content) &&
+                    !structured &&
                     !(message.hasAttachment && (message.content == '[Image]' || message.content == '[Video]' || message.content == '[Voice message]' || message.content.startsWith('📄'))))
                   _buildHighlightedText(
                     message.content,
@@ -4318,7 +4668,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
                       const SizedBox(width: 4),
                     ],
                     Text(
-                      DateFormat('HH:mm').format(message.timestamp.toLocal()),
+                      _bubbleTimeFormat.format(message.timestamp.toLocal()),
                       style: TextStyle(
                         fontSize: 10,
                         color: structured ? (dark ? const Color(0xFF9CA8BB) : const Color(0xFF8B929F)) : styleKey == 'modern_card'
@@ -4363,33 +4713,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   }
 
   Widget _buildMessageStatusIcon(Message message, String styleKey) {
-    final iconColor = styleKey == 'modern_card' ? Colors.grey[600] : Colors.white70;
-    final readIconColor = styleKey == 'modern_card' ? Colors.grey[800] : Colors.white;
-
-    switch (message.status) {
-      case MessageStatus.sending:
-        return SizedBox(
-          width: 12,
-          height: 12,
-          child: CircularProgressIndicator(strokeWidth: 1.5, color: iconColor),
-        );
-      case MessageStatus.sent:
-        return Icon(Icons.check, size: 13, color: iconColor);
-      case MessageStatus.delivered:
-        return Icon(Icons.done_all, size: 13, color: iconColor);
-      case MessageStatus.read:
-        return Icon(Icons.visibility_outlined, size: 13, color: readIconColor); // Eye icon
-      case MessageStatus.failed:
-        return Icon(Icons.error_outline, size: 13, color: iconColor);
-      case MessageStatus.decrypting:
-        return const SizedBox(
-          width: 12,
-          height: 12,
-          child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.orange),
-        );
-      case MessageStatus.decryptFailed:
-        return const Icon(Icons.lock_outline, size: 13, color: Colors.red);
-    }
+    return OpaqueStatusTick(
+      key: ValueKey('status_tick_${message.id}'),
+      status: message.status,
+      styleKey: styleKey,
+      isMe: message.senderUid == _currentUserUid,
+    );
   }
 
   Widget _buildImageAttachment(Message message) {
@@ -4420,6 +4749,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
             borderRadius: BorderRadius.circular(8),
             child: Image.memory(
               imageData,
+              cacheWidth: 500,
               width: 250,
               fit: BoxFit.cover,
             ),
@@ -4587,7 +4917,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       if (cachedData != null) {
         // print('[ChatScreen] Loading image $attachmentId from persistent storage');
         // Also cache in memory for faster subsequent access
-        _imageCache[attachmentId] = cachedData;
+        _cacheImage(attachmentId, cachedData);
         return cachedData;
       }
 
@@ -4751,7 +5081,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       }
 
       // 5. Cache the DECRYPTED image in both memory and persistent storage
-      _imageCache[attachmentId] = decryptedData;
+      _cacheImage(attachmentId, decryptedData);
       await FileService.saveImageToPersistentStorage(decryptedData, attachmentId);
 
       return decryptedData;
@@ -6139,6 +6469,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     });
   }
 
+  /// Instantly patch the home conversation list preview (no network wait).
+  void _syncHomeLastMessage(String content, DateTime timestamp) {
+    if (content.isEmpty) return;
+    try {
+      context.read<HomeProvider>().updateConversationPreview(
+            conversationId: widget.conversationInfo.conversationId,
+            lastMessage: content,
+            timestamp: timestamp,
+          );
+    } catch (_) {}
+  }
+
   void _scrollToRepliedMessage(int targetMessageId) async {
     final messages = [..._chatProvider.messages]
       ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
@@ -6487,8 +6829,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     // If message not in provider, try loading from database
     if (messageIndex == -1) {
       // print('[ChatScreen] ⚠️ Message $messageId not in provider - checking database...');
-      final allMessages = await _dbService.getAllMessagesInConversation(widget.conversationInfo.conversationId);
-      final messageFromDb = allMessages.where((msg) => msg.id == messageId).firstOrNull;
+      final messageFromDb = await _dbService.getMessageById(messageId);
 
       if (messageFromDb != null && !await _dbService.isMessageDeletedForMe(messageId)) {
         // print('[ChatScreen] ✅ Found message $messageId in database - adding to provider');
@@ -6719,6 +7060,124 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   Future<void> _retryMessage(Message failedMessage) async {
     final retryMessage = failedMessage.copyWith(status: MessageStatus.sending);
     _chatProvider.updateMessageStatus(failedMessage.id, retryMessage);
+
+    if (!failedMessage.hasAttachment) {
+      try {
+        String? encryptedMessage;
+        int? recipientDeviceId;
+        int? myDeviceId;
+
+        if (widget.conversationInfo.isGroup) {
+          if (!_groupEncryptionSetup) {
+            throw Exception('Group encryption not setup');
+          }
+          encryptedMessage = await GroupEncryptionService.encryptGroupMessage(
+            groupId: widget.conversationInfo.conversationId.toString(),
+            plaintext: failedMessage.content,
+          );
+          myDeviceId = await SignalService.getDeviceId();
+        } else {
+          recipientDeviceId = _cachedRecipientDeviceId ?? await _getRecipientDeviceId(_recipientUid!);
+          if (recipientDeviceId == null) throw Exception('No recipient device ID');
+          _cachedRecipientDeviceId = recipientDeviceId;
+
+          myDeviceId = await SignalService.getDeviceId();
+          if (myDeviceId == null) throw Exception('No device ID');
+
+          if (_sessionEstablished) {
+            try {
+              encryptedMessage = await SignalService.encryptMessage(
+                recipientUid: _recipientUid!,
+                plaintext: failedMessage.content,
+                deviceId: recipientDeviceId,
+              );
+            } catch (_) {
+              _sessionEstablished = false;
+              encryptedMessage = null;
+            }
+          }
+
+          if (encryptedMessage == null) {
+            bool hasValidSendingSession = await SignalService.isSessionValidForSending(
+              recipientUid: _recipientUid!,
+              deviceId: recipientDeviceId,
+            );
+
+            if (!hasValidSendingSession) {
+              final prekeyBundle = await DeviceService.fetchPrekeyBundle(
+                targetUid: _recipientUid!,
+                deviceId: recipientDeviceId,
+              );
+
+              if (prekeyBundle == null) throw Exception('No prekey bundle');
+
+              encryptedMessage = await SignalService.encryptMessageWithSessionSetup(
+                recipientUid: _recipientUid!,
+                plaintext: failedMessage.content,
+                prekeyBundle: prekeyBundle,
+                deviceId: recipientDeviceId,
+              );
+            } else {
+              encryptedMessage = await SignalService.encryptMessage(
+                recipientUid: _recipientUid!,
+                plaintext: failedMessage.content,
+                deviceId: recipientDeviceId,
+              );
+            }
+            _sessionEstablished = true;
+          }
+        }
+
+        if (encryptedMessage == null) throw Exception('Encryption failed');
+
+        final response = await DeviceService.sendMessage(
+          conversationId: widget.conversationInfo.conversationId,
+          contentB64: encryptedMessage,
+          replyToMessageId: failedMessage.replyToMessageId,
+        );
+
+        final realMessageId = response['message_id'] ?? failedMessage.id;
+        final sentMessage = failedMessage.copyWith(
+          id: realMessageId,
+          status: MessageStatus.sent,
+          encryptedContent: encryptedMessage,
+          senderDeviceId: myDeviceId,
+          recipientDeviceId: recipientDeviceId,
+        );
+
+        await _dbService.insertMessage(sentMessage);
+        _chatProvider.updateMessageStatus(failedMessage.id, sentMessage);
+      } catch (e) {
+        _cachedRecipientDeviceId = null;
+        _sessionEstablished = false;
+        final errText = e.toString().replaceFirst('Exception: ', '').trim();
+        final isPrivacyRestricted = errText.contains('not accepting messages') ||
+            errText.contains('messaging_restricted') ||
+            errText.contains('not_friends') ||
+            errText.contains('only accepts messages from friends');
+
+        if (isPrivacyRestricted) {
+          _chatProvider.removeMessage(failedMessage.id);
+        } else {
+          final stillFailed = failedMessage.copyWith(status: MessageStatus.failed);
+          _chatProvider.updateMessageStatus(failedMessage.id, stillFailed);
+        }
+        if (mounted) {
+          OpaqueToast.error(
+            context,
+            isPrivacyRestricted
+                ? errText
+                : 'Retry failed: could not send message',
+          );
+        }
+      }
+    } else {
+      final stillFailed = failedMessage.copyWith(status: MessageStatus.failed);
+      _chatProvider.updateMessageStatus(failedMessage.id, stillFailed);
+      if (mounted) {
+        OpaqueToast.info(context, 'Please re-select and send the attachment');
+      }
+    }
   }
 
   // Check if the selected message is a media message (image/video/document)
@@ -6935,25 +7394,39 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     );
   }
 
-  // Build WhatsApp-style typing animation (three bouncing dots)
+  // Build compact typing animation (three fluid wave-bouncing dots)
   Widget _buildTypingAnimation() {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final dotColor = dark ? const Color(0xFF94A3B8) : const Color(0xFF64748B);
+
     return AnimatedBuilder(
       animation: _typingAnimationController,
       builder: (context, child) {
         return Row(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.end,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: List.generate(3, (index) {
+            final double progress = _typingDotAnimations[index].value;
+            final double translateY = -5.0 * progress;
+            final double scale = 0.85 + (0.35 * progress);
+            final double opacity = (0.45 + (0.55 * progress)).clamp(0.0, 1.0);
+
             return Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 2),
+              padding: const EdgeInsets.symmetric(horizontal: 2.5),
               child: Transform.translate(
-                offset: Offset(0, _typingDotAnimations[index].value),
-                child: Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: Colors.grey[600],
-                    shape: BoxShape.circle,
+                offset: Offset(0, translateY),
+                child: Transform.scale(
+                  scale: scale,
+                  child: Opacity(
+                    opacity: opacity,
+                    child: Container(
+                      width: 6.0,
+                      height: 6.0,
+                      decoration: BoxDecoration(
+                        color: dotColor,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -7260,6 +7733,338 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       if (mounted) {
         OpaqueToast.error(context, 'Failed to unblock user: $e');
       }
+    }
+  }
+}
+
+/// Type of message entrance animation
+enum MessageEntranceType {
+  outgoing,
+  incoming,
+}
+
+/// Animated wrapper that makes a newly sent or live incoming message smoothly slide into position.
+/// Outgoing messages slide in horizontally from right to left.
+/// Incoming messages slide in horizontally from left to right.
+class MessageEntranceAnimationWrapper extends StatefulWidget {
+  final Widget child;
+  final bool shouldAnimate;
+  final MessageEntranceType type;
+
+  const MessageEntranceAnimationWrapper({
+    super.key,
+    required this.child,
+    this.shouldAnimate = false,
+    this.type = MessageEntranceType.outgoing,
+  });
+
+  @override
+  State<MessageEntranceAnimationWrapper> createState() => _MessageEntranceAnimationWrapperState();
+}
+
+class _MessageEntranceAnimationWrapperState extends State<MessageEntranceAnimationWrapper>
+    with SingleTickerProviderStateMixin {
+  AnimationController? _controller;
+  Animation<double>? _scaleAnimation;
+  Animation<Offset>? _offsetAnimation;
+  Animation<double>? _fadeAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.shouldAnimate) {
+      final controller = AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 220),
+      );
+      final isOutgoing = widget.type == MessageEntranceType.outgoing;
+      _scaleAnimation = Tween<double>(begin: 0.92, end: 1.0).animate(
+        CurvedAnimation(parent: controller, curve: Curves.easeOutCubic),
+      );
+      // Horizontal slide: outgoing slides from right to left, incoming from left to right
+      _offsetAnimation = Tween<Offset>(
+        begin: isOutgoing ? const Offset(55.0, 0.0) : const Offset(-55.0, 0.0),
+        end: Offset.zero,
+      ).animate(
+        CurvedAnimation(parent: controller, curve: Curves.easeOutCubic),
+      );
+      _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+        CurvedAnimation(
+          parent: controller,
+          curve: const Interval(0.0, 0.60, curve: Curves.easeOut),
+        ),
+      );
+      _controller = controller;
+      controller.forward();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.shouldAnimate || _controller == null) {
+      return widget.child;
+    }
+
+    final isOutgoing = widget.type == MessageEntranceType.outgoing;
+    return AnimatedBuilder(
+      animation: _controller!,
+      builder: (context, child) {
+        return Transform.translate(
+          offset: _offsetAnimation!.value,
+          child: Transform.scale(
+            scale: _scaleAnimation!.value,
+            alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
+            child: Opacity(
+              opacity: _fadeAnimation!.value.clamp(0.0, 1.0),
+              child: child,
+            ),
+          ),
+        );
+      },
+      child: widget.child,
+    );
+  }
+}
+
+/// Send / Voice action button with subtle tactile bounce animation on tap
+class _SendActionButton extends StatefulWidget {
+  final bool isEditing;
+  final bool hasText;
+  final VoidCallback onSend;
+  final VoidCallback onVoice;
+
+  const _SendActionButton({
+    required this.isEditing,
+    required this.hasText,
+    required this.onSend,
+    required this.onVoice,
+  });
+
+  @override
+  State<_SendActionButton> createState() => _SendActionButtonState();
+}
+
+class _SendActionButtonState extends State<_SendActionButton> {
+  bool _isPressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTapDown: (_) {
+        setState(() => _isPressed = true);
+        HapticFeedback.lightImpact();
+      },
+      onTapUp: (_) => setState(() => _isPressed = false),
+      onTapCancel: () => setState(() => _isPressed = false),
+      onTap: () {
+        if (widget.isEditing || widget.hasText) {
+          widget.onSend();
+        } else {
+          widget.onVoice();
+        }
+      },
+      child: AnimatedScale(
+        scale: _isPressed ? 0.88 : 1.0,
+        duration: const Duration(milliseconds: 100),
+        curve: Curves.easeOutCubic,
+        child: Container(
+          width: 42,
+          height: 42,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(15),
+            gradient: LinearGradient(
+              colors: widget.isEditing
+                  ? const [Color(0xFF4CAF50), Color(0xFF388E3C)]
+                  : const [Color(0xFF537BCA), Color(0xFF3C62AB)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: (widget.isEditing ? const Color(0xFF4CAF50) : const Color(0xFF537BCA)).withOpacity(0.35),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Center(
+            child: widget.isEditing
+                ? const Icon(Icons.check, size: 21, color: Colors.white)
+                : OpaqueIcon(widget.hasText ? 'arrow-up' : 'mic', size: 19, color: Colors.white),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Message status tick with:
+/// - Smooth spring pop animation for single check (sent) and double check (delivered)
+/// - 3D horizontal flip animation when turning into blue ticks (read)
+class OpaqueStatusTick extends StatefulWidget {
+  final MessageStatus status;
+  final String styleKey;
+  final bool isMe;
+
+  const OpaqueStatusTick({
+    super.key,
+    required this.status,
+    this.styleKey = 'classic',
+    this.isMe = true,
+  });
+
+  @override
+  State<OpaqueStatusTick> createState() => _OpaqueStatusTickState();
+}
+
+class _OpaqueStatusTickState extends State<OpaqueStatusTick>
+    with TickerProviderStateMixin {
+  late AnimationController _flipController;
+  late Animation<double> _flipAnimation;
+
+  late AnimationController _popController;
+  late Animation<double> _popAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+
+    // 3D flip animation when ticks turn blue (read)
+    _flipController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 320),
+    );
+    _flipAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _flipController, curve: Curves.easeInOutCubic),
+    );
+
+    // Short pop spring animation for sent / delivered
+    _popController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 180),
+    );
+    _popAnimation = Tween<double>(begin: 0.70, end: 1.0).animate(
+      CurvedAnimation(parent: _popController, curve: Curves.easeOutBack),
+    );
+  }
+
+  @override
+  void didUpdateWidget(OpaqueStatusTick oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.status != widget.status) {
+      if (widget.status == MessageStatus.read) {
+        // Trigger 3D flip when turning blue
+        _flipController.forward(from: 0.0);
+      } else if (widget.status == MessageStatus.delivered || widget.status == MessageStatus.sent) {
+        // Trigger short pop spring animation
+        _popController.forward(from: 0.0);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _flipController.dispose();
+    _popController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final defaultGrey = widget.styleKey == 'modern_card'
+        ? (dark ? const Color(0xFF8C9BAE) : const Color(0xFF6B7280))
+        : (widget.isMe ? Colors.white70 : const Color(0xFF6B7280));
+
+    final readIconColor = widget.styleKey == 'modern_card'
+        ? (dark ? const Color(0xFFDCE3EF) : Colors.grey[800])
+        : (widget.isMe ? Colors.white : const Color(0xFF6087BD));
+
+    switch (widget.status) {
+      case MessageStatus.sending:
+        return Icon(
+          Icons.access_time_rounded,
+          size: 11,
+          color: defaultGrey,
+        );
+
+      case MessageStatus.sent:
+        if (_popController.isAnimating) {
+          return ScaleTransition(
+            scale: _popAnimation,
+            child: Icon(Icons.check, size: 13, color: defaultGrey),
+          );
+        }
+        return Icon(Icons.check, size: 13, color: defaultGrey);
+
+      case MessageStatus.delivered:
+        if (_popController.isAnimating) {
+          return ScaleTransition(
+            scale: _popAnimation,
+            child: Icon(Icons.done_all, size: 13, color: defaultGrey),
+          );
+        }
+        return Icon(Icons.done_all, size: 13, color: defaultGrey);
+
+      case MessageStatus.read:
+        if (!_flipController.isAnimating) {
+          return Icon(
+            Icons.visibility_outlined,
+            size: 13,
+            color: readIconColor,
+          );
+        }
+        return AnimatedBuilder(
+          animation: _flipAnimation,
+          builder: (context, child) {
+            final double value = _flipAnimation.value;
+            // 3D rotation: 0 -> pi/2 (edge-on) -> 0 (face front)
+            final double angle = value < 0.5 ? value * math.pi : (1.0 - value) * math.pi;
+            final bool isHalfway = value >= 0.5;
+            final color = isHalfway ? readIconColor : defaultGrey;
+            final icon = isHalfway ? Icons.visibility_outlined : Icons.done_all;
+            // Pop scale at midpoint
+            final double popScale = 1.0 + (math.sin(value * math.pi) * 0.28);
+
+            return Transform(
+              alignment: Alignment.center,
+              transform: Matrix4.identity()
+                ..setEntry(3, 2, 0.002) // 3D Perspective
+                ..rotateY(angle),
+              child: Transform.scale(
+                scale: popScale,
+                child: Icon(
+                  icon,
+                  size: 13,
+                  color: color,
+                ),
+              ),
+            );
+          },
+        );
+
+      case MessageStatus.failed:
+        return const Icon(
+          Icons.error_outline_rounded,
+          size: 13,
+          color: Color(0xFFEF5350),
+        );
+
+      case MessageStatus.decrypting:
+        return const SizedBox(
+          width: 11,
+          height: 11,
+          child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.orange),
+        );
+
+      case MessageStatus.decryptFailed:
+        return const Icon(Icons.lock_outline, size: 13, color: Colors.red);
     }
   }
 }

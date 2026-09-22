@@ -25,8 +25,8 @@ class Friend {
   Friend({required this.username, this.avatarUrl, this.displayName});
   factory Friend.fromJson(Map<String, dynamic> json) => Friend(
     username: json['username'] ?? 'Unknown User',
-    avatarUrl: json['avatarUrl'],
-    displayName: json['displayName'],
+    avatarUrl: (json['avatarUrl'] ?? json['avatar_url'] ?? json['profile_picture_url'] ?? json['avatar']) as String?,
+    displayName: (json['displayName'] ?? json['display_name']) as String?,
   );
   String get displayNameOrUsername =>
       displayName?.trim().isNotEmpty == true ? displayName! : username;
@@ -194,6 +194,10 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
       child: friend.avatarUrl?.isNotEmpty == true
           ? CachedNetworkImage(
               imageUrl: friend.avatarUrl!,
+              memCacheWidth: 120,
+              memCacheHeight: 120,
+              maxWidthDiskCache: 250,
+              maxHeightDiskCache: 250,
               fit: BoxFit.cover,
               placeholder: (_, __) => fallback,
               errorWidget: (_, __, ___) => fallback,
@@ -958,6 +962,10 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
       child: avatarUrl?.isNotEmpty == true
           ? CachedNetworkImage(
               imageUrl: avatarUrl!,
+              memCacheWidth: 120,
+              memCacheHeight: 120,
+              maxWidthDiskCache: 250,
+              maxHeightDiskCache: 250,
               fit: BoxFit.cover,
               placeholder: (_, __) => fallback,
               errorWidget: (_, __, ___) => fallback,

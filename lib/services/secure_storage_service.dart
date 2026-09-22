@@ -1,3 +1,4 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -14,7 +15,7 @@ class SecureStorageService {
     aOptions: AndroidOptions(
       encryptedSharedPreferences: true,
       // This uses Android Keystore under the hood
-      resetOnError: true, // Reset if corrupted
+      resetOnError: false, // Do not wipe storage on transient Keystore errors
     ),
     iOptions: IOSOptions(
       accessibility: KeychainAccessibility.first_unlock,
@@ -22,7 +23,11 @@ class SecureStorageService {
   );
 
   // Storage keys
-  static const String _keyAutoBackupPassphrase = 'auto_backup_passphrase';
+  String get _keyAutoBackupPassphrase {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) throw StateError('Sign in to access backup credentials');
+    return 'auto_backup_passphrase_$uid';
+  }
 
   /// Save auto-backup passphrase securely
   Future<void> saveAutoBackupPassphrase(String passphrase) async {
@@ -36,6 +41,15 @@ class SecureStorageService {
       debugPrint('[SecureStorage] Error saving passphrase: $e');
       rethrow;
     }
+  }
+
+  // Called only after native code confirms ownership of the legacy configuration.
+  Future<void> migrateLegacyAutoBackupPassphrase(String uid) async {
+    if (FirebaseAuth.instance.currentUser?.uid != uid) throw StateError('Backup account changed');
+    final key = 'auto_backup_passphrase_$uid';
+    if (await _storage.read(key: key) != null) return;
+    final legacy = await _storage.read(key: 'auto_backup_passphrase');
+    if (legacy != null) await _storage.write(key: key, value: legacy);
   }
 
   /// Get auto-backup passphrase

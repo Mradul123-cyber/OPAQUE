@@ -1,3 +1,4 @@
+import 'backup_contract.dart';
 import 'dart:math' as math;
 import 'dart:convert';
 
@@ -17,6 +18,8 @@ import 'SignalService.dart';
 class DatabaseService {
   static final DatabaseService instance = DatabaseService._init();
   static Database? _database;
+  Future<void>? _initializing;
+  bool _restoring = false;
   final _storage = const FlutterSecureStorage();
 
   DatabaseService._init();
@@ -25,57 +28,90 @@ class DatabaseService {
   List<Message>? _cachedMessages;
 
   Future<void> init() async {
-    if (_database != null) {
-      return;
-    }
+    if (_restoring) throw StateError('Restore is in progress');
+    if (_database != null) return;
+    if (_initializing != null) return _initializing;
+    _initializing = _openCurrentDatabase();
+    try { await _initializing; } finally { _initializing = null; }
+  }
+
+  Future<void> _openCurrentDatabase() async {
+    if (FirebaseAuth.instance.currentUser == null) throw StateError('Sign in before opening the database');
     _database = await _initDB('zarq_messages.db');
-    // print("[DatabaseService] Database successfully initialized.");
   }
 
   Database get database {
-    if (_database == null) {
-      throw Exception("Database not initialized. Call init() first.");
-    }
+    if (_restoring) throw StateError('Restore is in progress');
+    if (_database == null) throw StateError('Database not initialized');
     return _database!;
   }
 
+  Future<void> prepareRestore(String uid, String password, List<Map<String, dynamic>> messages) async {
+    if (_restoring) throw StateError('Restore already in progress');
+    await init();
+    if (FirebaseAuth.instance.currentUser?.uid != uid) throw StateError('Restore account changed');
+    final stagePath = join(await getDatabasesPath(), 'zarq_messages_$uid.db.restore-stage');
+    await deleteDatabase(stagePath);
+    final stage = await openDatabase(stagePath, password: password, version: 21, onCreate: _createDB);
+    try {
+      final columns = (await stage.rawQuery('PRAGMA table_info(messages)')).map((r) => r['name']).toSet();
+      await stage.transaction((txn) async {
+        final batch = txn.batch();
+        for (final original in messages) {
+          final row = BackupContract.migrateMessage(original);
+          if (row.keys.any((key) => !columns.contains(key))) {
+            throw const FormatException('Backup contains unsupported message fields.');
+          }
+          batch.insert('messages', row, conflictAlgorithm: ConflictAlgorithm.abort);
+        }
+        await batch.commit(noResult: true);
+        // Local notes are not part of message backups. Preserve them during restore.
+        for (final table in ['notes', 'note_categories']) {
+          final rows = await database.query(table);
+          for (final row in rows) { await txn.insert(table, row, conflictAlgorithm: ConflictAlgorithm.replace); }
+        }
+      });
+      final integrity = await stage.rawQuery('PRAGMA integrity_check');
+      if (integrity.length != 1 || integrity.single.values.single != 'ok') throw StateError('Restored database failed integrity check');
+      final count = Sqflite.firstIntValue(await stage.rawQuery('SELECT COUNT(*) FROM messages'));
+      if (count != messages.length) throw StateError('Restored message count mismatch');
+      await stage.rawQuery('PRAGMA wal_checkpoint(TRUNCATE)');
+    } finally { await stage.close(); }
+  }
+
+  Future<void> beginRestoreSwap() async {
+    _restoring = true;
+    if (_initializing != null) await _initializing;
+    if (_database != null) await _database!.rawQuery('PRAGMA wal_checkpoint(TRUNCATE)');
+    await close();
+  }
+
+  Future<void> reopenAfterRestore() async {
+    _database = await _initDB('zarq_messages.db');
+  }
+
+  void endRestoreSwap() {
+    _restoring = false;
+    _cachedConversationId = null;
+    _cachedMessages = null;
+  }
+
   /// Derive database encryption key from device identity key
-  /// Uses SHA-256(identity_private_key + salt) for 256-bit key
+  /// Get database encryption key derived securely in native Android Keystore
   /// NOTE: Assumes Signal Protocol keys already generated (done in main.dart during registration)
   Future<String> _deriveDatabaseKey() async {
     try {
-      // print("[DatabaseService] Deriving database encryption key from identity key...");
+      final dbKey = await SignalService.getDatabaseEncryptionKey();
 
-      // Get identity key private key (base64 encoded 32 bytes)
-      // This should already exist from registration in main.dart
-      final identityKeyB64 = await SignalService.getIdentityKeyPrivateKey();
-
-      if (identityKeyB64 == null) {
+      if (dbKey == null) {
         throw Exception(
-          'Identity key not available for database encryption. '
+          'Database encryption key not available. '
           'Signal Protocol keys must be generated before database initialization.',
         );
       }
 
-      // Decode base64 to get raw bytes
-      final identityKeyBytes = base64.decode(identityKeyB64);
-      // print("[DatabaseService] Using identity key for database encryption");
-
-      // Derive key using SHA-256(identity_key + salt)
-      final salt = 'zarq_database_encryption_v1';
-      final input = Uint8List.fromList([
-        ...identityKeyBytes,
-        ...utf8.encode(salt),
-      ]);
-      final hash = sha256.convert(input);
-
-      // Convert hash to hex string for SQLCipher
-      final dbKey = hash.toString();
-
-      // print("[DatabaseService] ✅ Database encryption key derived successfully");
       return dbKey;
     } catch (e) {
-      // print("[DatabaseService] ❌ Failed to derive database key: $e");
       rethrow;
     }
   }
@@ -92,28 +128,20 @@ class DatabaseService {
     // Derive encryption key from device identity
     final encryptionKey = await _deriveDatabaseKey();
 
-    try {
-      // print("[DatabaseService] Attempting to open encrypted database with SQLCipher...");
-      return await openDatabase(
-        path,
-        version: 21, // Added message editing support (is_edited, edited_at)
-        password: encryptionKey, // ← ENABLE DATABASE ENCRYPTION
-        onCreate: _createDB,
-        onUpgrade: _onUpgradeDB,
-      );
-    } catch (e) {
-      // print("[DatabaseService] FAILED to open database, likely due to corruption.");
-      // print("[DatabaseService] Deleting corrupted database and creating a new one. Error: $e");
-
-      await deleteDatabase(path);
-
-      return await openDatabase(
-        path,
-        version: 21, // Added message editing support (is_edited, edited_at)
-        password: encryptionKey, // ← ENABLE DATABASE ENCRYPTION
-        onCreate: _createDB,
-      );
-    }
+    // Never delete user data because an open/key/migration operation failed.
+    return openDatabase(
+      path,
+      version: 21,
+      password: encryptionKey,
+      onConfigure: (db) async {
+        try {
+          await db.rawQuery('PRAGMA journal_mode = WAL');
+          await db.rawQuery('PRAGMA synchronous = NORMAL');
+        } catch (_) {}
+      },
+      onCreate: _createDB,
+      onUpgrade: _onUpgradeDB,
+    );
   }
 
   // Create database with encryption support
@@ -771,6 +799,41 @@ class DatabaseService {
     }
   }
 
+  /// Get the most recent recipient_device_id or sender_device_id for a conversation
+  Future<int?> getLatestRecipientDeviceId(int conversationId, String recipientUid) async {
+    try {
+      final db = database;
+      // First look for sent messages to this conversation that have recipient_device_id
+      final sentResult = await db.rawQuery(
+        '''
+        SELECT recipient_device_id FROM messages
+        WHERE conversationId = ? AND recipient_device_id IS NOT NULL AND recipient_device_id > 0
+        ORDER BY timestamp DESC LIMIT 1
+        ''',
+        [conversationId],
+      );
+      if (sentResult.isNotEmpty) {
+        final devId = sentResult.first['recipient_device_id'] as int?;
+        if (devId != null && devId > 0) return devId;
+      }
+
+      // Second look for incoming messages from this recipient that have sender_device_id
+      final recvResult = await db.rawQuery(
+        '''
+        SELECT sender_device_id FROM messages
+        WHERE conversationId = ? AND senderUid = ? AND sender_device_id IS NOT NULL AND sender_device_id > 0
+        ORDER BY timestamp DESC LIMIT 1
+        ''',
+        [conversationId, recipientUid],
+      );
+      if (recvResult.isNotEmpty) {
+        final devId = recvResult.first['sender_device_id'] as int?;
+        if (devId != null && devId > 0) return devId;
+      }
+    } catch (_) {}
+    return null;
+  }
+
   /// Get messages that need decryption
   Future<List<Message>> getMessagesNeedingDecryption(int conversationId) async {
     final db = database;
@@ -1011,9 +1074,9 @@ class DatabaseService {
   }
 
   Future close() async {
-    final db = database;
-    db.close();
+    final db = _database;
     _database = null;
+    if (db != null) await db.close();
   }
 
   Future<void> updateMessageStatus(

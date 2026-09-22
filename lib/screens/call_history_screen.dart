@@ -2,6 +2,7 @@ import '../widgets/opaque_navigation.dart';
 import '../widgets/opaque_toast.dart';
 import 'package:flutter/material.dart';
 import '../widgets/call_aware_screen.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../services/call_history_service.dart';
@@ -217,7 +218,18 @@ class _CallHistoryScreenState extends State<CallHistoryScreen> {
     return Container(padding: const EdgeInsets.symmetric(vertical: 14), decoration: BoxDecoration(border: Border(bottom: BorderSide(color: dark ? const Color(0xFF303947) : const Color(0xFFF0F1F4)))),
       child: Row(children: [
         Container(width: 41, height: 41, clipBehavior: Clip.antiAlias, decoration: const BoxDecoration(shape: BoxShape.circle, gradient: LinearGradient(colors: [Color(0xFFF0F3FA), Color(0xFFE7EBF4)])),
-          child: avatar != null && avatar.isNotEmpty ? Image.network(avatar, fit: BoxFit.cover, errorBuilder: (_, _, _) => fallback) : fallback),
+          child: avatar != null && avatar.isNotEmpty
+              ? CachedNetworkImage(
+                  imageUrl: avatar,
+                  fit: BoxFit.cover,
+                  memCacheWidth: 120,
+                  memCacheHeight: 120,
+                  maxWidthDiskCache: 250,
+                  maxHeightDiskCache: 250,
+                  placeholder: (_, _) => fallback,
+                  errorWidget: (_, _, _) => fallback,
+                )
+              : fallback),
         const SizedBox(width: 11),
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(log.otherUserName, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: missed ? const Color(0xFFC5757E) : dark ? const Color(0xFFE0E6EF) : const Color(0xFF343D4C))),
@@ -260,6 +272,7 @@ class _CallHistoryScreenState extends State<CallHistoryScreen> {
         recipientName: log.otherUserName,
         conversationId: log.conversationId!,
         callType: callType,
+        recipientAvatarUrl: log.otherUserAvatar,
       );
     } catch (e) {
       if (context.mounted) {

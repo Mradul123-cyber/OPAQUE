@@ -23,6 +23,7 @@ import '../widgets/opaque_design.dart';
 import '../widgets/opaque_toast.dart';
 import '../widgets/group_join_requests_sheet.dart';
 import 'group_permissions_screen.dart';
+import '../services/group_encryption_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MODELS
@@ -49,8 +50,8 @@ class GroupMember {
     return GroupMember(
       uid: json['uid'] ?? '',
       username: json['username'] ?? 'Unknown',
-      avatarUrl: json['avatarUrl'],
-      displayName: json['displayName'],
+      avatarUrl: (json['avatarUrl'] ?? json['avatar_url'] ?? json['profile_picture_url'] ?? json['avatar']) as String?,
+      displayName: (json['displayName'] ?? json['display_name']) as String?,
       role: json['role'] ?? 'member',
       joinedAt: DateTime.tryParse(json['joinedAt'] ?? '') ?? DateTime.now(),
     );
@@ -95,7 +96,7 @@ class GroupInfo {
       groupName: json['groupName'] ?? 'Unnamed Group',
       description: json['description'],
       creatorUid: json['creatorUid'] ?? '',
-      avatarUrl: json['avatarUrl'],
+      avatarUrl: (json['avatarUrl'] ?? json['avatar_url'] ?? json['profile_picture_url'] ?? json['avatar']) as String?,
       createdAt: DateTime.tryParse(json['createdAt'] ?? '') ?? DateTime.now(),
       updatedAt: DateTime.tryParse(json['updatedAt'] ?? '') ?? DateTime.now(),
       editGroupInfoPermission: json['editGroupInfoPermission'] ?? 'all_members',
@@ -351,6 +352,8 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       if (mounted) {
         if (response.statusCode == 200) {
           OpaqueToast.success(context, 'Removed @$memberUsername');
+          // Rotate sender key so the removed member cannot decrypt future group messages
+          GroupEncryptionService.rotateSenderKey(groupId: widget.groupId.toString());
           _fetchGroupInfo();
         } else {
           OpaqueToast.error(context, 'Failed to remove member');
@@ -488,6 +491,8 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
       if (mounted) {
         if (response.statusCode == 200) {
+          // Clear local sender keys for this group
+          GroupEncryptionService.clearGroupKeys(groupId: widget.groupId.toString());
           Navigator.of(context).popUntil((route) => route.isFirst);
         } else {
           OpaqueToast.error(context, 'Failed to leave group');
@@ -536,6 +541,8 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
       if (mounted) {
         if (response.statusCode == 200) {
+          // Clear local sender keys for this group
+          GroupEncryptionService.clearGroupKeys(groupId: widget.groupId.toString());
           OpaqueToast.success(context, 'Group deleted');
           Navigator.of(context).popUntil((route) => route.isFirst);
         } else {
@@ -1125,6 +1132,8 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
             context,
             'Added ${usernames.length} member${usernames.length > 1 ? 's' : ''}',
           );
+          // Distribute our sender key so newly added members can decrypt our future messages
+          GroupEncryptionService.distributeSenderKey(groupId: widget.groupId.toString());
           _fetchGroupInfo();
         } else {
           OpaqueToast.error(context, 'Failed to add members');
@@ -1166,6 +1175,10 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       child: avatarUrl?.isNotEmpty == true
           ? CachedNetworkImage(
               imageUrl: avatarUrl!,
+              memCacheWidth: 120,
+              memCacheHeight: 120,
+              maxWidthDiskCache: 250,
+              maxHeightDiskCache: 250,
               fit: BoxFit.cover,
               placeholder: (_, __) => fallback,
               errorWidget: (_, __, ___) => fallback,
@@ -2263,6 +2276,10 @@ class _AddMembersSheetState extends State<_AddMembersSheet> {
       child: avatarUrl?.isNotEmpty == true
           ? CachedNetworkImage(
               imageUrl: avatarUrl!,
+              memCacheWidth: 120,
+              memCacheHeight: 120,
+              maxWidthDiskCache: 250,
+              maxHeightDiskCache: 250,
               fit: BoxFit.cover,
               placeholder: (_, __) => fallback,
               errorWidget: (_, __, ___) => fallback,

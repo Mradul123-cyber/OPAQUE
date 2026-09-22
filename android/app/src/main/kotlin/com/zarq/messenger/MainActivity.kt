@@ -51,6 +51,8 @@ class MainActivity : FlutterActivity() {
         private const val TAG = "MainActivity"
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
         var flutterEngineInstance: FlutterEngine? = null
+        var activeConversationId: Int? = null
+        var pendingConversationId: Int? = null
     }
 
     // Store pending incoming call to process after Flutter is ready
@@ -62,6 +64,8 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        BackupRestoreTransaction.recover(applicationContext)
+        NativeBackupGuard.initialize(applicationContext)
         flutterEngineInstance = flutterEngine
 
         // Set up Signal Protocol Method Channel
@@ -99,8 +103,30 @@ class MainActivity : FlutterActivity() {
                     }
                     "getFCMToken" -> {
                         val sharedPrefs = getSharedPreferences("zarq_fcm", Context.MODE_PRIVATE)
-                        val token = sharedPrefs.getString("fcm_token", null)
-                        result.success(token)
+                        val cachedToken = sharedPrefs.getString("fcm_token", null)
+                        if (!cachedToken.isNullOrEmpty()) {
+                            result.success(cachedToken)
+                        } else {
+                            try {
+                                FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                                    if (task.isSuccessful && task.result != null) {
+                                        val token = task.result
+                                        sharedPrefs.edit()
+                                            .putString("fcm_token", token)
+                                            .putBoolean("token_needs_upload", true)
+                                            .apply()
+                                        Log.d(TAG, "Proactively fetched FCM token: ${token.take(20)}...")
+                                        result.success(token)
+                                    } else {
+                                        Log.w(TAG, "Failed to proactively fetch FCM token: ${task.exception?.message}")
+                                        result.success(null)
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Exception fetching FCM token: ${e.message}", e)
+                                result.success(null)
+                            }
+                        }
                     }
                     "getAuthToken" -> {
                         val user = FirebaseAuth.getInstance().currentUser
@@ -164,18 +190,18 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
-            "getIdentityKeyPrivateKey" -> {
+            "getDatabaseEncryptionKey" -> {
                 try {
-                    Log.d(TAG, "getIdentityKeyPrivateKey called for database encryption")
-                    val privateKey = signalManager.getIdentityKeyPairPrivateKey()
-                    if (privateKey != null) {
-                        result.success(privateKey)
+                    Log.d(TAG, "getDatabaseEncryptionKey called for database encryption")
+                    val dbKey = signalManager.getDatabaseEncryptionKey()
+                    if (dbKey != null) {
+                        result.success(dbKey)
                     } else {
-                        result.error("IDENTITY_KEY_ERROR", "Identity key not found", null)
+                        result.error("DB_KEY_ERROR", "Identity key not found for database key derivation", null)
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "getIdentityKeyPrivateKey error: $e")
-                    result.error("IDENTITY_KEY_ERROR", e.message, null)
+                    Log.e(TAG, "getDatabaseEncryptionKey error: $e")
+                    result.error("DB_KEY_ERROR", e.message, null)
                 }
             }
 
@@ -339,12 +365,12 @@ class MainActivity : FlutterActivity() {
                     Log.d(TAG, "MainActivity: Decrypting from $senderUid:$senderDeviceId")
                     val plaintext = signalManager.decryptMessage(senderUid, ciphertextB64, senderDeviceId)
 
-                    // Add debug session state after decryption
-                    if (plaintext != null) {
-                        signalManager.debugSessionState(senderUid, senderDeviceId, "AFTER_DECRYPT")
+                    if (plaintext == SignalManager.DUPLICATE_MESSAGE_MARKER) {
+                        Log.i(TAG, "MainActivity: Duplicate message detected from $senderUid:$senderDeviceId - notifying Flutter")
+                        result.error("DUPLICATE_MESSAGE", "Duplicate message received", null)
+                    } else {
+                        result.success(plaintext)
                     }
-
-                    result.success(plaintext)
                 } catch (e: Exception) {
                     Log.e(TAG, "decryptMessage error: $e")
                     result.error("DECRYPT_MESSAGE_ERROR", e.message, null)
@@ -687,25 +713,24 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        Log.d(TAG, "============================================")
-        Log.d(TAG, "MainActivity onCreate CALLED")
-        Log.d(TAG, "Intent action: ${intent.action}")
-        Log.d(TAG, "Intent extras: ${intent.extras?.keySet()?.joinToString()}")
-        Log.d(TAG, "============================================")
-
-        // Initialize FCM token
-        FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
-            if (!task.isSuccessful) {
-                Log.w(TAG, "Fetching FCM registration token failed", task.exception)
-                return@addOnCompleteListener
+        // Asynchronously fetch FCM token in background without blocking UI thread
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        val token = task.result
+                        Log.d(TAG, "FCM Token retrieved: ${token?.substring(0, 20)}...")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Async FCM token fetch failed: $e")
             }
-
-            val token = task.result
-            Log.d(TAG, "FCM Token retrieved: ${token?.substring(0, 20)}...")
         }
 
-        // Request notification permission
-        requestNotificationPermission()
+        // Defer notification permission prompt so it does not delay Frame 1
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            requestNotificationPermission()
+        }, 1500)
 
         // Handle notification intent when app is launched
         handleNotificationIntent(intent)
@@ -827,7 +852,8 @@ class MainActivity : FlutterActivity() {
         Log.d(TAG, "Message ID from intent: $messageId")
 
         if (conversationId != -1) {
-            Log.d(TAG, "Valid conversation ID found, calling navigateToConversation")
+            Log.d(TAG, "Valid conversation ID found: $conversationId, initiating navigation")
+            pendingConversationId = conversationId
             navigateToConversation(conversationId, messageId)
 
             // Clear the intent extras to prevent re-navigation
@@ -903,6 +929,23 @@ class MainActivity : FlutterActivity() {
                     val event = call.argument<String>("event")
                     Log.d(TAG, "Flutter navigation event: $event")
                     result.success(null)
+                }
+                "setActiveConversation" -> {
+                    val conversationId = call.argument<Int>("conversationId")
+                    activeConversationId = conversationId
+                    Log.d(TAG, "Active conversation set to: $conversationId")
+                    result.success(true)
+                }
+                "clearActiveConversation" -> {
+                    activeConversationId = null
+                    Log.d(TAG, "Active conversation cleared")
+                    result.success(true)
+                }
+                "getPendingConversation" -> {
+                    val pending = pendingConversationId
+                    pendingConversationId = null
+                    Log.d(TAG, "Delivered pending conversation to Flutter: $pending")
+                    result.success(pending)
                 }
                 else -> {
                     result.notImplemented()
@@ -1062,6 +1105,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun navigateToConversation(conversationId: Int, messageId: Int) {
+        pendingConversationId = conversationId
         flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
             val channel = MethodChannel(messenger, NAVIGATION_CHANNEL)
 
@@ -1077,6 +1121,7 @@ class MainActivity : FlutterActivity() {
             channel.invokeMethod("openConversation", arguments, object : MethodChannel.Result {
                 override fun success(result: Any?) {
                     Log.d(TAG, "Navigation command sent successfully")
+                    pendingConversationId = null
                 }
 
                 override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
@@ -1088,7 +1133,7 @@ class MainActivity : FlutterActivity() {
                 }
             })
         } ?: run {
-            Log.e(TAG, "Flutter engine not available for navigation")
+            Log.e(TAG, "Flutter engine not available for navigation, stored pendingConversationId = $conversationId")
         }
     }
 
@@ -1643,277 +1688,73 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, NATIVE_BACKUP_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "storeAutoBackupPassphrase" -> {
-                        try {
-                            val passphrase = call.argument<String>("passphrase")
-                            if (passphrase == null) {
-                                result.error("INVALID_ARGS", "Passphrase required", null)
-                                return@setMethodCallHandler
-                            }
-
-                            // Store passphrase in EncryptedSharedPreferences
-                            val encryptedPrefs = androidx.security.crypto.EncryptedSharedPreferences.create(
-                                this,
-                                "zarq_secure_prefs",
-                                androidx.security.crypto.MasterKey.Builder(this)
-                                    .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
-                                    .build(),
-                                androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                                androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-                            )
-
-                            encryptedPrefs.edit().putString("auto_backup_passphrase", passphrase).apply()
-                            Log.d(TAG, "✅ Auto-backup passphrase stored securely")
-                            result.success(true)
-
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error storing passphrase: ${e.message}", e)
-                            result.error("STORE_ERROR", e.message, null)
-                        }
+                    "legacyBackupOwner" -> {
+                        val uid = FirebaseAuth.getInstance().currentUser?.uid
+                        val owner = NativeBackupGuard.prefs(applicationContext).getString("user_uid", null)
+                        result.success(if (uid != null && uid == owner) uid else null)
                     }
-
-                    "storeDatabasePassword" -> {
+                    "beginBackupRestore", "finishBackupRestore", "rollbackBackupRestore" -> {
                         try {
-                            val dbPassword = call.argument<String>("dbPassword")
-                            if (dbPassword == null) {
-                                result.error("INVALID_ARGS", "Database password required", null)
-                                return@setMethodCallHandler
+                            when (call.method) {
+                                "beginBackupRestore" -> BackupRestoreTransaction.begin(applicationContext,
+                                    call.argument<String>("userUid") ?: error("Missing account"),
+                                    call.argument<String>("signalState") ?: error("Missing security state"))
+                                "finishBackupRestore" -> BackupRestoreTransaction.finish(applicationContext)
+                                else -> BackupRestoreTransaction.recover(applicationContext)
                             }
-
-                            // Store database password in EncryptedSharedPreferences
-                            val encryptedPrefs = androidx.security.crypto.EncryptedSharedPreferences.create(
-                                this,
-                                "zarq_secure_prefs",
-                                androidx.security.crypto.MasterKey.Builder(this)
-                                    .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
-                                    .build(),
-                                androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                                androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-                            )
-
-                            encryptedPrefs.edit().putString("database_password", dbPassword).apply()
-                            Log.d(TAG, "✅ Database password stored securely")
+                            signalManager.resetUserContext()
                             result.success(true)
-
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error storing database password: ${e.message}", e)
-                            result.error("STORE_ERROR", e.message, null)
-                        }
+                        } catch (e: Exception) { result.error("RESTORE_FAILED", e.message, null) }
                     }
-
-                    "storeUserUid" -> {
-                        try {
-                            val userUid = call.argument<String>("userUid")
-                            if (userUid == null) {
-                                result.error("INVALID_ARGS", "User UID required", null)
-                                return@setMethodCallHandler
-                            }
-
-                            // Store user UID in regular SharedPreferences
-                            val prefs = getSharedPreferences("zarq_prefs", Context.MODE_PRIVATE)
-                            prefs.edit().putString("user_uid", userUid).apply()
-                            Log.d(TAG, "✅ User UID stored: $userUid")
-                            Log.d(TAG, "🔍 DEBUG: Verify - reading back user_uid: ${prefs.getString("user_uid", null)}")
-                            result.success(true)
-
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error storing user UID: ${e.message}", e)
-                            result.error("STORE_ERROR", e.message, null)
-                        }
-                    }
-
-                    "scheduleNativeAutoBackup" -> {
-                        try {
-                            val hour = call.argument<Int>("hour") ?: 0
-                            val minute = call.argument<Int>("minute") ?: 30
-                            val intervalHours = call.argument<Int>("intervalHours") ?: 24
-                            val userUid = call.argument<String>("userUid")
-                            val dbPassword = call.argument<String>("dbPassword")
-                            val passphrase = call.argument<String>("passphrase")
-
-                            if (userUid == null || dbPassword == null || passphrase == null) {
-                                result.error("INVALID_ARGS", "userUid, dbPassword, and passphrase are required", null)
-                                return@setMethodCallHandler
-                            }
-
-                            Log.d(TAG, "")
-                            Log.d(TAG, "╔════════════════════════════════════════════╗")
-                            Log.d(TAG, "║  📅 SCHEDULING NATIVE AUTO-BACKUP         ║")
-                            Log.d(TAG, "╠════════════════════════════════════════════╣")
-                            Log.d(TAG, "║  Time: $hour:${minute.toString().padStart(2, '0')}")
-                            Log.d(TAG, "║  Interval: Every $intervalHours hours")
-                            Log.d(TAG, "║  Method: WorkManager (Play Store approved) ║")
-                            Log.d(TAG, "╚════════════════════════════════════════════╝")
-                            Log.d(TAG, "")
-
-                            // Save credentials to EncryptedSharedPreferences for native access
+                    "scheduleNativeAutoBackup", "cancelNativeAutoBackup", "getNativeBackupStatus", "cancelNativeBackupRun" -> {
+                        val args = call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()
+                        Thread {
                             try {
-                                val encryptedPrefs = androidx.security.crypto.EncryptedSharedPreferences.create(
-                                    applicationContext,
-                                    "zarq_secure_prefs",
-                                    androidx.security.crypto.MasterKey.Builder(applicationContext)
-                                        .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
-                                        .build(),
-                                    androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                                    androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-                                )
-                                encryptedPrefs.edit()
-                                    .putString("auto_backup_passphrase", passphrase)
-                                    .putString("database_password", dbPassword)
-                                    .apply()
-                                Log.d(TAG, "✅ Saved backup credentials to EncryptedSharedPreferences")
-                            } catch (e: Exception) {
-                                Log.e(TAG, "❌ Error saving credentials: ${e.message}", e)
-                                result.error("SAVE_ERROR", "Failed to save credentials: ${e.message}", null)
-                                return@setMethodCallHandler
-                            }
-
-                            // Save user UID to regular SharedPreferences
-                            val prefs = getSharedPreferences("zarq_prefs", Context.MODE_PRIVATE)
-                            prefs.edit()
-                                .putBoolean("auto_backup_enabled", true)
-                                .putString("user_uid", userUid)
-                                .apply()
-
-                            // Calculate initial delay to target time
-                            val calendar = java.util.Calendar.getInstance().apply {
-                                set(java.util.Calendar.HOUR_OF_DAY, hour)
-                                set(java.util.Calendar.MINUTE, minute)
-                                set(java.util.Calendar.SECOND, 0)
-                                set(java.util.Calendar.MILLISECOND, 0)
-
-                                // If time has passed today, schedule for next occurrence
-                                if (before(java.util.Calendar.getInstance())) {
-                                    add(java.util.Calendar.DAY_OF_MONTH, 1)
+                                val value: Any? = when (call.method) {
+                                    "getNativeBackupStatus" -> NativeBackupRuntime.status(applicationContext)
+                                    "cancelNativeBackupRun" -> {
+                                        val uid = FirebaseAuth.getInstance().currentUser?.uid ?: error("Sign in first")
+                                        NativeBackupRuntime.cancelRun(applicationContext, uid, args["run"] as? String ?: "")
+                                    }
+                                    "cancelNativeAutoBackup" -> {
+                                        NativeBackupGuard.disable(applicationContext)
+                                        androidx.work.WorkManager.getInstance(applicationContext).cancelUniqueWork(AutoBackupWorker.WORK_NAME).result.get()
+                                        true
+                                    }
+                                    else -> NativeBackupRuntime.schedule(applicationContext,
+                                        args["userUid"] as? String ?: error("Missing account"),
+                                        args["dbPassword"] as? String ?: error("Missing credentials"),
+                                        args["passphrase"] as? String ?: error("Missing passphrase"),
+                                        args["hour"] as? Int ?: 0, args["minute"] as? Int ?: 30,
+                                        args["intervalHours"] as? Int ?: 24)
                                 }
+                                runOnUiThread { result.success(value) }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Native backup operation failed", e)
+                                runOnUiThread { result.error("BACKUP_OPERATION_FAILED", "Could not update automatic backups. Please try again.", null) }
                             }
-
-                            val now = System.currentTimeMillis()
-                            val targetTime = calendar.timeInMillis
-                            val initialDelay = targetTime - now
-
-                            Log.d(TAG, "⏰ First backup at: ${calendar.time}")
-                            Log.d(TAG, "⏰ Initial delay: ${initialDelay / 1000 / 60} minutes")
-
-                            // Create periodic work request with dynamic interval
-                            val workRequest = androidx.work.PeriodicWorkRequestBuilder<AutoBackupWorker>(
-                                intervalHours.toLong(), java.util.concurrent.TimeUnit.HOURS  // Use dynamic interval
-                            )
-                                .setInitialDelay(initialDelay, java.util.concurrent.TimeUnit.MILLISECONDS)
-                                .setConstraints(
-                                    androidx.work.Constraints.Builder()
-                                        .setRequiresBatteryNotLow(false)  // Run even on low battery
-                                        .setRequiresCharging(false)        // Run even when not charging
-                                        .build()
-                                )
-                                .addTag("native_auto_backup")
-                                .build()
-
-                            // Schedule with WorkManager using applicationContext
-                            androidx.work.WorkManager.getInstance(applicationContext)
-                                .enqueueUniquePeriodicWork(
-                                    AutoBackupWorker.WORK_NAME,
-                                    androidx.work.ExistingPeriodicWorkPolicy.REPLACE,
-                                    workRequest
-                                )
-
-                            Log.d(TAG, "✅ Native auto-backup scheduled successfully!")
-                            Log.d(TAG, "")
-                            result.success(true)
-
-                        } catch (e: Exception) {
-                            Log.e(TAG, "❌ Error scheduling native auto-backup: ${e.message}", e)
-                            result.error("SCHEDULE_ERROR", e.message, null)
-                        }
+                        }.start()
                     }
 
-                    "cancelNativeAutoBackup" -> {
+                    "testNativeBackup", "scheduleTestBackup" -> {
                         try {
-                            Log.d(TAG, "")
-                            Log.d(TAG, "╔════════════════════════════════════════════╗")
-                            Log.d(TAG, "║  ❌ CANCELING NATIVE AUTO-BACKUP          ║")
-                            Log.d(TAG, "╚════════════════════════════════════════════╝")
-                            Log.d(TAG, "")
-
-                            // Disable auto-backup flag
-                            val prefs = getSharedPreferences("zarq_prefs", Context.MODE_PRIVATE)
-                            prefs.edit().putBoolean("auto_backup_enabled", false).apply()
-
-                            // Cancel WorkManager task using applicationContext
-                            androidx.work.WorkManager.getInstance(applicationContext)
-                                .cancelUniqueWork(AutoBackupWorker.WORK_NAME)
-
-                            Log.d(TAG, "✅ Native auto-backup canceled successfully!")
-                            Log.d(TAG, "")
-                            result.success(true)
-
-                        } catch (e: Exception) {
-                            Log.e(TAG, "❌ Error canceling native auto-backup: ${e.message}", e)
-                            result.error("CANCEL_ERROR", e.message, null)
-                        }
-                    }
-
-                    "testNativeBackup" -> {
-                        try {
-                            Log.d(TAG, "")
-                            Log.d(TAG, "╔════════════════════════════════════════════╗")
-                            Log.d(TAG, "║  🧪 TESTING NATIVE BACKUP                 ║")
-                            Log.d(TAG, "╚════════════════════════════════════════════╝")
-                            Log.d(TAG, "")
-
-                            // Execute backup immediately
-                            val backupManager = NativeBackupManager(this)
-                            val success = backupManager.performBackup()
-
-                            if (success) {
-                                Log.d(TAG, "✅ Test backup completed successfully!")
-                                result.success(true)
-                            } else {
-                                Log.e(TAG, "❌ Test backup failed")
-                                result.error("BACKUP_FAILED", "Native backup test failed", null)
-                            }
-
-                        } catch (e: Exception) {
-                            Log.e(TAG, "❌ Error testing native backup: ${e.message}", e)
-                            result.error("TEST_ERROR", e.message, null)
-                        }
-                    }
-
-                    "scheduleTestBackup" -> {
-                        try {
-                            val delaySeconds = call.argument<Int>("delaySeconds") ?: 5
-
-                            Log.d(TAG, "")
-                            Log.d(TAG, "╔════════════════════════════════════════════╗")
-                            Log.d(TAG, "║  ⏰ SCHEDULING TEST BACKUP                ║")
-                            Log.d(TAG, "╠════════════════════════════════════════════╣")
-                            Log.d(TAG, "║  Delay: $delaySeconds seconds")
-                            Log.d(TAG, "╚════════════════════════════════════════════╝")
-                            Log.d(TAG, "")
-
-                            // Create one-time work request with delay (same as production)
-                            val workRequest = androidx.work.OneTimeWorkRequestBuilder<AutoBackupWorker>()
-                                .setInitialDelay(delaySeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
-                                .addTag("test_backup")
-                                .build()
-
-                            // IMPORTANT: Use applicationContext instead of Activity context
-                            // This ensures work persists even if Activity is destroyed
-                            androidx.work.WorkManager.getInstance(applicationContext)
-                                .enqueueUniqueWork(
-                                    "test_native_backup",
-                                    androidx.work.ExistingWorkPolicy.REPLACE,
-                                    workRequest
-                                )
-
-                            Log.d(TAG, "✅ Test backup scheduled for $delaySeconds seconds from now")
-                            Log.d(TAG, "")
-                            result.success(true)
-
-                        } catch (e: Exception) {
-                            Log.e(TAG, "❌ Error scheduling test backup: ${e.message}", e)
-                            result.error("SCHEDULE_ERROR", e.message, null)
-                        }
+                            val prefs = NativeBackupGuard.prefs(applicationContext)
+                            val uid = prefs.getString("user_uid", "") ?: ""
+                            val generation = prefs.getString("backup_generation", "") ?: ""
+                            check(NativeBackupGuard.valid(applicationContext, uid, generation)) { "Enable automatic backups first" }
+                            val delay = if (call.method == "testNativeBackup") 0 else (call.argument<Int>("delaySeconds") ?: 5).coerceAtLeast(0)
+                            val request = androidx.work.OneTimeWorkRequestBuilder<AutoBackupWorker>()
+                                .setInputData(androidx.work.workDataOf("userUid" to uid, "generation" to generation))
+                                .setInitialDelay(delay.toLong(), java.util.concurrent.TimeUnit.SECONDS)
+                                .setBackoffCriteria(androidx.work.BackoffPolicy.EXPONENTIAL, 30, java.util.concurrent.TimeUnit.SECONDS)
+                                .addTag("test_backup").build()
+                            val operation = androidx.work.WorkManager.getInstance(applicationContext)
+                                .enqueueUniqueWork("test_native_backup", androidx.work.ExistingWorkPolicy.KEEP, request)
+                            Thread {
+                                try { operation.result.get(); runOnUiThread { result.success(true) } }
+                                catch (e: Exception) { runOnUiThread { result.error("SCHEDULE_FAILED", "Could not start backup", null) } }
+                            }.start()
+                        } catch (e: Exception) { result.error("SCHEDULE_FAILED", "Enable automatic backups before starting a backup", null) }
                     }
 
                     else -> result.notImplemented()

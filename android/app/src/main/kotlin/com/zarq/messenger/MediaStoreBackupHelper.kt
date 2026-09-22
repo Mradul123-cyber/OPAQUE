@@ -28,6 +28,7 @@ class MediaStoreBackupHelper(private val context: Context) {
      * Works on Android 10+ without any special permissions
      */
     fun saveBackupFile(sourceFile: File, fileName: String): String? {
+        if (Build.VERSION.SDK_INT < 29) return sourceFile.inputStream().use { LegacyBackupStorage.save(context, it, fileName) }
         return try {
             Log.d(TAG, "📁 Saving backup file: $fileName")
 
@@ -81,6 +82,7 @@ class MediaStoreBackupHelper(private val context: Context) {
      * Returns list of backup file info (uri, name, size, modified time)
      */
     fun listBackupFiles(): List<Map<String, Any>> {
+        if (Build.VERSION.SDK_INT < 29) return if (LegacyBackupStorage.hasPermission(context)) LegacyBackupStorage.list(context) else emptyList()
         val backupFiles = mutableListOf<Map<String, Any>>()
 
         try {
@@ -95,7 +97,7 @@ class MediaStoreBackupHelper(private val context: Context) {
             )
 
             // Query ALL .encrypted files in our backup folder (not just files with "backup" in name)
-            val selection = "${MediaStore.Downloads.DISPLAY_NAME} LIKE ? AND ${MediaStore.Downloads.RELATIVE_PATH} LIKE ?"
+            val selection = "${MediaStore.Downloads.DISPLAY_NAME} LIKE ? AND ${MediaStore.Downloads.RELATIVE_PATH} LIKE ? AND ${MediaStore.Downloads.IS_PENDING} = 0"
             val selectionArgs = arrayOf("%.encrypted", "%$BACKUP_FOLDER%")
 
             val sortOrder = "${MediaStore.Downloads.DATE_MODIFIED} DESC"
@@ -150,6 +152,7 @@ class MediaStoreBackupHelper(private val context: Context) {
      * Read backup file content from MediaStore URI
      */
     fun readBackupFile(uriString: String): ByteArray? {
+        if (uriString.startsWith("file:")) return LegacyBackupStorage.file(context, uriString).readBytes()
         return try {
             val uri = Uri.parse(uriString)
             Log.d(TAG, "📖 Reading backup file: $uri")
@@ -170,6 +173,7 @@ class MediaStoreBackupHelper(private val context: Context) {
      * Delete backup file from MediaStore
      */
     fun deleteBackupFile(uriString: String): Boolean {
+        if (uriString.startsWith("file:")) return LegacyBackupStorage.file(context, uriString).delete()
         return try {
             val uri = Uri.parse(uriString)
             Log.d(TAG, "🗑️ Deleting backup file: $uri")
@@ -194,6 +198,12 @@ class MediaStoreBackupHelper(private val context: Context) {
      * Uses IS_PENDING flag for Android 10+ compatibility
      */
     fun renameBackupFile(uriString: String, newFileName: String): Boolean {
+        if (uriString.startsWith("file:")) {
+            require(newFileName == File(newFileName).name && newFileName.endsWith(".encrypted"))
+            val original = LegacyBackupStorage.file(context, uriString)
+            val target = File(original.parentFile, newFileName)
+            return !target.exists() && original.renameTo(target)
+        }
         return try {
             val uri = Uri.parse(uriString)
             Log.d(TAG, "✏️ Renaming backup file: $uri to $newFileName")

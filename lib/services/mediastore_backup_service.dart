@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:permission_handler/permission_handler.dart';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -23,6 +24,11 @@ class MediaStoreBackupService {
         return null;
       }
 
+      final storage = await const MethodChannel('com.zarq/native_backup')
+          .invokeMapMethod<String, dynamic>('getNativeBackupStatus');
+      if (storage?['needsStoragePermission'] == true && !(await Permission.storage.request()).isGranted) {
+        return null;
+      }
       debugPrint('[MediaStoreBackup] 📁 Saving backup: $fileName');
 
       final String? uri = await _channel.invokeMethod('saveBackup', {
@@ -250,7 +256,7 @@ class MediaStoreBackupService {
       // Check if this is an old file system backup
       if (uri.startsWith('file://')) {
         debugPrint('[MediaStoreBackup] 📖 Reading old backup from file system...');
-        final filePath = uri.replaceFirst('file://', '');
+        final filePath = Uri.parse(uri).toFilePath();
         final file = File(filePath);
 
         if (!await file.exists()) {
@@ -278,7 +284,7 @@ class MediaStoreBackupService {
       // Check if this is an old file system backup
       if (uri.startsWith('file://')) {
         debugPrint('[MediaStoreBackup] 🗑️  Deleting old backup from file system...');
-        final filePath = uri.replaceFirst('file://', '');
+        final filePath = Uri.parse(uri).toFilePath();
         final file = File(filePath);
 
         if (!await file.exists()) {

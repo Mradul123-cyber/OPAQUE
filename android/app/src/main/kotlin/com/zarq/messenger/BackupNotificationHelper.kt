@@ -12,7 +12,10 @@ import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 
-class BackupNotificationHelper(private val context: Context) {
+class BackupNotificationHelper(private val context: Context, private val native: Boolean = false) {
+    private val progressId get() = PROGRESS_NOTIFICATION_ID + if (native) 1000 else 0
+    private val successId get() = SUCCESS_NOTIFICATION_ID + if (native) 1000 else 0
+    private val failureId get() = FAILURE_NOTIFICATION_ID + if (native) 1000 else 0
 
     companion object {
         const val CHANNEL_ID = "zarq_backup_channel"
@@ -58,14 +61,19 @@ class BackupNotificationHelper(private val context: Context) {
             .build()
 
         with(NotificationManagerCompat.from(context)) {
-            notify(PROGRESS_NOTIFICATION_ID, notification)
+            notify(progressId, notification)
         }
     }
 
-    fun showProgressNotification(status: String, progress: Int) {
+    fun showProgressNotification(status: String, progress: Int, userUid: String? = null, run: String? = null) {
         // Create cancel action intent
         val cancelIntent = Intent(context, BackupCancelReceiver::class.java).apply {
             action = BackupCancelReceiver.ACTION_CANCEL_BACKUP
+            if (run != null) {
+                putExtra("native_uid", userUid)
+                putExtra("native_run", run)
+                data = Uri.parse("opaque-backup://cancel/$run")
+            }
         }
 
         val cancelPendingIntent = PendingIntent.getBroadcast(
@@ -77,7 +85,7 @@ class BackupNotificationHelper(private val context: Context) {
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Backup/Restore in Progress")
+            .setContentTitle(if (native) "Automatic backup" else "Backup/Restore in Progress")
             .setContentText(status)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true) // Cannot be dismissed
@@ -91,14 +99,14 @@ class BackupNotificationHelper(private val context: Context) {
             .build()
 
         with(NotificationManagerCompat.from(context)) {
-            notify(PROGRESS_NOTIFICATION_ID, notification)
+            notify(progressId, notification)
         }
     }
 
     fun showSuccessNotification(operationType: String) {
         // Cancel progress notification first
         with(NotificationManagerCompat.from(context)) {
-            cancel(PROGRESS_NOTIFICATION_ID)
+            cancel(progressId)
         }
 
         val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
@@ -130,14 +138,14 @@ class BackupNotificationHelper(private val context: Context) {
             .build()
 
         with(NotificationManagerCompat.from(context)) {
-            notify(SUCCESS_NOTIFICATION_ID, notification)
+            notify(successId, notification)
         }
     }
 
     fun showFailureNotification(operationType: String, errorMessage: String) {
         // Cancel progress notification first
         with(NotificationManagerCompat.from(context)) {
-            cancel(PROGRESS_NOTIFICATION_ID)
+            cancel(progressId)
         }
 
         val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
@@ -171,7 +179,7 @@ class BackupNotificationHelper(private val context: Context) {
             .build()
 
         with(NotificationManagerCompat.from(context)) {
-            notify(FAILURE_NOTIFICATION_ID, notification)
+            notify(failureId, notification)
         }
     }
 
@@ -206,10 +214,10 @@ class BackupNotificationHelper(private val context: Context) {
 
     fun cancelAllBackupNotifications() {
         with(NotificationManagerCompat.from(context)) {
-            cancel(SUCCESS_NOTIFICATION_ID)
-            cancel(FAILURE_NOTIFICATION_ID)
+            cancel(successId)
+            cancel(failureId)
             cancel(BATTERY_WARNING_NOTIFICATION_ID)
-            cancel(PROGRESS_NOTIFICATION_ID)
+            cancel(progressId)
         }
     }
 

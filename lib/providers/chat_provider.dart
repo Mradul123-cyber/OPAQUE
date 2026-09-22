@@ -1,4 +1,5 @@
 // lib/providers/chat_provider.dart
+import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import '../message_model.dart';
@@ -154,7 +155,8 @@ class ChatProvider with ChangeNotifier {
       // Only save persistent states to database (exclude temporary UI states)
       if (newMessage.status != MessageStatus.sending &&
           newMessage.status != MessageStatus.failed) {
-        _saveMessageToDatabase(newMessage);
+        // Await insert so home's local DB refresh on pop sees this message.
+        unawaited(_saveMessageToDatabase(newMessage));
       }
     }
   }

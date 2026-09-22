@@ -2,6 +2,7 @@ import '../widgets/backup_design.dart';
 import '../widgets/opaque_design.dart';
 import '../services/user_settings_provider.dart';
 import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
@@ -21,6 +22,7 @@ import 'backup_info_screen.dart';
 import 'google_drive_backups_screen.dart';
 import 'package:provider/provider.dart';
 import '../widgets/opaque_toast.dart';
+import '../widgets/opaque_time_picker.dart';
 
 class BackupManagementScreen extends StatefulWidget {
   const BackupManagementScreen({super.key});
@@ -30,7 +32,37 @@ class BackupManagementScreen extends StatefulWidget {
 }
 
 class _BackupManagementScreenState extends State<BackupManagementScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+  Timer? _nativeStatusTimer;
+  int _lastNativeSuccess = 0;
+
+  void _watchNativeBackup() {
+    _nativeStatusTimer?.cancel();
+    if (!mounted) return;
+    final provider = context.read<BackupSettingsProvider>();
+    Future<void> refresh() async {
+      await provider.refreshNativeStatus();
+      if (!mounted) return;
+      final success = provider.lastNativeSuccess;
+      if (success > _lastNativeSuccess) {
+        _lastNativeSuccess = success;
+        await _loadBackupsList();
+      }
+    }
+    unawaited(refresh());
+    _nativeStatusTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (mounted) unawaited(refresh());
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _watchNativeBackup();
+    } else {
+      _nativeStatusTimer?.cancel();
+    }
+  }
   final BackupService _backupService = BackupService();
   List<Map<String, dynamic>> _backupsList = [];
   bool _isLoading = false;
@@ -49,6 +81,8 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _watchNativeBackup());
     _loadBackupsList();
     _loadCachedGoogleDriveStatus(); // Load cached state for instant UI (no verification needed)
     _checkBatteryOptimization();
@@ -89,6 +123,8 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
 
   @override
   void dispose() {
+    _nativeStatusTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _highlightController.dispose();
     // DON'T remove the handler here - backup operations continue in background
     // The handler needs to remain active so notification cancel button works
@@ -870,11 +906,11 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
         // Show failure notification
         await BackupNotificationService.showFailureNotification(
           'Local',
-          e.toString().length > 100 ? 'Restore error occurred' : e.toString(),
+          _restoreErrorMessage(e),
         );
 
         if (mounted) {
-          _showSnackbar('Restore failed: $e', isError: true);
+          _showSnackbar(_restoreErrorMessage(e), isError: true);
         }
       }
 
@@ -1174,11 +1210,11 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
         // Show FAILURE notification with sound
         await BackupNotificationService.showFailureNotification(
           'Import',
-          e.toString().length > 100 ? 'Import error occurred' : e.toString(),
+          _restoreErrorMessage(e),
         );
 
         if (mounted)
-          _showSnackbar('Failed to import backup: $e', isError: true);
+          _showSnackbar(_restoreErrorMessage(e), isError: true);
       } finally {
         if (mounted) {
           setState(() {
@@ -1189,7 +1225,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
       }
     } catch (e) {
       debugPrint('[BackupManagement] Error in import flow: $e');
-      if (mounted) _showSnackbar('Failed to import backup: $e', isError: true);
+      if (mounted) _showSnackbar(_restoreErrorMessage(e), isError: true);
     }
   }
 
@@ -1325,7 +1361,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
       // Check if this is an old file system backup or MediaStore backup
       if (uri.startsWith('file://')) {
         // Old file system backup - direct path
-        return uri.replaceFirst('file://', '');
+        return Uri.parse(uri).toFilePath();
       } else {
         // MediaStore backup - need to read bytes and save to temp file
         final bytes = await MediaStoreBackupService.readBackupFileUniversal(
@@ -1673,11 +1709,11 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
         // Show failure notification
         await BackupNotificationService.showFailureNotification(
           'Google Drive',
-          e.toString().length > 100 ? 'Restore error occurred' : e.toString(),
+          _restoreErrorMessage(e),
         );
 
         if (mounted) {
-          _showSnackbar('Restore failed: $e', isError: true);
+          _showSnackbar(_restoreErrorMessage(e), isError: true);
         }
       }
 
@@ -1935,6 +1971,37 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
     return confirmed ? password : null;
   }
 
+  // Keep technical exception details in debug logs, never in restore messages.
+  String _restoreErrorMessage(Object error) {
+    final details = error.toString().toLowerCase();
+    if (details.contains('belongs to another account')) {
+      return 'This backup belongs to another account. Sign in to that account to restore it.';
+    }
+    if (details.contains('account changed')) {
+      return 'Your account changed during restore. Please try again.';
+    }
+    if (details.contains('sign in before restoring') ||
+        details.contains('user not authenticated')) {
+      return 'Please sign in to restore your backup.';
+    }
+    if (details.contains('incorrect passphrase') ||
+        details.contains('failed to decrypt') ||
+        details.contains('decryption failed')) {
+      return 'Could not unlock this backup. Check your passphrase and make sure the file is complete.';
+    }
+    if (details.contains('format is not supported') ||
+        details.contains('unsupported message fields')) {
+      return 'This backup needs a newer version of OPAQUE. Update the app and try again.';
+    }
+    if (error is FormatException) {
+      return 'This backup could not be read. Please choose another backup.';
+    }
+    if (details.contains('restore is already in progress')) {
+      return 'A restore is already running. Please wait for it to finish.';
+    }
+    return 'Could not restore this backup. Please try again.';
+  }
+
   void _showSnackbar(String message, {bool isError = false}) {
     if (!mounted) return;
     if (isError) {
@@ -2037,10 +2104,13 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
     setState(() => _actionPending = true);
     try {
       await action();
-    } catch (_) {
+    } catch (error) {
+      debugPrint('[BackupManagement] Action failed: $error');
       if (mounted)
         _showSnackbar(
-          'Could not complete this action. Please try again.',
+          error is StateError && error.message == 'Storage permission is required'
+              ? 'Allow storage access to save backups in Downloads.'
+              : 'Could not complete this action. Please try again.',
           isError: true,
         );
     } finally {
@@ -2277,7 +2347,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
     final latest = backups.isEmpty ? null : backups.first;
     final hasPassphrase = settings.lastBackupPassphrase?.isNotEmpty == true;
     final scheduleText = hasPassphrase && settings.enabled
-        ? '${settings.frequency.displayName} · Around 19:59, subject to Android scheduling'
+        ? '${settings.frequency == BackupFrequency.monthly ? 'Every 30 days' : settings.frequency.displayName} · From ${TimeOfDay(hour: settings.hour, minute: settings.minute).format(context)}; Android may delay it'
         : null;
     return CallAwareScreen(
       screenName: 'BackupManagementScreen',
@@ -2486,7 +2556,9 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
                   _settingRow(
                     Icons.schedule,
                     'Automatic backups',
-                    subtitle: 'On this device · No internet required',
+                    subtitle: settingsProvider.needsReconfiguration
+                        ? 'Enable again to finish the backup security update'
+                        : 'On this device · No internet required',
                     trailing: SizedBox(
                       height: 24,
                       child: Transform.scale(
@@ -2499,7 +2571,19 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
                           onChanged: _busy
                               ? null
                               : (v) => _runAction(() async {
-                                  await settingsProvider.setEnabled(v);
+                                  if (v && !hasPassphrase) {
+                                    final passphrase = await _askForPassword(
+                                      title: 'Auto-backup passphrase',
+                                      hint: 'Enter a strong passphrase',
+                                    );
+                                    if (passphrase == null || passphrase.isEmpty) return;
+                                    await settingsProvider.updateSettings(settings.copyWith(
+                                      enabled: true, lastBackupPassphrase: passphrase,
+                                      frequency: settings.frequency == BackupFrequency.disabled ? BackupFrequency.weekly : settings.frequency,
+                                    ));
+                                  } else {
+                                    await settingsProvider.setEnabled(v);
+                                  }
                                   await _triggerSettingsChangedFeedback(
                                     v
                                         ? 'Auto-backup enabled'
@@ -2510,7 +2594,56 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
                       ),
                     ),
                   ),
+                  if (settingsProvider.nativeStatusMessage.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(settingsProvider.nativeStatusMessage, style: c.text(12, muted: true)),
+                          if (settingsProvider.nativeRunning) ...[
+                            const SizedBox(height: 10),
+                            LinearProgressIndicator(value: settingsProvider.nativeProgress, color: const Color(0xFF26833C)),
+                            TextButton.icon(
+                              onPressed: settingsProvider.nativeCancelling ? null : () => _runAction(settingsProvider.cancelNativeRun),
+                              icon: const Icon(Icons.close, size: 16),
+                              label: Text(settingsProvider.nativeCancelling ? 'Stopping…' : 'Cancel this backup'),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    if (settingsProvider.getLastBackupTimeFormatted() != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(
+                          'Last automatic backup · ${settingsProvider.getLastBackupTimeFormatted()}',
+                          style: c.text(10, muted: true),
+                        ),
+                      ),
                   if (settings.enabled) ...[
+                    _settingRow(
+                      Icons.access_time,
+                      'Backup time',
+                      value: TimeOfDay(hour: settings.hour, minute: settings.minute).format(context),
+                      onTap: () => _runAction(() async {
+                        final chosen = await showOpaqueTimePicker(
+                          context: context,
+                          initialTime: TimeOfDay(
+                            hour: settings.hour,
+                            minute: settings.minute,
+                          ),
+                        );
+                        if (chosen != null) {
+                          await settingsProvider.setTime(
+                            chosen.hour,
+                            chosen.minute,
+                          );
+                        }
+                      }),
+                    ),
+                    if (settingsProvider.nextNativeRun != null)
+                      _note('Next backup: ${_formatDateTime(settingsProvider.nextNativeRun!)} or later, when Android allows it.'),
                     _settingRow(
                       Icons.schedule,
                       'Frequency',
@@ -2566,14 +2699,6 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
                           style: c.text(10, muted: true),
                         ),
                       ),
-                    if (settingsProvider.getLastBackupTimeFormatted() != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(
-                          'Last automatic backup · ${settingsProvider.getLastBackupTimeFormatted()}',
-                          style: c.text(10, muted: true),
-                        ),
-                      ),
                     _settingRow(
                       Icons.battery_std,
                       'Background access',
@@ -2601,6 +2726,7 @@ class _BackupManagementScreenState extends State<BackupManagementScreen>
                 ] else ...[
                   BackupAction(
                     label: 'Import backup file',
+                    primary: true,
                     icon: Icons.folder_outlined,
                     onPressed: _busy
                         ? null

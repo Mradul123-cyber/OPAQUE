@@ -1,10 +1,17 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 // Import your services and models
 import '../services/conversation_service.dart';
 import '../services/websocket_service.dart';
+import '../services/database_service.dart';
 import '../home_screen.dart'; // For ConversationInfo model
+
+import 'package:firebase_core/firebase_core.dart';
+import '../services/app_storage.dart';
 
 // Enum to represent the state of the home screen
 enum HomeState { Idle, Loading, Error, Success }
@@ -13,6 +20,8 @@ class HomeProvider with ChangeNotifier {
   ConversationService _conversationService;
   WebSocketService _webSocketService;
   StreamSubscription? _webSocketSubscription;
+  Timer? _wsRefreshDebounce;
+  bool _refreshing = false;
 
   // Private state variables
   List<ConversationInfo> _conversations = [];
@@ -23,6 +32,23 @@ class HomeProvider with ChangeNotifier {
   List<ConversationInfo>? _cachedConversations;
   DateTime? _lastCacheTime;
   static const Duration _cacheExpiry = Duration(minutes: 5);
+
+  static const Set<String> _homeRefreshEventTypes = {
+    'local_message_saved',
+    'new_message',
+    'message_edited',
+    'message_deleted',
+    'conversation_update',
+    'group_deleted',
+    'attachment_uploaded',
+  };
+
+  String get _diskCacheKey {
+    final uid = (Firebase.apps.isNotEmpty ? FirebaseAuth.instance.currentUser?.uid : null)
+        ?? AppStorage.cachedUid
+        ?? 'anon';
+    return 'opaque_cached_convos_$uid';
+  }
 
   // Public getters for the UI to access the state
   List<ConversationInfo> get conversations => _conversations;
@@ -42,75 +68,230 @@ class HomeProvider with ChangeNotifier {
   })  : _conversationService = conversationService,
         _webSocketService = webSocketService {
     _listenToWebSocket();
+    // 🚀 INSTANT LOCAL-FIRST: Pre-populate conversations from disk immediately
+    _loadDiskCache();
   }
 
-  // ### START OF FIX ###
-  // This new method allows the ProxyProvider to update both services safely.
+  Future<void> _loadDiskCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_diskCacheKey);
+      if (raw != null && raw.isNotEmpty) {
+        final list = (jsonDecode(raw) as List)
+            .map((e) => ConversationInfo.fromJson(e as Map<String, dynamic>))
+            .toList();
+        if (list.isNotEmpty && _conversations.isEmpty) {
+          _conversations = list;
+          _cachedConversations = List.from(list);
+          _state = HomeState.Success;
+          notifyListeners();
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveDiskCache(List<ConversationInfo> list) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = jsonEncode(list.map((c) => c.toJson()).toList());
+      await prefs.setString(_diskCacheKey, raw);
+    } catch (_) {}
+  }
+
+  // This method allows the ProxyProvider to update both services safely.
   void updateServices(ConversationService newConversationService, WebSocketService newWebSocketService) {
     _conversationService = newConversationService;
     _webSocketService = newWebSocketService;
-    _webSocketSubscription?.cancel(); // Cancel the old subscription
-    _listenToWebSocket(); // Start listening to the new service
+    _webSocketSubscription?.cancel();
+    _wsRefreshDebounce?.cancel();
+    _listenToWebSocket();
   }
-  // ### END OF FIX ###
 
-  // Fetches the initial list of conversations
+  // Fetches the initial list of conversations - LOCAL FIRST
   Future<void> fetchInitialConversations() async {
     if (_state == HomeState.Loading) return;
 
-    // 🚀 INSTANT LOADING: Show cached conversations immediately
-    if (hasCachedConversations) {
-      _conversations = List.from(_cachedConversations!);
+    // 🚀 1. INSTANT: If already populated (from disk cache or memory), show immediately
+    if (_conversations.isNotEmpty) {
       _state = HomeState.Success;
       notifyListeners();
-
-      // Background refresh
       _refreshConversationsInBackground();
       return;
     }
 
-    // No cache: Load from server
-    Future.microtask(() {
-      _state = HomeState.Loading;
+    // Try loading disk cache if not yet loaded
+    await _loadDiskCache();
+    if (_conversations.isNotEmpty) {
+      _state = HomeState.Success;
       notifyListeners();
-    });
+      _refreshConversationsInBackground();
+      return;
+    }
+
+    // 2. No local data found (fresh account): Load from server
+    _state = HomeState.Loading;
+    notifyListeners();
 
     try {
-      _conversations = await _conversationService.fetchConversations();
-      _cachedConversations = List.from(_conversations);
+      final convos = await _conversationService.fetchConversations();
+      _conversations = convos;
+      _cachedConversations = List.from(convos);
       _lastCacheTime = DateTime.now();
       _state = HomeState.Success;
+      _saveDiskCache(convos);
     } catch (e) {
-      // 🚀 OFFLINE MODE: fetchConversations() now has offline fallback
-      // So this will return offline data instead of throwing error
-      // If we still get error, it means truly no data available
-      _conversations = []; // Empty list instead of error state
-      _state = HomeState.Success; // Show empty state, not error
+      _conversations = [];
+      _state = HomeState.Success;
       _errorMessage = null;
-      // print('[HomeProvider] ⚠️ Using offline mode or no conversations: $e');
     }
     notifyListeners();
   }
 
-  /// Background refresh for conversations
+  /// Background refresh for conversations without blocking UI
   Future<void> _refreshConversationsInBackground() async {
+    if (_refreshing) return;
+    _refreshing = true;
     try {
       final conversations = await _conversationService.fetchConversations();
-      _conversations = conversations;
-      _cachedConversations = List.from(conversations);
+      _conversations = _mergePreferringNewerPreviews(conversations);
+      _cachedConversations = List.from(_conversations);
       _lastCacheTime = DateTime.now();
       notifyListeners();
-    } catch (e) {
-      // Silently fail - user already sees cached data
-      // print('[HomeProvider] Background refresh failed: $e');
+      _saveDiskCache(_conversations);
+    } catch (_) {
+      // Silently fail in background - user already sees cached local data
+    } finally {
+      _refreshing = false;
     }
+  }
+
+  /// Keep a fresher optimistic/local preview if a network refresh is stale.
+  List<ConversationInfo> _mergePreferringNewerPreviews(
+    List<ConversationInfo> incoming,
+  ) {
+    if (_conversations.isEmpty) return incoming;
+    final existingById = {
+      for (final c in _conversations) c.conversationId: c,
+    };
+
+    final merged = incoming.map((incomingConvo) {
+      final existing = existingById[incomingConvo.conversationId];
+      if (existing == null) return incomingConvo;
+
+      final existingTs = existing.lastMessageTimestamp;
+      final incomingTs = incomingConvo.lastMessageTimestamp;
+      final keepExistingPreview = existingTs != null &&
+          (incomingTs == null || existingTs.isAfter(incomingTs));
+
+      if (!keepExistingPreview) return incomingConvo;
+
+      return ConversationInfo(
+        conversationId: incomingConvo.conversationId,
+        chatTitle: incomingConvo.chatTitle,
+        isGroup: incomingConvo.isGroup,
+        creatorUid: incomingConvo.creatorUid,
+        avatarUrl: incomingConvo.avatarUrl,
+        partnerUid: incomingConvo.partnerUid,
+        isFriend: incomingConvo.isFriend,
+        hasUnreadMessages: incomingConvo.hasUnreadMessages,
+        unreadCount: incomingConvo.unreadCount,
+        lastMessageTimestamp: existingTs,
+        lastMessage: existing.lastMessage,
+        isTyping: incomingConvo.isTyping,
+        isOnline: incomingConvo.isOnline,
+      );
+    }).toList();
+
+    merged.sort((a, b) {
+      final aTs = a.lastMessageTimestamp;
+      final bTs = b.lastMessageTimestamp;
+      if (aTs == null && bTs == null) return 0;
+      if (aTs == null) return 1;
+      if (bTs == null) return -1;
+      return bTs.compareTo(aTs);
+    });
+    return merged;
+  }
+
+  /// Instantly update a conversation's last-message preview (optimistic / local).
+  void updateConversationPreview({
+    required int conversationId,
+    required String lastMessage,
+    required DateTime timestamp,
+  }) {
+    ConversationInfo withPreview(ConversationInfo c) => ConversationInfo(
+          conversationId: c.conversationId,
+          chatTitle: c.chatTitle,
+          isGroup: c.isGroup,
+          creatorUid: c.creatorUid,
+          avatarUrl: c.avatarUrl,
+          partnerUid: c.partnerUid,
+          isFriend: c.isFriend,
+          hasUnreadMessages: c.hasUnreadMessages,
+          unreadCount: c.unreadCount,
+          lastMessageTimestamp: timestamp.toUtc(),
+          lastMessage: lastMessage,
+          isTyping: false,
+          isOnline: c.isOnline,
+        );
+
+    final index =
+        _conversations.indexWhere((c) => c.conversationId == conversationId);
+    if (index == -1) return;
+
+    final existingTs = _conversations[index].lastMessageTimestamp;
+    if (existingTs != null && existingTs.isAfter(timestamp.toUtc())) return;
+
+    _conversations[index] = withPreview(_conversations[index]);
+    _conversations.sort((a, b) {
+      final aTs = a.lastMessageTimestamp;
+      final bTs = b.lastMessageTimestamp;
+      if (aTs == null && bTs == null) return 0;
+      if (aTs == null) return 1;
+      if (bTs == null) return -1;
+      return bTs.compareTo(aTs);
+    });
+
+    final cached = _cachedConversations;
+    if (cached != null) {
+      final cachedIndex =
+          cached.indexWhere((c) => c.conversationId == conversationId);
+      if (cachedIndex != -1) {
+        cached[cachedIndex] = withPreview(cached[cachedIndex]);
+      }
+    }
+
+    _lastCacheTime = DateTime.now();
+    notifyListeners();
+    unawaited(_saveDiskCache(_conversations));
+  }
+
+  /// Refresh one conversation preview from SQLite only (no HTTP).
+  Future<void> refreshConversationPreviewFromDb(int conversationId) async {
+    try {
+      final lastMsg =
+          await DatabaseService.instance.getLastMessage(conversationId);
+      if (lastMsg == null || lastMsg.content.isEmpty) return;
+      updateConversationPreview(
+        conversationId: conversationId,
+        lastMessage: lastMsg.content,
+        timestamp: lastMsg.timestamp,
+      );
+    } catch (_) {}
   }
 
   // Listens for real-time updates from the server
   void _listenToWebSocket() {
     _webSocketSubscription = _webSocketService.stream.listen((message) {
-      // print("HomeProvider received a WebSocket signal. Refreshing data.");
-      fetchInitialConversations();
+      // Stream can emit raw WebSocket strings as well as parsed maps.
+      if (message is! Map) return;
+      final type = message['type']?.toString();
+      if (type == null || !_homeRefreshEventTypes.contains(type)) return;
+
+      _wsRefreshDebounce?.cancel();
+      _wsRefreshDebounce = Timer(const Duration(milliseconds: 350), () {
+        _refreshConversationsInBackground();
+      });
     });
   }
 
@@ -164,12 +345,12 @@ class HomeProvider with ChangeNotifier {
   void removeConversation(int conversationId) {
     _conversations.removeWhere((c) => c.conversationId == conversationId);
     notifyListeners();
-    // print('[HomeProvider] Removed conversation $conversationId from list');
   }
 
   // Clean up the subscription when the provider is disposed
   @override
   void dispose() {
+    _wsRefreshDebounce?.cancel();
     _webSocketSubscription?.cancel();
     super.dispose();
   }

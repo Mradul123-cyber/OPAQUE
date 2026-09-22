@@ -49,7 +49,7 @@ class CallLogModel {
       durationSeconds: json['duration_seconds'],
       otherUserUid: json['other_user_uid'],
       otherUserName: json['other_user_name'],
-      otherUserAvatar: json['other_user_avatar'],
+      otherUserAvatar: (json['other_user_avatar'] ?? json['otherUserAvatar'] ?? json['avatarUrl'] ?? json['avatar_url'] ?? json['profile_picture_url'] ?? json['avatar']) as String?,
       direction: json['direction'],
     );
   }

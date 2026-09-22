@@ -24,65 +24,47 @@ object MediaStoreHelper {
      * @param fileName Backup file name (e.g., "backup_2025-01-15T02-00-00.encrypted")
      * @return true if successful, false otherwise
      */
-    fun saveBackup(context: Context, data: ByteArray, fileName: String): Boolean {
-        return try {
-            Log.d(TAG, "Saving backup to MediaStore: $fileName (${data.size} bytes)")
+    fun saveBackup(context: Context, data: ByteArray, fileName: String): Boolean = try {
+        saveCancellable(context, data, fileName) {}; true
+    } catch (e: Exception) { Log.e(TAG, "Backup save failed", e); false }
 
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                Log.e(TAG, "MediaStore Downloads API requires Android 10+")
-                return false
-            }
+    fun saveCancellable(context: Context, data: ByteArray, fileName: String, checkRunning: () -> Unit): String =
+        data.inputStream().use { saveInput(context, it, fileName, checkRunning) }
 
-            // Prepare content values
-            val contentValues = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
-                put(MediaStore.Downloads.RELATIVE_PATH, RELATIVE_PATH)
-                put(MediaStore.Downloads.IS_PENDING, 1) // Mark as pending while writing
-            }
+    fun saveFile(context: Context, file: java.io.File, fileName: String, checkRunning: () -> Unit): String =
+        file.inputStream().use { saveInput(context, it, fileName, checkRunning) }
 
-            val resolver = context.contentResolver
-
-            // Insert into MediaStore
-            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-
-            if (uri == null) {
-                Log.e(TAG, "❌ Failed to create MediaStore entry")
-                return false
-            }
-
-            Log.d(TAG, "MediaStore URI created: $uri")
-
-            // Write data to file
-            var success = false
-            try {
-                resolver.openOutputStream(uri)?.use { outputStream ->
-                    outputStream.write(data)
-                    outputStream.flush()
-                    success = true
+    private fun saveInput(context: Context, input: java.io.InputStream, fileName: String, checkRunning: () -> Unit): String {
+        if (Build.VERSION.SDK_INT < 29) return LegacyBackupStorage.save(context, input, fileName, checkRunning)
+        val resolver = context.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
+            put(MediaStore.Downloads.RELATIVE_PATH, RELATIVE_PATH)
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        checkRunning()
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw IOException("Could not create backup file")
+        try {
+            val output = resolver.openOutputStream(uri) ?: throw IOException("Could not open backup file")
+            output.use {
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    checkRunning()
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    it.write(buffer, 0, count)
                 }
-            } catch (e: IOException) {
-                Log.e(TAG, "❌ Error writing to MediaStore: ${e.message}", e)
-                // Clean up failed entry
-                resolver.delete(uri, null, null)
-                return false
+                it.flush()
             }
-
-            // Mark as complete (not pending anymore)
-            if (success) {
-                contentValues.clear()
-                contentValues.put(MediaStore.Downloads.IS_PENDING, 0)
-                resolver.update(uri, contentValues, null, null)
-
-                Log.d(TAG, "✅ Backup saved successfully to: $RELATIVE_PATH/$fileName")
-                return true
-            }
-
-            false
-
+            checkRunning()
+            values.clear(); values.put(MediaStore.Downloads.IS_PENDING, 0)
+            if (resolver.update(uri, values, null, null) != 1) throw IOException("Could not publish backup")
+            return uri.toString()
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error saving backup: ${e.message}", e)
-            false
+            try { resolver.delete(uri, null, null) } catch (cleanup: Exception) { Log.e(TAG, "Partial backup cleanup failed", cleanup) }
+            throw e
         }
     }
 
@@ -104,8 +86,7 @@ object MediaStoreHelper {
             Log.d(TAG, "📋 Listing backup files from MediaStore...")
 
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                Log.e(TAG, "MediaStore Downloads API requires Android 10+")
-                return emptyList()
+                return LegacyBackupStorage.list(context).map { it + ("dateModified" to ((it["dateModified"] as Long) / 1000)) }
             }
 
             val projection = arrayOf(
@@ -118,7 +99,7 @@ object MediaStoreHelper {
 
             // Query only .encrypted files from Zarq_Backups folder
             val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                "${MediaStore.Downloads.DISPLAY_NAME} LIKE ? AND ${MediaStore.Downloads.RELATIVE_PATH} LIKE ?"
+                "${MediaStore.Downloads.DISPLAY_NAME} LIKE ? AND ${MediaStore.Downloads.RELATIVE_PATH} LIKE ? AND ${MediaStore.Downloads.IS_PENDING} = 0"
             } else {
                 "${MediaStore.Downloads.DISPLAY_NAME} LIKE ?"
             }
@@ -201,6 +182,7 @@ object MediaStoreHelper {
      */
     fun deleteBackup(context: Context, uriString: String): Boolean {
         return try {
+            if (uriString.startsWith("file:")) return LegacyBackupStorage.file(context, uriString).delete()
             val uri = android.net.Uri.parse(uriString)
             Log.d(TAG, "🗑️ Deleting backup file: $uri")
 

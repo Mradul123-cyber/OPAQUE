@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
@@ -29,8 +30,21 @@ class SignalService {
     }
   }
 
+  static int? _cachedDeviceId;
+  static String? _cachedForUid;
+
+  /// Invalidate cached device ID (e.g. during account switch or logout)
+  static void invalidateCachedDeviceId() {
+    _cachedDeviceId = null;
+    _cachedForUid = null;
+  }
+
   /// Get the unique device ID for this installation
   static Future<int?> getDeviceId() async {
+    final currentUid = FirebaseAuth.instance.currentUser?.uid;
+    if (_cachedDeviceId != null && _cachedForUid == currentUid && currentUid != null) {
+      return _cachedDeviceId;
+    }
     try {
       // print('=== SignalService.getDeviceId START ===');
 
@@ -39,7 +53,9 @@ class SignalService {
       // print('Device ID: $result');
       // print('=== SignalService.getDeviceId END ===');
 
-      return result as int?;
+      _cachedDeviceId = result as int?;
+      _cachedForUid = currentUid;
+      return _cachedDeviceId;
     } on PlatformException catch (e) {
       // print('SignalService.getDeviceId PlatformException: ${e.code} - ${e.message}');
       return null;
@@ -49,23 +65,13 @@ class SignalService {
     }
   }
 
-  /// Get the Identity Key Pair private key for database encryption
-  /// Returns base64 encoded 32-byte private key
-  static Future<String?> getIdentityKeyPrivateKey() async {
+  /// Get the SQLCipher database encryption key
+  /// Derived natively in Android Keystore - raw identity private key is never exposed to Dart heap
+  static Future<String?> getDatabaseEncryptionKey() async {
     try {
-      // print('=== SignalService.getIdentityKeyPrivateKey START ===');
-
-      final result = await _channel.invokeMethod('getIdentityKeyPrivateKey');
-
-      // print('Identity key private key retrieved for database encryption');
-      // print('=== SignalService.getIdentityKeyPrivateKey END ===');
-
+      final result = await _channel.invokeMethod('getDatabaseEncryptionKey');
       return result as String?;
-    } on PlatformException catch (e) {
-      // print('SignalService.getIdentityKeyPrivateKey PlatformException: ${e.code} - ${e.message}');
-      return null;
     } catch (e) {
-      // print('SignalService.getIdentityKeyPrivateKey error: $e');
       return null;
     }
   }
@@ -286,8 +292,30 @@ class SignalService {
     }
   }
 
+  static Future<bool> validateSession({
+    required String recipientUid,
+    int? deviceId,
+  }) async {
+    try {
+      final params = <String, dynamic>{
+        'recipientUid': recipientUid,
+      };
+      if (deviceId != null) {
+        params['deviceId'] = deviceId;
+      }
+
+      final result = await _channel.invokeMethod('validateSession', params);
+      return result == true;
+    } catch (e) {
+      debugPrint('[SignalService] validateSession error: $e');
+      return false;
+    }
+  }
+
   static Future<bool> resetUserContext() async {
     try {
+      invalidateCachedDeviceId();
+      DeviceService.invalidateActiveDeviceIdCache();
       // print('=== SignalService.resetUserContext START ===');
 
       final result = await _channel.invokeMethod('resetUserContext');
@@ -429,12 +457,16 @@ class SignalService {
         'ciphertextB64': ciphertextB64,
       };
 
-      // FIX: Use correct parameter name that matches MainActivity
+      if (senderUid.isEmpty || ciphertextB64.isEmpty) {
+        debugPrint('[SignalService] ⚠️ decryptMessage called with empty senderUid or ciphertext');
+        return null;
+      }
+
       if (deviceId != null) {
-        params['senderDeviceId'] = deviceId;  // ✅ FIXED: was 'deviceId', now 'senderDeviceId'
+        params['senderDeviceId'] = deviceId;
       } else {
-        // Throw error if deviceId is not provided for decryption
-        throw Exception('Device ID is required for message decryption');
+        debugPrint('[SignalService] ⚠️ decryptMessage: Device ID is required for message decryption from $senderUid');
+        return null;
       }
 
       final result = await _channel.invokeMethod('decryptMessage', params);
@@ -448,6 +480,10 @@ class SignalService {
 
       return result as String?;
     } on PlatformException catch (e) {
+      if (e.code == 'DUPLICATE_MESSAGE') {
+        // print('SignalService.decryptMessage: duplicate message safely ignored');
+        return null;
+      }
       // print('SignalService.decryptMessage PlatformException: ${e.code} - ${e.message}');
       // print('SignalService.decryptMessage PlatformException details: $e');
       return null;

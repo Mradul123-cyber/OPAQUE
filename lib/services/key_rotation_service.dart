@@ -8,9 +8,22 @@ import 'package:zarq_messenger/app_config.dart';
 
 class KeyRotationService {
   static Timer? _rotationTimer;
+  static bool _isChecking = false;
+  static bool _isReplenishing = false;
+  static DateTime? _lastCheckTime;
+  static DateTime? _lastReplenishTime;
+  static int _lastRemainingKeys = 100;
 
   static const String baseUrl = '${AppConfig.baseUrl}';
 
+  static void resetState() {
+    stopBackgroundRotation();
+    _isChecking = false;
+    _isReplenishing = false;
+    _lastCheckTime = null;
+    _lastReplenishTime = null;
+    _lastRemainingKeys = 100;
+  }
 
   static Future<Map<String, String>> _getAuthHeaders() async {
     try {
@@ -32,6 +45,21 @@ class KeyRotationService {
     required String currentUserUid,
     required int deviceId,
   }) async {
+    if (_isChecking || _isReplenishing) return;
+
+    final now = DateTime.now();
+    // Adaptive check cooldown: 2 mins if keys are low (< 20), 15 mins if comfortable
+    final checkCooldown = _lastRemainingKeys < 20
+        ? const Duration(minutes: 2)
+        : const Duration(minutes: 15);
+
+    if (_lastCheckTime != null && now.difference(_lastCheckTime!) < checkCooldown) {
+      return;
+    }
+
+    _isChecking = true;
+    _lastCheckTime = now;
+
     try {
       // print('[KeyRotation] Checking threshold for user: $currentUserUid, device: $deviceId');
 
@@ -44,11 +72,12 @@ class KeyRotationService {
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         final remainingKeys = data['remaining'] as int? ?? 100;
+        _lastRemainingKeys = remainingKeys;
 
         // print('[KeyRotation] Current available keys: $remainingKeys');
 
         if (remainingKeys < 20) {
-          // print('[KeyRotation] THRESHOLD REACHED! Triggering immediate rotation');
+          // print('[KeyRotation] THRESHOLD REACHED (< 20)! Triggering immediate rotation');
           await _performKeyRotation();
         } else {
           // print('[KeyRotation] Keys sufficient ($remainingKeys), no rotation needed');
@@ -58,6 +87,8 @@ class KeyRotationService {
       }
     } catch (e) {
       // print('[KeyRotation] Error checking threshold: $e');
+    } finally {
+      _isChecking = false;
     }
   }
 
@@ -149,20 +180,58 @@ class KeyRotationService {
   }
 
   static Future<void> _replenishPreKeys() async {
-    try {
-      // print('[KeyRotation] Checking one-time prekey count...');
+    if (_isReplenishing) return;
 
-      // Generate additional prekeys
-      final newPreKeys = await SignalService.generateAdditionalPreKeys(count:100);
-      if (newPreKeys.isEmpty) {
-        // print('[KeyRotation] No new prekeys generated');
+    final now = DateTime.now();
+    // Adaptive replenishment cooldown: 2 mins when keys are depleted (< 20), 1 hr during normal checks
+    final replenishCooldown = _lastRemainingKeys < 20
+        ? const Duration(minutes: 2)
+        : const Duration(hours: 1);
+
+    if (_lastReplenishTime != null && now.difference(_lastReplenishTime!) < replenishCooldown) {
+      return;
+    }
+
+    _isReplenishing = true;
+
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      final deviceId = await SignalService.getDeviceId();
+      if (deviceId == null) return;
+
+      // Check current available one-time prekeys on backend
+      int remainingKeys = 100;
+      try {
+        final response = await http.get(
+          Uri.parse('$baseUrl/v1/prekeys/count/${user.uid}/$deviceId'),
+          headers: await _getAuthHeaders(),
+        );
+        if (response.statusCode == 200) {
+          final data = json.decode(response.body);
+          remainingKeys = data['remaining'] as int? ?? 100;
+          _lastRemainingKeys = remainingKeys;
+        } else {
+          // If count query fails or returns non-200, do not spam key generation
+          return;
+        }
+      } catch (_) {
+        // If count query fails, do not spam key generation
         return;
       }
 
-      // Get device ID
-      final deviceId = await SignalService.getDeviceId();
-      if (deviceId == null) {
-        // print('[KeyRotation] Could not get device ID for prekey upload');
+      // If pool has 20 or more keys remaining, it does not need replenishment
+      if (remainingKeys >= 20) {
+        return;
+      }
+
+      // Calculate deficit to top up back to 100 keys
+      final keysNeeded = (100 - remainingKeys).clamp(20, 100);
+
+      // Generate additional prekeys
+      final newPreKeys = await SignalService.generateAdditionalPreKeys(count: keysNeeded);
+      if (newPreKeys.isEmpty) {
         return;
       }
 
@@ -173,12 +242,13 @@ class KeyRotationService {
       );
 
       if (uploadSuccess) {
-        // print('[KeyRotation] ${newPreKeys.length} new prekeys uploaded successfully');
-      } else {
-        // print('[KeyRotation] Failed to upload new prekeys');
+        _lastReplenishTime = DateTime.now();
+        _lastRemainingKeys = 100; // Reset local tracker since we refilled
       }
-    } catch (e) {
-      // print('[KeyRotation] Error replenishing prekeys: $e');
+    } catch (_) {
+      // Error replenishing prekeys handled silently
+    } finally {
+      _isReplenishing = false;
     }
   }
 

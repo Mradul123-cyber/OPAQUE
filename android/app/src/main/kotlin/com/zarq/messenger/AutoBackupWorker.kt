@@ -4,100 +4,59 @@ import android.content.Context
 import android.util.Log
 import androidx.work.Worker
 import androidx.work.WorkerParameters
+import java.util.UUID
+import java.util.concurrent.CancellationException
 
-/**
- * WorkManager worker for native auto-backup
- * Executes silently in background without launching app
- */
-class AutoBackupWorker(
-    context: Context,
-    params: WorkerParameters
-) : Worker(context, params) {
-
-    companion object {
-        private const val TAG = "AutoBackupWorker"
-        const val WORK_NAME = "native_auto_backup"
-    }
-
+class AutoBackupWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
+    companion object { const val WORK_NAME = "native_auto_backup" }
+    private val run = UUID.randomUUID().toString()
     override fun doWork(): Result {
-        // Log.d(TAG, "")
-        // Log.d(TAG, "══════════════════════════════════════════")
-        // Log.d(TAG, "  AutoBackupWorker triggered")
-        // Log.d(TAG, "  Time: ${java.util.Date()}")
-        // Log.d(TAG, "══════════════════════════════════════════")
-        // Log.d(TAG, "")
-
-        return try {
-            // Check if this is a test backup (has "test_backup" tag)
-            val isTestBackup = tags.contains("test_backup")
-
-            if (isTestBackup) {
-                // Log.d(TAG, "🧪 Test backup mode - bypassing enabled check")
-            } else {
-                // For scheduled backups, check if auto-backup is enabled
-                val prefs = applicationContext.getSharedPreferences("zarq_prefs", Context.MODE_PRIVATE)
-                val autoBackupEnabled = prefs.getBoolean("auto_backup_enabled", false)
-
-                if (!autoBackupEnabled) {
-                    // Log.d(TAG, "⏭️  Auto-backup is disabled, skipping")
-                    return Result.success()
-                }
-            }
-
-            // Log.d(TAG, "✅ Proceeding with backup...")
-
-            // Show notification that backup is starting
-            BackupNotificationHelper(applicationContext).showProgressNotification(
-                "Starting auto-backup...",
-                0
-            )
-
-            // Execute native backup
-            val backupManager = NativeBackupManager(applicationContext)
-            val success = backupManager.performBackup()
-
-            if (success) {
-                Log.d(TAG, "")
-                Log.d(TAG, "══════════════════════════════════════════")
-                Log.d(TAG, "  ✅ AutoBackupWorker completed successfully")
-                Log.d(TAG, "══════════════════════════════════════════")
-                Log.d(TAG, "")
-
-                // Show success notification
-                BackupNotificationHelper(applicationContext).showSuccessNotification("Auto")
-
-                Result.success()
-            } else {
-                Log.e(TAG, "")
-                Log.e(TAG, "══════════════════════════════════════════")
-                Log.e(TAG, "  ❌ AutoBackupWorker failed")
-                Log.e(TAG, "  Will retry later...")
-                Log.e(TAG, "══════════════════════════════════════════")
-                Log.e(TAG, "")
-
-                // Show failure notification
-                BackupNotificationHelper(applicationContext).showFailureNotification(
-                    "Auto",
-                    "Backup failed, will retry"
-                )
-
-                Result.retry()
-            }
-
+        val uid = inputData.getString("userUid") ?: return Result.failure()
+        val generation = inputData.getString("generation") ?: return Result.failure()
+        if (!NativeBackupGuard.valid(applicationContext, uid, generation)) return Result.success()
+        if (!NativeBackupRuntime.executionLock.tryLock()) return Result.retry()
+        val notifications = BackupNotificationHelper(applicationContext, native = true)
+        fun notifySafely(action: () -> Unit) { try { action() } catch (e: SecurityException) { Log.w(WORK_NAME, "Notifications not permitted", e) } }
+        fun checkRunning() = NativeBackupRuntime.checkRunning(applicationContext, uid, generation, run) { isStopped }
+        try {
+            checkRunning()
+            NativeBackupManager(applicationContext).performBackup(uid, generation, ::checkRunning,
+                { message, progress ->
+                    synchronized(NativeBackupGuard.lock) {
+                        checkRunning()
+                        NativeBackupRuntime.report(applicationContext, uid, run, "running", message, progress)
+                        notifySafely { notifications.showProgressNotification(message, progress, uid, run) }
+                    }
+                }, {
+                    NativeBackupRuntime.report(applicationContext, uid, run, "success", "Automatic backup completed", 100)
+                })
+            notifySafely { notifications.showSuccessNotification("Auto") }
+            return Result.success()
+        } catch (e: CancellationException) {
+            NativeBackupRuntime.report(applicationContext, uid, run, "cancelled", "Automatic backup stopped")
+            notifySafely { notifications.cancelAllBackupNotifications() }
+            return Result.success()
         } catch (e: Exception) {
-            Log.e(TAG, "")
-            Log.e(TAG, "══════════════════════════════════════════")
-            Log.e(TAG, "  ❌ AutoBackupWorker exception: ${e.message}")
-            Log.e(TAG, "══════════════════════════════════════════")
-            Log.e(TAG, "", e)
-
-            // Show failure notification
-            BackupNotificationHelper(applicationContext).showFailureNotification(
-                "Auto",
-                "Error: ${e.message}"
-            )
-
-            Result.failure()
-        }
+            Log.e(WORK_NAME, "Automatic backup failed", e)
+            if (isStopped || !NativeBackupGuard.valid(applicationContext, uid, generation)) {
+                NativeBackupRuntime.report(applicationContext, uid, run, "cancelled", "Automatic backup stopped")
+                notifySafely { notifications.cancelAllBackupNotifications() }
+                return Result.success()
+            }
+            val transient = e is java.io.IOException || e.javaClass.simpleName.contains("Locked") || e.javaClass.simpleName.contains("Busy")
+            val retry = transient && runAttemptCount < 2
+            val message = when {
+                retry -> "Backup could not finish. Android will retry shortly."
+                e is SecurityException -> "Allow storage access, then enable automatic backups again."
+                transient -> "Backup could not finish after three attempts. Check free space and try again."
+                else -> "Automatic backup needs attention. Open the app and enable it again."
+            }
+            NativeBackupRuntime.report(applicationContext, uid, run, if (retry) "retrying" else "failed", message)
+            if (!transient) synchronized(NativeBackupGuard.lock) {
+                if (NativeBackupGuard.valid(applicationContext, uid, generation)) NativeBackupGuard.disable(applicationContext)
+            }
+            notifySafely { notifications.showFailureNotification("Auto", message) }
+            return if (retry) Result.retry() else Result.success()
+        } finally { NativeBackupRuntime.executionLock.unlock() }
     }
 }

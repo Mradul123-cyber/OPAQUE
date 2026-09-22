@@ -22,6 +22,35 @@ object BackupEncryption {
     private const val NONCE_SIZE = 12 // bytes (GCM standard)
     private const val AUTH_TAG_SIZE = 128 // bits (16 bytes)
 
+    /** Stream JSON directly into an encrypted private temporary file; no plaintext file. */
+    fun writeEncrypted(file: java.io.File, passphrase: String, checkRunning: () -> Unit,
+        writePlaintext: (java.io.OutputStream) -> Unit) {
+        val salt = ByteArray(SALT_SIZE)
+        val nonce = ByteArray(NONCE_SIZE)
+        SecureRandom().apply { nextBytes(salt); nextBytes(nonce) }
+        checkRunning()
+        val key = deriveKey(passphrase, salt)
+        try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(AUTH_TAG_SIZE, nonce))
+            java.io.FileOutputStream(file).use { output ->
+                output.write(salt); output.write(nonce)
+                val encrypting = object : java.io.OutputStream() {
+                    override fun write(value: Int) = write(byteArrayOf(value.toByte()), 0, 1)
+                    override fun write(data: ByteArray, offset: Int, length: Int) {
+                        checkRunning()
+                        cipher.update(data, offset, length)?.let { output.write(it) }
+                    }
+                    override fun flush() = output.flush()
+                }
+                writePlaintext(encrypting)
+                checkRunning()
+                output.write(cipher.doFinal())
+                output.fd.sync()
+            }
+        } finally { key.fill(0) }
+    }
+
     /**
      * Encrypt backup data with AES-256-GCM
      *

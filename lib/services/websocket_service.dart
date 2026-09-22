@@ -16,6 +16,7 @@ import 'key_rotation_service.dart';
 import 'sent_message_service.dart';
 import 'navigation_handler.dart';
 import 'group_encryption_service.dart';
+import 'package:zarq_messenger/app_config.dart';
 
 // Message queue item for reliable delivery
 class QueuedMessage {
@@ -136,15 +137,17 @@ class WebSocketService with ChangeNotifier {
     final completer = Completer<void>();
 
     try {
+      final baseUri = Uri.parse(AppConfig.baseUrl);
+      final isSecure = baseUri.scheme == 'https';
       final uri = Uri(
-        scheme: 'ws',
-        host: '192.168.29.81',
-        port: 8080,
+        scheme: isSecure ? 'wss' : 'ws',
+        host: baseUri.host,
+        port: baseUri.hasPort ? baseUri.port : null,
         path: '/ws',
         queryParameters: {'token': token},
       );
       print("===== BIG DEBUG =====");
-      print("Attempting to connect to WebSocket at: \$uri");
+      print("Attempting to connect to WebSocket at: $uri");
       print("=======================");
       _channel = WebSocketChannel.connect(uri);
 
@@ -622,6 +625,10 @@ class WebSocketService with ChangeNotifier {
       final dbService = DatabaseService.instance;
       final existingMessage = await dbService.getMessageById(messageId);
 
+      final senderDeviceId = editData['sender_device_id'] is int
+          ? editData['sender_device_id'] as int
+          : int.tryParse(editData['sender_device_id']?.toString() ?? '') ?? existingMessage?.senderDeviceId;
+
       String? decryptedText;
       final currentUser = FirebaseAuth.instance.currentUser;
       final isMe = currentUser != null && currentUser.uid == senderUid;
@@ -633,14 +640,14 @@ class WebSocketService with ChangeNotifier {
             groupId: conversationId.toString(),
             ciphertext: contentB64,
             senderUid: senderUid,
-            senderDeviceId: existingMessage?.senderDeviceId ?? 1,
+            senderDeviceId: senderDeviceId ?? 1,
           );
         } catch (_) {
           try {
             decryptedText = await SignalService.decryptMessage(
               senderUid: senderUid,
               ciphertextB64: contentB64,
-              deviceId: existingMessage?.senderDeviceId ?? 1,
+              deviceId: senderDeviceId,
             );
           } catch (e) {
             debugPrint('[WebSocketService] Could not decrypt edited message $messageId: $e');
@@ -649,12 +656,31 @@ class WebSocketService with ChangeNotifier {
       }
 
       if (decryptedText != null && decryptedText.isNotEmpty) {
-        await dbService.updateMessageContent(
-          messageId,
-          decryptedText,
-          encryptedContent: contentB64,
-          editedAt: editedAt,
-        );
+        if (existingMessage != null) {
+          await dbService.updateMessageContent(
+            messageId,
+            decryptedText,
+            encryptedContent: contentB64,
+            editedAt: editedAt,
+          );
+        } else {
+          await dbService.insertMessage(
+            Message(
+              id: messageId,
+              conversationId: conversationId,
+              username: editData['sender_username'] as String? ?? 'User',
+              senderUid: senderUid ?? '',
+              senderDeviceId: senderDeviceId,
+              content: decryptedText,
+              encryptedContent: contentB64,
+              isEdited: true,
+              editedAt: editedAt,
+              timestamp: editedAt,
+              status: MessageStatus.delivered,
+              isEncrypted: true,
+            ),
+          );
+        }
       } else if (existingMessage != null) {
         await dbService.updateMessageContent(
           messageId,
@@ -918,14 +944,52 @@ class WebSocketService with ChangeNotifier {
           decryptedContent = result as String;
           // print("[WebSocketService] ✅ Signal decryption successful");
 
-          // Add threshold check after successful decryption
+          // Threshold check after successful decryption (debounced and async)
           final currentUserDeviceId = await SignalService.getDeviceId();
           if (currentUserDeviceId != null) {
-            await KeyRotationService.checkThresholdAfterKeyConsumption(
+            unawaited(KeyRotationService.checkThresholdAfterKeyConsumption(
               currentUserUid: currentUser.uid,
               deviceId: currentUserDeviceId,
-            );
+            ));
           }
+        } on PlatformException catch (pe) {
+          if (pe.code == 'DUPLICATE_MESSAGE') {
+            debugPrint('[WebSocketService] ℹ️ Duplicate message $messageId from $senderUid already decrypted - acknowledging and skipping without resetting session');
+            try {
+              final existingMsg = await DatabaseService.instance.getMessageById(messageId);
+              if (existingMsg != null) {
+                _streamController.add({
+                  'type': 'local_message_saved',
+                  'message_id': messageId,
+                  'conversation_id': conversationId,
+                });
+              }
+            } catch (e) {
+              debugPrint('[WebSocketService] Error checking existing message for duplicate: $e');
+            }
+            await _markMessageAsDelivered(messageId, conversationId);
+            return; // Exit cleanly — do NOT reset session!
+          }
+
+          // Real decryption failure:
+          try {
+            await SignalService.resetSessionDueToDecryptionFailure(
+              senderUid: senderUid,
+              senderDeviceId: senderDeviceId,
+            );
+          } catch (_) {}
+
+          try {
+            final sessionResetNotification = {
+              'type': 'session_reset_required',
+              'recipient_uid': senderUid,
+              'recipient_device_id': senderDeviceId,
+              'reason': 'decryption_failed',
+              'timestamp': DateTime.now().toUtc().toIso8601String(),
+            };
+            await sendMessageReliably(sessionResetNotification);
+          } catch (_) {}
+          return;
         } catch (e) {
           // print("[WebSocketService] ❌ Signal decryption failed: $e");
 
@@ -1565,13 +1629,13 @@ class WebSocketService with ChangeNotifier {
     try {
       // print("[WebSocketService] 🔄 Auto re-establishing keys for conversation $conversationId");
 
-      // Re-establish group encryption after rotation
-      final reEstablished = await GroupEncryptionService.setupGroupEncryption(
+      // Rotate and re-establish group encryption after member change
+      final reEstablished = await GroupEncryptionService.rotateSenderKey(
         groupId: conversationId.toString(),
       );
 
       if (reEstablished) {
-        // print("[WebSocketService] ✅ Keys re-established successfully after rotation ($reason)");
+        // print("[WebSocketService] ✅ Keys rotated and re-established successfully after rotation ($reason)");
       } else {
         // print("[WebSocketService] ⚠️ Failed to re-establish keys after rotation");
       }

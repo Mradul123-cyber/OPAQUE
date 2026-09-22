@@ -1,6 +1,8 @@
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'app_storage.dart';
 
 import '../home_screen.dart';
 import 'database_service.dart';
@@ -12,6 +14,9 @@ class ConversationService {
   // Fetches the list of conversations for the currently logged-in user.
   Future<List<ConversationInfo>> fetchConversations() async {
     final dbService = DatabaseService.instance;
+    if (Firebase.apps.isEmpty) {
+      await AppStorage.firebaseInitFuture;
+    }
     final user = FirebaseAuth.instance.currentUser;
 
     if (user == null) {
@@ -42,17 +47,18 @@ class ConversationService {
             .map((data) => ConversationInfo.fromJson(data))
             .toList();
 
-        // Add unread status, count, and last message to each
-        final conversationsWithMetadata = <ConversationInfo>[];
-        for (final convo in baseConversations) {
-          final unreadCount = await dbService.getUnreadMessageCount(
-            convo.conversationId,
-            user.uid,
-          );
-          final lastMsg = await dbService.getLastMessage(convo.conversationId);
+        // Add unread status, count, and last message to each (in parallel)
+        final conversationsWithMetadata = await Future.wait(
+          baseConversations.map((convo) async {
+            final unreadFuture = dbService.getUnreadMessageCount(
+              convo.conversationId,
+              user.uid,
+            );
+            final lastMsgFuture = dbService.getLastMessage(convo.conversationId);
+            final unreadCount = await unreadFuture;
+            final lastMsg = await lastMsgFuture;
 
-          conversationsWithMetadata.add(
-            ConversationInfo(
+            return ConversationInfo(
               conversationId: convo.conversationId,
               chatTitle: convo.chatTitle,
               isGroup: convo.isGroup,
@@ -64,9 +70,9 @@ class ConversationService {
               unreadCount: unreadCount,
               lastMessageTimestamp: lastMsg?.timestamp,
               lastMessage: lastMsg?.content,
-            ),
-          );
-        }
+            );
+          }),
+        );
 
         // Sort by last message timestamp (newest first)
         conversationsWithMetadata.sort((a, b) {

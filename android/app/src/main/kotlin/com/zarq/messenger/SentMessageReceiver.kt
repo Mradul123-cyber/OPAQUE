@@ -13,7 +13,7 @@ class SentMessageReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == "com.example.zarq_messenger.MESSAGE_SENT") {
+        if (intent.action == "com.zarq.messenger.MESSAGE_SENT" || intent.action == "com.example.zarq_messenger.MESSAGE_SENT") {
             Log.d(TAG, "Received sent message broadcast")
 
             val conversationId = intent.getIntExtra("conversation_id", -1)

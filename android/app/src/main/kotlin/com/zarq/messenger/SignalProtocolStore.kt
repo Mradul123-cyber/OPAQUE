@@ -19,6 +19,7 @@ import org.whispersystems.libsignal.ecc.ECKeyPair
 import org.whispersystems.libsignal.groups.state.SenderKeyRecord
 import org.whispersystems.libsignal.groups.state.SenderKeyStore
 import org.whispersystems.libsignal.groups.SenderKeyName
+import org.whispersystems.libsignal.InvalidKeyIdException
 import org.whispersystems.libsignal.state.SignalProtocolStore as LibSignalProtocolStore
 
 /**
@@ -45,6 +46,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
         private const val PREFIX_PREKEY = "prekey_"
         private const val PREFIX_SIGNED_PREKEY = "signed_prekey_"
         private const val PREFIX_SESSION = "session_"
+        private const val PREFIX_SESSION_CREATED = "session_created_time_"
         private const val PREFIX_IDENTITY = "identity_"
         private const val PREFIX_KEY_CHANGE_TIME = "key_change_time_"
         private const val PREFIX_SENDER_KEY = "sender_key_"
@@ -57,20 +59,38 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
         context.getSharedPreferences(STORE_PREFS, Context.MODE_PRIVATE)
     }
 
+    private val storeLock = Any()
 
-    fun getLastKeyChangeTime(address: SignalProtocolAddress): Long {
+    fun getLastKeyChangeTime(address: SignalProtocolAddress): Long = synchronized(storeLock) {
         val key = PREFIX_KEY_CHANGE_TIME + address.name + "_" + address.deviceId
-        return prefs.getLong(key, 0)
+        prefs.getLong(key, 0)
     }
 
-    private fun updateKeyChangeTime(address: SignalProtocolAddress) {
+    private fun updateKeyChangeTime(address: SignalProtocolAddress) = synchronized(storeLock) {
         val key = PREFIX_KEY_CHANGE_TIME + address.name + "_" + address.deviceId
-        prefs.edit().putLong(key, System.currentTimeMillis()).apply()
+        prefs.edit().putLong(key, System.currentTimeMillis()).commit()
     }
+
+    fun getSessionCreatedTime(address: SignalProtocolAddress): Long = synchronized(storeLock) {
+        val key = PREFIX_SESSION_CREATED + address.name + "_" + address.deviceId
+        val time = prefs.getLong(key, 0L)
+        if (time == 0L && containsSession(address)) {
+            val now = System.currentTimeMillis()
+            prefs.edit().putLong(key, now).commit()
+            return now
+        }
+        time
+    }
+
+    fun setSessionCreatedTime(address: SignalProtocolAddress, time: Long = System.currentTimeMillis()) = synchronized(storeLock) {
+        val key = PREFIX_SESSION_CREATED + address.name + "_" + address.deviceId
+        prefs.edit().putLong(key, time).commit()
+    }
+
     // ===== IDENTITY KEY STORE IMPLEMENTATION =====
 
-    override fun getIdentityKeyPair(): IdentityKeyPair? {
-        return try {
+    override fun getIdentityKeyPair(): IdentityKeyPair? = synchronized(storeLock) {
+        try {
             val jsonStr = prefs.getString(KEY_IDENTITY_PAIR, null) ?: return null
             val json = JSONObject(jsonStr)
 
@@ -93,12 +113,12 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
         }
     }
 
-    override fun getLocalRegistrationId(): Int {
-        return prefs.getInt(KEY_REGISTRATION_ID, -1)
+    override fun getLocalRegistrationId(): Int = synchronized(storeLock) {
+        prefs.getInt(KEY_REGISTRATION_ID, -1)
     }
 
-    override fun saveIdentity(address: SignalProtocolAddress, identityKey: IdentityKey): Boolean {
-        return try {
+    override fun saveIdentity(address: SignalProtocolAddress, identityKey: IdentityKey): Boolean = synchronized(storeLock) {
+        try {
             val key = PREFIX_IDENTITY + address.name  // Removed device_id here too
             val identityKeyB64 = Base64.encodeToString(identityKey.serialize(), Base64.NO_WRAP)
 
@@ -109,7 +129,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
                 Log.i(TAG, "Identity key changed for ${address.name}")
             }
 
-            prefs.edit().putString(key, identityKeyB64).apply()
+            prefs.edit().putString(key, identityKeyB64).commit()
             Log.d(TAG, "Saved identity for ${address.name}")
             true
         } catch (e: Exception) {
@@ -118,7 +138,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
         }
     }
 
-    override fun isTrustedIdentity(address: SignalProtocolAddress, identityKey: IdentityKey, direction: IdentityKeyStore.Direction): Boolean {
+    override fun isTrustedIdentity(address: SignalProtocolAddress, identityKey: IdentityKey, direction: IdentityKeyStore.Direction): Boolean = synchronized(storeLock) {
         try {
             // Track identity per USER, not per device (WhatsApp approach)
             val key = PREFIX_IDENTITY + address.name  // Removed device_id
@@ -149,39 +169,23 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
     }
 
     private fun shouldAutoTrustNewKey(address: SignalProtocolAddress, newKey: IdentityKey, direction: IdentityKeyStore.Direction): Boolean {
-        // 1. Auto-trust for outgoing messages (when YOU initiate)
+        // 1. Auto-trust for outgoing messages (when YOU initiate contact or session)
         if (direction == IdentityKeyStore.Direction.SENDING) {
             Log.d(TAG, "Auto-trusting new identity for outgoing message to ${address.name}")
             return true
         }
 
-        // 2. CRITICAL: Auto-trust if NO session exists (we deleted stale session)
-        // This allows re-establishment after detecting key change
+        // 2. Auto-trust if NO session exists (e.g. initial message, new device, or after session reset)
         val sessionExists = containsSession(address)
         if (!sessionExists) {
-            Log.d(TAG, "Auto-trusting new identity - no session exists (likely after key rotation)")
+            Log.d(TAG, "Auto-trusting new identity for incoming message from ${address.name}:${address.deviceId} - no active session exists")
             return true
         }
 
-        // 3. Check if key change is old enough (likely legitimate)
-        val lastKeyChange = getLastKeyChangeTime(address)
-        if (lastKeyChange == 0L) {
-            // No previous change recorded, trust it
-            return true
-        }
-
-        val timeSinceLastChange = System.currentTimeMillis() - lastKeyChange
-        val daysSinceChange = java.util.concurrent.TimeUnit.MILLISECONDS.toDays(timeSinceLastChange)
-
-        if (daysSinceChange > 30) {
-            Log.d(TAG, "Auto-trusting identity change for ${address.name} (${daysSinceChange} days old)")
-            return true
-        }
-
-        // 3. Recent change on incoming message - be cautious but still allow
-        Log.w(TAG, "Recent identity change for ${address.name} (${daysSinceChange} days ago)")
-        // TODO: Add user notification in future
-        return true // For now, still allow but log the warning
+        // 3. SECURITY (C-3): An active session already exists for this address, but incoming PreKey message has a different identity key.
+        // Reject unannounced identity key change while an active session exists to prevent MITM key substitution attacks.
+        Log.w(TAG, "SECURITY: Rejecting incoming identity key change for ${address.name}:${address.deviceId} while active session exists. Untrusted identity key.")
+        return false
     }
 
     /**
@@ -189,8 +193,8 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
      * This allows single-device testing of encryption/decryption
      */
 
-    override fun getIdentity(address: SignalProtocolAddress): IdentityKey? {
-        return try {
+    override fun getIdentity(address: SignalProtocolAddress): IdentityKey? = synchronized(storeLock) {
+        try {
             val key = PREFIX_IDENTITY + address.name
             val identityKeyB64 = prefs.getString(key, null) ?: return null
             val identityKeyBytes = Base64.decode(identityKeyB64, Base64.NO_WRAP)
@@ -203,65 +207,71 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
 
     // ===== PREKEY STORE IMPLEMENTATION =====
 
-    override fun loadPreKey(preKeyId: Int): PreKeyRecord? {
-        return try {
-            val key = PREFIX_PREKEY + preKeyId
-            val recordB64 = prefs.getString(key, null) ?: return null
+    override fun loadPreKey(preKeyId: Int): PreKeyRecord = synchronized(storeLock) {
+        val key = PREFIX_PREKEY + preKeyId
+        val recordB64 = prefs.getString(key, null)
+            ?: throw InvalidKeyIdException("No prekey found with ID: $preKeyId")
+        try {
             val recordBytes = Base64.decode(recordB64, Base64.NO_WRAP)
             PreKeyRecord(recordBytes)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to load prekey $preKeyId", e)
-            null
+            Log.e(TAG, "Failed to decode prekey $preKeyId", e)
+            throw InvalidKeyIdException("Corrupted prekey record for ID: $preKeyId: ${e.message}")
         }
     }
 
     override fun storePreKey(preKeyId: Int, record: PreKeyRecord) {
-        try {
-            val key = PREFIX_PREKEY + preKeyId
-            val recordB64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
-            prefs.edit().putString(key, recordB64).commit()  // FIX: Use commit() to ensure disk write completes before upload
-            Log.d(TAG, "Stored prekey $preKeyId")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to store prekey $preKeyId", e)
+        synchronized(storeLock) {
+            try {
+                val key = PREFIX_PREKEY + preKeyId
+                val recordB64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
+                prefs.edit().putString(key, recordB64).commit()  // FIX: Use commit() to ensure disk write completes before upload
+                Log.d(TAG, "Stored prekey $preKeyId")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to store prekey $preKeyId", e)
+            }
         }
     }
 
-    override fun containsPreKey(preKeyId: Int): Boolean {
+    override fun containsPreKey(preKeyId: Int): Boolean = synchronized(storeLock) {
         val key = PREFIX_PREKEY + preKeyId
-        return prefs.contains(key)
+        prefs.contains(key)
     }
 
     override fun removePreKey(preKeyId: Int) {
-        try {
-            val key = PREFIX_PREKEY + preKeyId
-            val wasPresent = prefs.contains(key)
-            prefs.edit().remove(key).apply()
-            Log.d(TAG, "Removed prekey $preKeyId (was present: $wasPresent)")
+        synchronized(storeLock) {
+            try {
+                val key = PREFIX_PREKEY + preKeyId
+                val wasPresent = prefs.contains(key)
+                prefs.edit().remove(key).commit()
+                Log.d(TAG, "Removed prekey $preKeyId (was present: $wasPresent)")
 
-            // Debug: Count remaining prekeys
-            val remainingCount = prefs.all.keys.count { it.startsWith(PREFIX_PREKEY) }
-            Log.d(TAG, "Remaining prekeys after removal: $remainingCount")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to remove prekey $preKeyId", e)
+                // Debug: Count remaining prekeys
+                val remainingCount = prefs.all.keys.count { it.startsWith(PREFIX_PREKEY) }
+                Log.d(TAG, "Remaining prekeys after removal: $remainingCount")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to remove prekey $preKeyId", e)
+            }
         }
     }
 
     // ===== SIGNED PREKEY STORE IMPLEMENTATION =====
 
-    override fun loadSignedPreKey(signedPreKeyId: Int): SignedPreKeyRecord? {
-        return try {
-            val key = PREFIX_SIGNED_PREKEY + signedPreKeyId
-            val recordB64 = prefs.getString(key, null) ?: return null
+    override fun loadSignedPreKey(signedPreKeyId: Int): SignedPreKeyRecord = synchronized(storeLock) {
+        val key = PREFIX_SIGNED_PREKEY + signedPreKeyId
+        val recordB64 = prefs.getString(key, null)
+            ?: throw InvalidKeyIdException("No signed prekey found with ID: $signedPreKeyId")
+        try {
             val recordBytes = Base64.decode(recordB64, Base64.NO_WRAP)
             SignedPreKeyRecord(recordBytes)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to load signed prekey $signedPreKeyId", e)
-            null
+            Log.e(TAG, "Failed to decode signed prekey $signedPreKeyId", e)
+            throw InvalidKeyIdException("Corrupted signed prekey record for ID: $signedPreKeyId: ${e.message}")
         }
     }
 
-    override fun loadSignedPreKeys(): List<SignedPreKeyRecord> {
-        return try {
+    override fun loadSignedPreKeys(): List<SignedPreKeyRecord> = synchronized(storeLock) {
+        try {
             val records = mutableListOf<SignedPreKeyRecord>()
             for ((key, value) in prefs.all) {
                 if (key.startsWith(PREFIX_SIGNED_PREKEY) && value is String) {
@@ -282,35 +292,71 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
     }
 
     override fun storeSignedPreKey(signedPreKeyId: Int, record: SignedPreKeyRecord) {
-        try {
-            val key = PREFIX_SIGNED_PREKEY + signedPreKeyId
-            val recordB64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
-            prefs.edit().putString(key, recordB64).commit()  // FIX: Use commit() to ensure disk write completes
-            Log.d(TAG, "Stored signed prekey $signedPreKeyId")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to store signed prekey $signedPreKeyId", e)
+        synchronized(storeLock) {
+            try {
+                val key = PREFIX_SIGNED_PREKEY + signedPreKeyId
+                val recordB64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
+                prefs.edit().putString(key, recordB64).commit()  // FIX: Use commit() to ensure disk write completes
+                Log.d(TAG, "Stored signed prekey $signedPreKeyId")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to store signed prekey $signedPreKeyId", e)
+            }
         }
     }
 
-    override fun containsSignedPreKey(signedPreKeyId: Int): Boolean {
+    override fun containsSignedPreKey(signedPreKeyId: Int): Boolean = synchronized(storeLock) {
         val key = PREFIX_SIGNED_PREKEY + signedPreKeyId
-        return prefs.contains(key)
+        prefs.contains(key)
     }
 
     override fun removeSignedPreKey(signedPreKeyId: Int) {
+        synchronized(storeLock) {
+            try {
+                val key = PREFIX_SIGNED_PREKEY + signedPreKeyId
+                prefs.edit().remove(key).commit()
+                Log.d(TAG, "Removed signed prekey $signedPreKeyId")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to remove signed prekey $signedPreKeyId", e)
+            }
+        }
+    }
+
+    /**
+     * Prune retired signed prekeys.
+     * Keeps the current active signed prekey and the immediately preceding signed prekey
+     * (as a grace period for in-flight messages), removing all older signed prekeys
+     * to preserve forward secrecy and prevent storage bloat.
+     */
+    fun pruneOldSignedPreKeys(currentSignedPreKeyId: Int, keepPreviousCount: Int = 1) = synchronized(storeLock) {
         try {
-            val key = PREFIX_SIGNED_PREKEY + signedPreKeyId
-            prefs.edit().remove(key).apply()
-            Log.d(TAG, "Removed signed prekey $signedPreKeyId")
+            val minKeyToKeep = currentSignedPreKeyId - keepPreviousCount
+            val editor = prefs.edit()
+            var prunedCount = 0
+
+            for (key in prefs.all.keys) {
+                if (key.startsWith(PREFIX_SIGNED_PREKEY)) {
+                    val idStr = key.removePrefix(PREFIX_SIGNED_PREKEY)
+                    val id = idStr.toIntOrNull()
+                    if (id != null && id < minKeyToKeep) {
+                        editor.remove(key)
+                        prunedCount++
+                    }
+                }
+            }
+
+            if (prunedCount > 0) {
+                editor.commit()
+                Log.i(TAG, "Pruned $prunedCount retired signed prekey(s) older than ID $minKeyToKeep")
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to remove signed prekey $signedPreKeyId", e)
+            Log.e(TAG, "Failed to prune old signed prekeys", e)
         }
     }
 
     // ===== SESSION STORE IMPLEMENTATION =====
 
-    override fun loadSession(address: SignalProtocolAddress): SessionRecord {
-        return try {
+    override fun loadSession(address: SignalProtocolAddress): SessionRecord = synchronized(storeLock) {
+        try {
             val key = PREFIX_SESSION + address.name + "_" + address.deviceId
             val recordB64 = prefs.getString(key, null)
 
@@ -327,8 +373,8 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
         }
     }
 
-    override fun getSubDeviceSessions(name: String): List<Int> {
-        return try {
+    override fun getSubDeviceSessions(name: String): List<Int> = synchronized(storeLock) {
+        try {
             val prefix = PREFIX_SESSION + name + "_"
             val deviceIds = mutableListOf<Int>()
 
@@ -352,57 +398,70 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
     }
 
     override fun storeSession(address: SignalProtocolAddress, record: SessionRecord) {
-        try {
-            val key = PREFIX_SESSION + address.name + "_" + address.deviceId
+        synchronized(storeLock) {
+            try {
+                val key = PREFIX_SESSION + address.name + "_" + address.deviceId
+                val createdKey = PREFIX_SESSION_CREATED + address.name + "_" + address.deviceId
 
-            // Debug: Check session before storing
-            val sizeBefore = record.serialize()?.size ?: 0
-            Log.d(TAG, "STORE SESSION: $address, size before: $sizeBefore")
+                // Debug: Check session before storing
+                val sizeBefore = record.serialize()?.size ?: 0
+                Log.d(TAG, "STORE SESSION: $address, size before: $sizeBefore")
 
-            val recordB64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
-            prefs.edit().putString(key, recordB64).commit()  // FIX: Use commit() to ensure session is saved before use
+                val recordB64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
+                val editor = prefs.edit().putString(key, recordB64)
+                if (!prefs.contains(createdKey)) {
+                    editor.putLong(createdKey, System.currentTimeMillis())
+                }
+                editor.commit()  // FIX: Use commit() to ensure session is saved before use
 
-            // Debug: Verify stored session can be loaded back
-            val loadedRecord = loadSession(address)
-            val sizeAfter = loadedRecord.serialize()?.size ?: 0
-            Log.d(TAG, "STORE SESSION: $address, size after reload: $sizeAfter, corruption: ${sizeBefore != sizeAfter}")
+                // Debug: Verify stored session can be loaded back
+                val loadedRecord = loadSession(address)
+                val sizeAfter = loadedRecord.serialize()?.size ?: 0
+                Log.d(TAG, "STORE SESSION: $address, size after reload: $sizeAfter, corruption: ${sizeBefore != sizeAfter}")
 
-            Log.d(TAG, "Stored session for ${address.name}:${address.deviceId}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to store session for ${address.name}:${address.deviceId}", e)
+                Log.d(TAG, "Stored session for ${address.name}:${address.deviceId}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to store session for ${address.name}:${address.deviceId}", e)
+            }
         }
     }
 
-    override fun containsSession(address: SignalProtocolAddress): Boolean {
+    override fun containsSession(address: SignalProtocolAddress): Boolean = synchronized(storeLock) {
         val key = PREFIX_SESSION + address.name + "_" + address.deviceId
-        return prefs.contains(key)
+        prefs.contains(key)
     }
 
     override fun deleteSession(address: SignalProtocolAddress) {
-        try {
-            val key = PREFIX_SESSION + address.name + "_" + address.deviceId
-            prefs.edit().remove(key).apply()
-            Log.d(TAG, "Deleted session for ${address.name}:${address.deviceId}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to delete session for ${address.name}:${address.deviceId}", e)
+        synchronized(storeLock) {
+            try {
+                val key = PREFIX_SESSION + address.name + "_" + address.deviceId
+                val createdKey = PREFIX_SESSION_CREATED + address.name + "_" + address.deviceId
+                prefs.edit().remove(key).remove(createdKey).commit()
+                Log.d(TAG, "Deleted session for ${address.name}:${address.deviceId}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to delete session for ${address.name}:${address.deviceId}", e)
+            }
         }
     }
 
     override fun deleteAllSessions(name: String) {
-        try {
-            val prefix = PREFIX_SESSION + name + "_"
-            val editor = prefs.edit()
+        synchronized(storeLock) {
+            try {
+                val prefix = PREFIX_SESSION + name + "_"
+                val createdPrefix = PREFIX_SESSION_CREATED + name + "_"
+                val editor = prefs.edit()
 
-            for (key in prefs.all.keys) {
-                if (key.startsWith(prefix)) {
-                    editor.remove(key)
+                for (key in prefs.all.keys) {
+                    if (key.startsWith(prefix) || key.startsWith(createdPrefix)) {
+                        editor.remove(key)
+                    }
                 }
-            }
 
-            editor.apply()
-            Log.d(TAG, "Deleted all sessions for $name")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to delete all sessions for $name", e)
+                editor.commit()
+                Log.d(TAG, "Deleted all sessions for $name")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to delete all sessions for $name", e)
+            }
         }
     }
 
@@ -411,7 +470,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
     /**
      * Initialize the store with identity key pair and registration ID
      */
-    fun initializeStore(identityKeyPair: IdentityKeyPair, registrationId: Int) {
+    fun initializeStore(identityKeyPair: IdentityKeyPair, registrationId: Int) = synchronized(storeLock) {
         try {
             val identityData = JSONObject().apply {
                 put("public_key", Base64.encodeToString(identityKeyPair.publicKey.serialize(), Base64.NO_WRAP))
@@ -421,7 +480,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
             prefs.edit()
                 .putString(KEY_IDENTITY_PAIR, identityData.toString())
                 .putInt(KEY_REGISTRATION_ID, registrationId)
-                .apply()
+                .commit()
 
             Log.d(TAG, "Store initialized with registration ID: $registrationId")
         } catch (e: Exception) {
@@ -433,9 +492,9 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
     /**
      * Clear all stored data
      */
-    fun clearAll() {
+    fun clearAll() = synchronized(storeLock) {
         try {
-            prefs.edit().clear().apply()
+            prefs.edit().clear().commit()
             Log.d(TAG, "All store data cleared")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to clear store", e)
@@ -446,8 +505,8 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
      * Export all Signal Protocol state for backup
      * Returns JSON string containing all keys, sessions, and prekeys
      */
-    fun exportSignalState(): String {
-        return try {
+    fun exportSignalState(): String = synchronized(storeLock) {
+        try {
             val allData = JSONObject()
             var skippedPrekeys = 0
 
@@ -473,7 +532,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
             result
         } catch (e: Exception) {
             Log.e(TAG, "Failed to export Signal state", e)
-            "{}"
+            throw IllegalStateException("Signal state export failed", e)
         }
     }
 
@@ -481,8 +540,8 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
      * Import Signal Protocol state from backup
      * Accepts JSON string containing all keys, sessions, and prekeys
      */
-    fun importSignalState(jsonString: String): Boolean {
-        return try {
+    fun importSignalState(jsonString: String): Boolean = synchronized(storeLock) {
+        try {
             val data = JSONObject(jsonString)
             val editor = prefs.edit()
 
@@ -505,7 +564,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
                 count++
             }
 
-            editor.commit()  // Use commit() to ensure restore completes synchronously
+            check(editor.commit()) { "Could not persist restored Signal state" }
             Log.d(TAG, "Imported Signal state: $count entries (one-time prekeys will be regenerated fresh)")
             true
         } catch (e: Exception) {
@@ -521,21 +580,23 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
      * Key format: sender_key_{groupId}_{senderName}_{deviceId}
      */
     override fun storeSenderKey(senderKeyName: SenderKeyName, record: SenderKeyRecord) {
-        try {
-            val key = PREFIX_SENDER_KEY + senderKeyName.groupId + "_" + senderKeyName.sender.name + "_" + senderKeyName.sender.deviceId
-            val recordB64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
-            prefs.edit().putString(key, recordB64).commit()  // FIX: Use commit() for group encryption keys
-            Log.d(TAG, "Stored sender key for ${senderKeyName.sender.name}:${senderKeyName.sender.deviceId} in group ${senderKeyName.groupId}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to store sender key for ${senderKeyName.sender.name}", e)
+        synchronized(storeLock) {
+            try {
+                val key = PREFIX_SENDER_KEY + senderKeyName.groupId + "_" + senderKeyName.sender.name + "_" + senderKeyName.sender.deviceId
+                val recordB64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
+                prefs.edit().putString(key, recordB64).commit()  // FIX: Use commit() for group encryption keys
+                Log.d(TAG, "Stored sender key for ${senderKeyName.sender.name}:${senderKeyName.sender.deviceId} in group ${senderKeyName.groupId}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to store sender key for ${senderKeyName.sender.name}", e)
+            }
         }
     }
 
     /**
      * Load a sender key for a specific sender in a group
      */
-    override fun loadSenderKey(senderKeyName: SenderKeyName): SenderKeyRecord {
-        return try {
+    override fun loadSenderKey(senderKeyName: SenderKeyName): SenderKeyRecord = synchronized(storeLock) {
+        try {
             val key = PREFIX_SENDER_KEY + senderKeyName.groupId + "_" + senderKeyName.sender.name + "_" + senderKeyName.sender.deviceId
             val recordB64 = prefs.getString(key, null)
 
@@ -556,7 +617,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
     /**
      * Delete all sender keys for a specific group (used when leaving a group)
      */
-    fun deleteSenderKeysForGroup(groupId: String) {
+    fun deleteSenderKeysForGroup(groupId: String) = synchronized(storeLock) {
         try {
             val prefix = PREFIX_SENDER_KEY + groupId + "_"
             val editor = prefs.edit()
@@ -569,7 +630,7 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
                 }
             }
 
-            editor.apply()
+            editor.commit()
             Log.d(TAG, "Deleted $count sender keys for group $groupId")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to delete sender keys for group $groupId", e)
@@ -579,8 +640,8 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
     /**
      * Get all sender keys for debugging purposes
      */
-    fun getSenderKeyDebugInfo(): Map<String, String> {
-        return try {
+    fun getSenderKeyDebugInfo(): Map<String, String> = synchronized(storeLock) {
+        try {
             val result = mutableMapOf<String, String>()
             for ((key, value) in prefs.all) {
                 if (key.startsWith(PREFIX_SENDER_KEY) && value is String) {

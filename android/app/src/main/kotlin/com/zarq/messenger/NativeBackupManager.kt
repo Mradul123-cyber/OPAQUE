@@ -2,7 +2,6 @@ package com.zarq.messenger
 
 import android.content.Context
 import android.util.Log
-import com.google.gson.Gson
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -14,7 +13,7 @@ class NativeBackupManager(private val context: Context) {
 
     companion object {
         private const val TAG = "NativeBackupManager"
-        private const val BACKUP_VERSION = "2.0.0"
+        private const val BACKUP_VERSION = "2.1.0"
         private const val PREFS_NAME = "zarq_prefs"
         private const val ENCRYPTED_PREFS_NAME = "zarq_secure_prefs"
     }
@@ -23,166 +22,99 @@ class NativeBackupManager(private val context: Context) {
      * Perform complete native backup
      * This is the main entry point called by AutoBackupWorker
      *
-     * @return true if backup successful, false otherwise
+     * @return true after verified publication; failures throw to the worker
      */
-    fun performBackup(): Boolean {
-        return try {
-            // Log.d(TAG, "")
-            // Log.d(TAG, "╔════════════════════════════════════════════╗")
-            // Log.d(TAG, "║  🚀 NATIVE AUTO-BACKUP STARTED            ║")
-            // Log.d(TAG, "╚════════════════════════════════════════════╝")
-            // Log.d(TAG, "")
-
-            // Show START notification with sound
-            BackupNotificationHelper(context).showStartNotification("Backup")
-
-            val startTime = System.currentTimeMillis()
-
-            // 1. Get user UID
-            val userUid = getUserUid()
-            if (userUid == null) {
-                // Log.e(TAG, "❌ No user UID found - cannot backup")
-                // Log.e(TAG, "❌ Please enable auto-backup in settings first!")
-                BackupNotificationHelper(context).showFailureNotification(
-                    "Auto",
-                    "No user UID found. Enable auto-backup in settings first."
-                )
-                return false
-            }
-            // Log.d(TAG, "✅ User UID: $userUid")
-
-            // 2. Get backup passphrase from encrypted storage
-            val passphrase = getBackupPassphrase()
-            if (passphrase == null) {
-                // Log.e(TAG, "❌ No backup passphrase found - cannot backup")
-                // Log.e(TAG, "❌ Please enable auto-backup in settings first!")
-                BackupNotificationHelper(context).showFailureNotification(
-                    "Auto",
-                    "No passphrase found. Enable auto-backup in settings first."
-                )
-                return false
-            }
-            // Log.d(TAG, "✅ Passphrase retrieved")
-
-            // 3. Get database password
-            val dbPassword = getDatabasePassword()
-            if (dbPassword == null) {
-                // Log.e(TAG, "❌ No database password found - cannot backup")
-                // Log.e(TAG, "❌ Please enable auto-backup in settings first!")
-                BackupNotificationHelper(context).showFailureNotification(
-                    "Auto",
-                    "No database password found. Enable auto-backup in settings first."
-                )
-                return false
-            }
-            // Log.d(TAG, "✅ Database password retrieved")
-
-            // 4. Export messages from SQLCipher database
-            // Log.d(TAG, "📦 Exporting messages from database...")
-            BackupNotificationHelper(context).showProgressNotification("Collecting messages...", 20)
-            val messages = SQLCipherHelper(context).exportMessages(userUid, dbPassword)
-            // Log.d(TAG, "✅ Exported ${messages.size} messages")
-
-            // 5. Derive conversations from messages
-            // Log.d(TAG, "🔄 Deriving conversations...")
-            BackupNotificationHelper(context).showProgressNotification("Processing conversations...", 40)
-            val conversations = deriveConversations(messages)
-            // Log.d(TAG, "✅ Derived ${conversations.size} conversations")
-
-            // 6. Export Signal Protocol state
-            // Log.d(TAG, "🔐 Exporting Signal Protocol state...")
-            BackupNotificationHelper(context).showProgressNotification("Exporting security data...", 50)
-            val signalState = exportSignalProtocolState()
-            // Log.d(TAG, "✅ Signal Protocol state exported")
-
-            // 7. Create BackupData object
-            val backupData = BackupData(
-                version = BACKUP_VERSION,
-                timestamp = System.currentTimeMillis(),
-                userUid = userUid,
-                deviceId = getDeviceId(),
-                messages = messages,
-                conversations = conversations,
-                signalProtocolState = signalState,
-                attachments = emptyList() // WhatsApp approach: media NOT included!
-            )
-
-            // 8. Convert to JSON
-            // Log.d(TAG, "📝 Converting to JSON...")
-            BackupNotificationHelper(context).showProgressNotification("Preparing backup data...", 60)
-            val json = Gson().toJson(backupData)
-            val jsonBytes = json.toByteArray(Charsets.UTF_8)
-            // Log.d(TAG, "✅ JSON size: ${jsonBytes.size} bytes (${formatBytes(jsonBytes.size)})")
-
-            // 9. Encrypt with AES-256-GCM
-            // Log.d(TAG, "🔒 Encrypting backup...")
-            BackupNotificationHelper(context).showProgressNotification("Encrypting backup...", 70)
-            val encryptedBytes = BackupEncryption.encrypt(jsonBytes, passphrase)
-            // Log.d(TAG, "✅ Encrypted size: ${encryptedBytes.size} bytes (${formatBytes(encryptedBytes.size)})")
-
-            // 10. Generate filename with auto_backup prefix for easy identification
-            val timestamp = SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss", Locale.getDefault()).format(Date())
-            val fileName = "auto_backup_$timestamp.encrypted"
-
-            // 11. Clean up old auto-backups BEFORE saving new one (keep only 2 most recent)
-            // Log.d(TAG, "🧹 Cleaning up old auto-backups...")
-            cleanupOldAutoBackups(context)
-
-            // 12. Save to MediaStore Downloads
-            // Log.d(TAG, "💾 Saving to MediaStore...")
-            BackupNotificationHelper(context).showProgressNotification("Saving to storage...", 90)
-            val success = MediaStoreHelper.saveBackup(context, encryptedBytes, fileName)
-
-            if (success) {
-                val duration = System.currentTimeMillis() - startTime
-                // Log.d(TAG, "")
-                // Log.d(TAG, "╔════════════════════════════════════════════╗")
-                // Log.d(TAG, "║  ✅ BACKUP COMPLETED SUCCESSFULLY         ║")
-                // Log.d(TAG, "╠════════════════════════════════════════════╣")
-                // Log.d(TAG, "║  File: $fileName")
-                // Log.d(TAG, "║  Location: ${MediaStoreHelper.getDisplayPath(fileName)}")
-                // Log.d(TAG, "║  Size: ${formatBytes(encryptedBytes.size)}")
-                // Log.d(TAG, "║  Messages: ${messages.size}")
-                // Log.d(TAG, "║  Duration: ${duration}ms")
-                // Log.d(TAG, "╚════════════════════════════════════════════╝")
-                // Log.d(TAG, "")
-            } else {
-                // Log.e(TAG, "❌ Failed to save backup to MediaStore")
-            }
-
-            success
-
-        } catch (e: Exception) {
-            // Log.e(TAG, "")
-            // Log.e(TAG, "╔════════════════════════════════════════════╗")
-            // Log.e(TAG, "║  ❌ BACKUP FAILED                          ║")
-            // Log.e(TAG, "╠════════════════════════════════════════════╣")
-            // Log.e(TAG, "║  Error: ${e.message}")
-            // Log.e(TAG, "╚════════════════════════════════════════════╝")
-            // Log.e(TAG, "", e)
-            false
+    fun performBackup(expectedUid: String, generation: String,
+        checkStopped: () -> Unit = {}, progress: (String, Int) -> Unit = { _, _ -> },
+        onSaved: () -> Unit = {}): Boolean {
+        fun checkRunning() {
+            checkStopped()
+            if (!NativeBackupGuard.valid(context, expectedUid, generation))
+                throw java.util.concurrent.CancellationException("Backup account changed")
         }
-    }
-
-    /**
-     * Derive conversations from messages
-     */
-    private fun deriveConversations(messages: List<Message>): List<Conversation> {
-        val conversationMap = mutableMapOf<Int, Conversation>()
-
-        for (message in messages) {
-            val convId = message.conversationId
-            if (!conversationMap.containsKey(convId)) {
-                conversationMap[convId] = Conversation(
-                    conversationId = convId,
-                    lastMessageTimestamp = message.timestamp,
-                    username = message.username,
-                    senderUid = message.senderUid
-                )
+        checkRunning()
+        val passphrase = getBackupPassphrase(expectedUid) ?: error("Backup passphrase unavailable")
+        val dbPassword = getDatabasePassword(expectedUid) ?: error("Database key unavailable")
+        progress("Preparing recovery data…", 5)
+        val signalState = exportSignalProtocolState()
+        checkRunning()
+        val state = org.json.JSONObject(signalState.data)
+        check(state.getInt("device_id") > 0 && state.getInt("registration_id") > 0)
+        check(state.optJSONObject("protocol_state") != null && !state.isNull("identity_key_pair"))
+        val identity = org.json.JSONObject(state.getString("identity_key_pair"))
+        val privateKey = android.util.Base64.decode(identity.getString("private_key"), android.util.Base64.NO_WRAP)
+        check(privateKey.size == 32)
+        check(android.util.Base64.decode(identity.getString("public_key"), android.util.Base64.NO_WRAP).size == 33)
+        val derivedPassword = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(privateKey + "zarq_database_encryption_v1".toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        check(derivedPassword == dbPassword) { "Database and recovery identity do not match" }
+        val account = java.security.MessageDigest.getInstance("SHA-256").digest(expectedUid.toByteArray())
+            .joinToString("") { "%02x".format(it) }.take(16)
+        val name = "auto_backup_${account}_${System.currentTimeMillis()}_${UUID.randomUUID()}.encrypted"
+        val staging = java.io.File(context.cacheDir, "opaque-auto-backup-stage")
+        if (!staging.isDirectory && !staging.mkdirs()) throw java.io.IOException("Backup staging unavailable")
+        // This private folder contains only this pipeline's encrypted temporary files.
+        // Worker execution is serialized, so leftovers can only be from interrupted runs.
+        staging.listFiles()?.filter { it.isFile && it.name.startsWith("stage-") && it.name.endsWith(".encrypted") }
+            ?.forEach { it.delete() }
+        val temp = java.io.File.createTempFile("stage-", ".encrypted", staging)
+        try {
+            progress("Encrypting messages…", 15)
+            BackupEncryption.writeEncrypted(temp, passphrase, ::checkRunning) { encryptedOutput ->
+                val writer = com.google.gson.stream.JsonWriter(java.io.OutputStreamWriter(encryptedOutput, Charsets.UTF_8))
+                writer.serializeNulls = true
+                writer.beginObject()
+                writer.name("version").value(BACKUP_VERSION)
+                writer.name("timestamp").value(System.currentTimeMillis())
+                writer.name("userUid").value(expectedUid)
+                writer.name("deviceId").value(state.getInt("device_id").toString())
+                writer.name("messages").beginArray()
+                val conversations = linkedMapOf<Long, Conversation>()
+                val gson = com.google.gson.GsonBuilder().serializeNulls().create()
+                SQLCipherHelper(context).visitMessages(expectedUid, dbPassword, ::checkRunning) { row ->
+                    gson.toJson(row, Map::class.java, writer)
+                    val id = (row["conversationId"] as Number).toLong()
+                    conversations[id] = Conversation(id, row["timestamp"] as String,
+                        row["username"] as String, row["senderUid"] as? String ?: "")
+                }
+                writer.endArray()
+                writer.name("conversations").beginArray()
+                for (conversation in conversations.values) {
+                    checkRunning(); gson.toJson(conversation, Conversation::class.java, writer)
+                }
+                writer.endArray()
+                writer.name("signalProtocolState")
+                gson.toJson(signalState, SignalProtocolState::class.java, writer)
+                writer.name("attachments").beginArray().endArray()
+                writer.endObject(); writer.flush()
             }
-        }
-
-        return conversationMap.values.toList()
+            checkRunning()
+            progress("Saving backup…", 75)
+            val uri = MediaStoreHelper.saveFile(context, temp, name, ::checkRunning)
+            var canPrune = false
+            try {
+                progress("Checking saved backup…", 90)
+                val verified = BackupRetention.verify(context, uri, temp, ::checkRunning)
+                synchronized(NativeBackupGuard.lock) {
+                    checkRunning()
+                    try {
+                        BackupRetention.record(context, expectedUid, uri, name, verified)
+                        canPrune = true
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Verified backup retained; retention record unavailable", e)
+                    }
+                    onSaved()
+                }
+            } catch (e: Exception) {
+                MediaStoreHelper.deleteBackup(context, uri)
+                throw e
+            }
+            // Pruning cannot turn an already verified backup into a failed operation.
+            try { if (canPrune) BackupRetention.prune(context, expectedUid, ::checkRunning) }
+            catch (e: Exception) { Log.w(TAG, "Backup saved; older-file cleanup deferred", e) }
+        } finally { temp.delete() }
+        return true
     }
 
     /**
@@ -198,44 +130,15 @@ class NativeBackupManager(private val context: Context) {
                 exportedAt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault()).format(Date())
             )
         } catch (e: Exception) {
-            // Log.w(TAG, "⚠️ Failed to export Signal state: ${e.message}")
-            // Return empty state on error (backup will work but sessions need re-establishment)
-            SignalProtocolState(
-                data = "{}",
-                exportedAt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault()).format(Date())
-            )
+            throw IllegalStateException("Required security data could not be exported", e)
         }
-    }
-
-    /**
-     * Get current user UID from SharedPreferences
-     */
-    private fun getUserUid(): String? {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val userUid = prefs.getString("user_uid", null)
-
-        // Debug: List all keys in SharedPreferences
-        // Log.d(TAG, "🔍 DEBUG: Checking SharedPreferences for user_uid")
-        // Log.d(TAG, "🔍 DEBUG: SharedPreferences name: $PREFS_NAME")
-        // Log.d(TAG, "🔍 DEBUG: All keys in prefs: ${prefs.all.keys}")
-        // Log.d(TAG, "🔍 DEBUG: user_uid value: $userUid")
-
-        return userUid
-    }
-
-    /**
-     * Get device ID from SharedPreferences
-     */
-    private fun getDeviceId(): String {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getString("device_id", "unknown") ?: "unknown"
     }
 
     /**
      * Get backup passphrase from EncryptedSharedPreferences
      * This is stored when user enables auto-backup in Flutter
      */
-    private fun getBackupPassphrase(): String? {
+    private fun getBackupPassphrase(userUid: String): String? {
         return try {
             val encryptedPrefs = androidx.security.crypto.EncryptedSharedPreferences.create(
                 context,
@@ -246,7 +149,7 @@ class NativeBackupManager(private val context: Context) {
                 androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
-            encryptedPrefs.getString("auto_backup_passphrase", null)
+            encryptedPrefs.getString("auto_backup_passphrase_$userUid", null)
         } catch (e: Exception) {
             // Log.e(TAG, "Error reading passphrase: ${e.message}", e)
             null
@@ -256,7 +159,7 @@ class NativeBackupManager(private val context: Context) {
     /**
      * Get database password from EncryptedSharedPreferences
      */
-    private fun getDatabasePassword(): String? {
+    private fun getDatabasePassword(userUid: String): String? {
         return try {
             val encryptedPrefs = androidx.security.crypto.EncryptedSharedPreferences.create(
                 context,
@@ -267,79 +170,11 @@ class NativeBackupManager(private val context: Context) {
                 androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
-            encryptedPrefs.getString("database_password", null)
+            encryptedPrefs.getString("database_password_$userUid", null)
         } catch (e: Exception) {
             // Log.e(TAG, "Error reading database password: ${e.message}", e)
             null
         }
     }
 
-    /**
-     * Format bytes to human-readable string
-     */
-    private fun formatBytes(bytes: Int): String {
-        return when {
-            bytes < 1024 -> "$bytes B"
-            bytes < 1024 * 1024 -> "${bytes / 1024} KB"
-            else -> "${bytes / (1024 * 1024)} MB"
-        }
-    }
-
-    /**
-     * Clean up old auto-backups, keeping only the 2 most recent
-     * Manual backups (starting with "backup_") are NOT deleted
-     */
-    private fun cleanupOldAutoBackups(context: Context) {
-        try {
-            // Log.d(TAG, "🧹 Cleaning up old auto-backups...")
-
-            // List all backup files from MediaStore
-            val allBackups = MediaStoreHelper.listBackups(context)
-
-            // Filter only auto-backups (filename starts with "auto_backup_")
-            val autoBackups = allBackups.filter { backup ->
-                val name = backup["name"] as? String ?: ""
-                name.startsWith("auto_backup_")
-            }.toMutableList()
-
-            // Log.d(TAG, "📊 Found ${autoBackups.size} auto-backup files")
-
-            // If 2 or fewer auto-backups exist, don't delete anything
-            if (autoBackups.size <= 2) {
-                // Log.d(TAG, "✅ Only ${autoBackups.size} auto-backups, no cleanup needed")
-                return
-            }
-
-            // Sort by modification time (newest first)
-            autoBackups.sortByDescending { backup ->
-                backup["dateModified"] as? Long ?: 0L
-            }
-
-            // Keep only the 2 most recent, delete the rest
-            val backupsToDelete = autoBackups.drop(2)
-            // Log.d(TAG, "🗑️ Deleting ${backupsToDelete.size} old auto-backups (keeping 2 most recent)")
-
-            for (backup in backupsToDelete) {
-                try {
-                    val uri = backup["uri"] as? String
-                    val name = backup["name"] as? String
-                    if (uri != null) {
-                        val deleted = MediaStoreHelper.deleteBackup(context, uri)
-                        if (deleted) {
-                            // Log.d(TAG, "  ✅ Deleted old auto-backup: $name")
-                        } else {
-                            // Log.w(TAG, "  ❌ Failed to delete: $name")
-                        }
-                    }
-                } catch (e: Exception) {
-                    // Log.w(TAG, "  ❌ Error deleting backup: ${e.message}")
-                }
-            }
-
-            // Log.d(TAG, "✅ Auto-backup cleanup complete")
-        } catch (e: Exception) {
-            // Log.e(TAG, "❌ Error during cleanup: ${e.message}", e)
-            // Don't rethrow - cleanup failure shouldn't stop backup creation
-        }
-    }
 }

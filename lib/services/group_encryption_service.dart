@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'SignalService.dart';
 import 'device_service.dart';
@@ -100,15 +101,26 @@ class GroupEncryptionService {
 
       if (response.statusCode == 200) {
         final List<dynamic> senderKeys = json.decode(response.body);
-        // print('[GroupEncryption] Received ${senderKeys.length} sender keys');
-
         int successCount = 0;
-        for (var key in senderKeys) {
-          final senderUid = key['sender_uid'] as String;
-          final deviceId = key['device_id'] as int;
-          final distribution = key['sender_key_distribution'] as String;
+        int eligibleKeys = 0;
 
-          // print('[GroupEncryption] Processing sender key from: $senderUid:$deviceId');
+        for (var key in senderKeys) {
+          final senderUid = key['sender_uid'] as String?;
+          final deviceId = key['device_id'] is int
+              ? key['device_id'] as int
+              : int.tryParse(key['device_id']?.toString() ?? '');
+          final distribution = key['sender_key_distribution'] as String?;
+
+          if (senderUid == null || deviceId == null || distribution == null) {
+            continue;
+          }
+
+          // Skip our own sender key if returned by backend
+          if (senderUid == user.uid) {
+            continue;
+          }
+
+          eligibleKeys++;
 
           final success = await SignalService.processSenderKeyDistribution(
             senderUid: senderUid,
@@ -119,20 +131,19 @@ class GroupEncryptionService {
 
           if (success) {
             successCount++;
-            // print('[GroupEncryption] ✅ Processed sender key from $senderUid:$deviceId');
           } else {
-            // print('[GroupEncryption] ❌ Failed to process sender key from $senderUid:$deviceId');
+            debugPrint('[GroupEncryption] ⚠️ Could not process sender key from $senderUid:$deviceId');
           }
         }
 
-        // print('[GroupEncryption] Processed $successCount/${senderKeys.length} sender keys');
-        return successCount == senderKeys.length;
+        debugPrint('[GroupEncryption] Processed $successCount/$eligibleKeys sender keys for group $groupId');
+        return true;
       } else {
-        // print('[GroupEncryption] Failed to fetch sender keys: ${response.statusCode} - ${response.body}');
+        debugPrint('[GroupEncryption] Failed to fetch sender keys: ${response.statusCode} - ${response.body}');
         return false;
       }
     } catch (e) {
-      // print('[GroupEncryption] Error fetching sender keys: $e');
+      debugPrint('[GroupEncryption] Error fetching sender keys: $e');
       return false;
     }
   }
@@ -143,26 +154,47 @@ class GroupEncryptionService {
     required String groupId,
   }) async {
     try {
-      // print('[GroupEncryption] 🔐 Setting up group encryption for: $groupId');
-
-      // Step 1: Distribute our sender key
+      // Step 1: Distribute our sender key (allows sending encrypted messages to the group)
       final distributed = await distributeSenderKey(groupId: groupId);
       if (!distributed) {
-        // print('[GroupEncryption] Failed to distribute sender key');
+        debugPrint('[GroupEncryption] ❌ Failed to distribute our sender key');
         return false;
       }
 
-      // Step 2: Fetch and process all other members' sender keys
-      final processed = await fetchAndProcessGroupSenderKeys(groupId: groupId);
-      if (!processed) {
-        // print('[GroupEncryption] Failed to process all sender keys');
-        return false;
-      }
+      // Step 2: Fetch and process other members' sender keys (allows decrypting their messages)
+      // Even if some members are offline or haven't published keys yet, our sending setup is ready.
+      await fetchAndProcessGroupSenderKeys(groupId: groupId);
 
-      // print('[GroupEncryption] ✅ Group encryption setup complete for group $groupId');
+      debugPrint('[GroupEncryption] ✅ Group encryption setup complete for group $groupId');
       return true;
     } catch (e) {
-      // print('[GroupEncryption] Error setting up group encryption: $e');
+      debugPrint('[GroupEncryption] Error setting up group encryption: $e');
+      return false;
+    }
+  }
+
+  /// Rotate sender key for a group (e.g. after a member leaves or is removed).
+  /// Clears existing sender keys for the group so Libsignal generates a completely
+  /// fresh sender key, uploads it to backend, and fetches updated keys from remaining members.
+  static Future<bool> rotateSenderKey({
+    required String groupId,
+  }) async {
+    try {
+      // Step 1: Clear local sender keys for this group
+      // This wipes both our own old sender key (forcing Libsignal to generate a brand new key)
+      // and old sender keys of other members (including any departed member).
+      await clearGroupKeys(groupId: groupId);
+
+      // Step 2: Create brand new sender key and upload to backend
+      final distributed = await distributeSenderKey(groupId: groupId);
+      if (!distributed) {
+        return false;
+      }
+
+      // Step 3: Fetch and process fresh sender keys from all remaining members
+      final processed = await fetchAndProcessGroupSenderKeys(groupId: groupId);
+      return processed;
+    } catch (e) {
       return false;
     }
   }

@@ -7,6 +7,8 @@ import 'widgets/home_logout_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:zarq_messenger/services/app_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
@@ -22,6 +24,8 @@ import 'package:zarq_messenger/services/websocket_service.dart';
 import 'package:zarq_messenger/services/user_settings_provider.dart';
 import 'package:zarq_messenger/services/database_service.dart';
 import 'package:zarq_messenger/services/SignalService.dart';
+import 'package:zarq_messenger/services/key_rotation_service.dart';
+import 'package:zarq_messenger/services/group_encryption_service.dart';
 import 'package:zarq_messenger/services/navigation_handler.dart';
 
 // Import Screens and Widgets
@@ -84,18 +88,36 @@ class ConversationInfo {
 
   factory ConversationInfo.fromJson(Map<String, dynamic> json) {
     return ConversationInfo(
-      conversationId: json['conversationId'] as int,
-      chatTitle: json['chatTitle'] ?? 'Unknown',
-      isGroup: json['isGroup'],
-      creatorUid: json['creatorUid'] as String?,
-      avatarUrl: json['avatarUrl'] as String?,
-      partnerUid: json['partnerUid'] as String?,
-      isFriend: json['isFriend'] == true,
-      lastMessageTimestamp: json['lastMessageTimestamp'] != null
-          ? DateTime.parse(json['lastMessageTimestamp'] as String)
+      conversationId: (json['conversationId'] ?? json['conversation_id'] as num).toInt(),
+      chatTitle: (json['chatTitle'] ?? json['chat_title'] ?? json['title'])?.toString() ?? 'Unknown',
+      isGroup: json['isGroup'] == true || json['is_group'] == true,
+      creatorUid: (json['creatorUid'] ?? json['creator_uid']) as String?,
+      avatarUrl: (json['avatarUrl'] ?? json['avatar_url'] ?? json['profile_picture_url'] ?? json['avatar']) as String?,
+      partnerUid: (json['partnerUid'] ?? json['partner_uid']) as String?,
+      isFriend: json['isFriend'] == true || json['is_friend'] == true,
+      hasUnreadMessages: json['hasUnreadMessages'] == true || json['has_unread_messages'] == true,
+      unreadCount: ((json['unreadCount'] ?? json['unread_count']) as num?)?.toInt() ?? 0,
+      lastMessageTimestamp: (json['lastMessageTimestamp'] ?? json['last_message_timestamp']) != null
+          ? DateTime.tryParse((json['lastMessageTimestamp'] ?? json['last_message_timestamp']) as String)
           : null,
-      lastMessage: json['lastMessage'] as String?,
+      lastMessage: (json['lastMessage'] ?? json['last_message']) as String?,
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'conversationId': conversationId,
+      'chatTitle': chatTitle,
+      'isGroup': isGroup,
+      'creatorUid': creatorUid,
+      'avatarUrl': avatarUrl,
+      'partnerUid': partnerUid,
+      'isFriend': isFriend,
+      'hasUnreadMessages': hasUnreadMessages,
+      'unreadCount': unreadCount,
+      'lastMessageTimestamp': lastMessageTimestamp?.toIso8601String(),
+      'lastMessage': lastMessage,
+    };
   }
 }
 
@@ -106,11 +128,21 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
+  static final TextStyle _tileTitleRead = GoogleFonts.inter(fontSize: 14, letterSpacing: -.15, fontWeight: FontWeight.w500);
+  static final TextStyle _tileTitleUnread = GoogleFonts.inter(fontSize: 14, letterSpacing: -.15, fontWeight: FontWeight.w600);
+  static final TextStyle _tilePreview = GoogleFonts.inter(fontSize: 12);
+  static final TextStyle _tileTimestamp = GoogleFonts.inter(fontSize: 10);
+
   bool _isChatSelectionMode = false;
   Set<String> _pinnedChats = {};
   Map<String, int> _hiddenChats = {};
   bool _selectionBusy = false;
-  String get _homePreferenceKey => 'opaque_home_${FirebaseAuth.instance.currentUser?.uid}';
+  String get _homePreferenceKey {
+    final uid = (Firebase.apps.isNotEmpty ? FirebaseAuth.instance.currentUser?.uid : null)
+        ?? AppStorage.cachedUid
+        ?? 'user';
+    return 'opaque_home_$uid';
+  }
   final Map<int, ConversationInfo> _selectedChats = {};
   ConversationInfo? get _selectedConversation =>
       _selectedChats.length == 1 ? _selectedChats.values.single : null;
@@ -127,6 +159,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   FriendTab _friendsInitialTab = FriendTab.myFriends;
   bool _addMenuOpen = false;
 
+  String? _cachedDisplayName;
+
   StreamSubscription? _websocketSubscription;
 
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
@@ -135,6 +169,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _cachedDisplayName = AppStorage.prefs?.getString('cached_user_display_name');
     _initializeUser();
     _loadBlockedUsers();
     _loadHomeSelectionPreferences();
@@ -263,11 +298,69 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _initializeUser() async {
+    if (Firebase.apps.isEmpty) {
+      await AppStorage.firebaseInitFuture;
+    }
+    if (!mounted || Firebase.apps.isEmpty) return;
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      await user.reload();
-      if (!mounted) return;
+      unawaited(user.reload().catchError((_) {}));
+      unawaited(_syncAvatarIfNeeded(user));
     }
+    final diskName = AppStorage.prefs?.getString('cached_user_display_name');
+    if (diskName != null && diskName.isNotEmpty) {
+      _cachedDisplayName = diskName;
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _syncAvatarIfNeeded(User user) async {
+    try {
+      final photoUrl = user.photoURL;
+      final token = await user.getIdToken();
+      final res = await http.get(
+        Uri.parse('${AppConfig.baseUrl}/profiles/me'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 5));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        final backendAvatar = (data['avatarUrl'] ?? data['profile_picture_url'] ?? data['avatar_url'] ?? data['avatar']) as String?;
+        if ((backendAvatar == null || backendAvatar.isEmpty) && photoUrl != null && photoUrl.isNotEmpty) {
+          await http.post(
+            Uri.parse('${AppConfig.baseUrl}/profile/avatar/update'),
+            headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
+            body: jsonEncode({'avatarUrl': photoUrl}),
+          ).timeout(const Duration(seconds: 5));
+        } else if (backendAvatar != null && backendAvatar.isNotEmpty && (photoUrl == null || photoUrl.isEmpty)) {
+          unawaited(user.updatePhotoURL(backendAvatar).catchError((_) {}));
+        }
+
+        final backendDisplayName = (data['display_name'] ?? data['displayName']) as String?;
+        final backendUsername = (data['username'] ?? data['userName']) as String?;
+        final resolvedName = (backendDisplayName?.trim().isNotEmpty == true)
+            ? backendDisplayName!.trim()
+            : ((backendUsername?.trim().isNotEmpty == true) ? backendUsername!.trim() : null);
+
+        if (resolvedName != null && resolvedName.isNotEmpty) {
+          bool changed = false;
+          if (_cachedDisplayName != resolvedName) {
+            _cachedDisplayName = resolvedName;
+            changed = true;
+          }
+          final prefs = AppStorage.prefs ?? await SharedPreferences.getInstance();
+          await prefs.setString('cached_user_display_name', resolvedName);
+          if (backendUsername != null && backendUsername.isNotEmpty) {
+            await prefs.setString('cached_user_username', backendUsername);
+          }
+          if (user.displayName != resolvedName) {
+            unawaited(user.updateDisplayName(resolvedName).catchError((_) {}));
+          }
+          if (mounted && changed) {
+            setState(() {});
+          }
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _refreshUserData() async => _initializeUser();
@@ -292,24 +385,39 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (user != null) {
         try {
           final token = await user.getIdToken();
-          final url = Uri.parse('${AppConfig.baseUrl}/v1/fcm/token');
-          await http.post(
-            url,
-            headers: {
-              'Authorization': 'Bearer $token',
-              'Content-Type': 'application/json',
-            },
-            body: json.encode({'fcm_token': '', 'device_id': 1}),
-          );
+          final deviceId = await SignalService.getDeviceId();
+          if (deviceId != null && deviceId > 0) {
+            final url = Uri.parse('${AppConfig.baseUrl}/v1/fcm/token');
+            await http.post(
+              url,
+              headers: {
+                'Authorization': 'Bearer $token',
+                'Content-Type': 'application/json',
+              },
+              body: json.encode({'fcm_token': '', 'device_id': deviceId}),
+            );
+          }
         } catch (_) {}
       }
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('cached_user_uid');
+
+      KeyRotationService.resetState();
+      SignalService.invalidateCachedDeviceId();
 
       if (clearData) {
         await SignalService.resetUserContext();
         final dbService = Provider.of<DatabaseService>(context, listen: false);
         await dbService.resetDatabase();
+        final currentUser = FirebaseAuth.instance.currentUser;
+        if (currentUser != null) {
+          await prefs.remove('user_${currentUser.uid}_initialized');
+        }
       } else {
         await SignalService.resetUserContext();
+        final dbService = Provider.of<DatabaseService>(context, listen: false);
+        await dbService.close();
       }
 
       final websocketService = Provider.of<WebSocketService>(
@@ -527,6 +635,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       );
       if (mounted) {
         if (response.statusCode == 200) {
+          GroupEncryptionService.clearGroupKeys(groupId: conversationId.toString());
           _showSnack('Group deleted successfully!');
           Provider.of<HomeProvider>(
             context,
@@ -552,6 +661,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       );
       if (mounted) {
         if (response.statusCode == 200) {
+          GroupEncryptionService.clearGroupKeys(groupId: conversationId.toString());
           _showSnack('Successfully left group!');
           Provider.of<HomeProvider>(
             context,
@@ -608,7 +718,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 ChatScreen(channel: channel, conversationInfo: convo),
           ),
         )
-        .then((_) => _loadBlockedUsers());
+        .then((_) {
+      _loadBlockedUsers();
+      if (!mounted) return;
+      // Local-only: sync last message the moment chat closes (no HTTP).
+      context
+          .read<HomeProvider>()
+          .refreshConversationPreviewFromDb(convo.conversationId);
+    });
 
     if (channel == null) {
       _showSnack('📴 Offline mode — Viewing cached messages', isError: false);
@@ -623,10 +740,32 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final radius = BorderRadius.circular(convo.isGroup ? 13 : 22);
     final fallback = Center(child: Text(initials.isEmpty ? '?' : initials, style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500, color: isDark ? const Color(0xFFBCC7D8) : const Color(0xFF4C4F58))));
     return Stack(children: [
-      Container(width: 44, height: 44, clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(borderRadius: radius, border: Border.all(color: isDark ? const Color(0xFF354256) : const Color(0xFFE6E7ED)),
-          gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: isDark ? const [Color(0xFF303947), Color(0xFF283241)] : const [Color(0xFFF5F5F7), Color(0xFFE5E6EB)])),
-        child: convo.avatarUrl != null && convo.avatarUrl!.isNotEmpty ? CachedNetworkImage(imageUrl: convo.avatarUrl!, fit: BoxFit.cover, placeholder: (_, _) => fallback, errorWidget: (_, _, _) => fallback) : fallback),
+      Container(
+        width: 44,
+        height: 44,
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          borderRadius: radius,
+          border: Border.all(color: isDark ? const Color(0xFF354256) : const Color(0xFFE6E7ED)),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: isDark ? const [Color(0xFF303947), Color(0xFF283241)] : const [Color(0xFFF5F5F7), Color(0xFFE5E6EB)],
+          ),
+        ),
+        child: convo.avatarUrl != null && convo.avatarUrl!.isNotEmpty
+            ? CachedNetworkImage(
+                imageUrl: convo.avatarUrl!,
+                memCacheWidth: 120,
+                memCacheHeight: 120,
+                maxWidthDiskCache: 250,
+                maxHeightDiskCache: 250,
+                fit: BoxFit.cover,
+                placeholder: (_, _) => fallback,
+                errorWidget: (_, _, _) => fallback,
+              )
+            : fallback,
+      ),
       if (convo.isOnline && !convo.isGroup) Positioned(right: 0, bottom: 0, child: Semantics(label: 'Online', child: Container(width: 9, height: 9,
         decoration: BoxDecoration(shape: BoxShape.circle, color: _kOnlineGreen, border: Border.all(color: cardColor, width: 2))))),
     ]);
@@ -664,7 +803,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     Color cardColor,
     Color textColor,
   ) {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = Firebase.apps.isNotEmpty ? FirebaseAuth.instance.currentUser : null;
     final bool isCreatorOfSelectedGroup =
         _isChatSelectionMode &&
         _selectedConversation != null &&
@@ -730,9 +869,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     return OpaqueHeader(
       isDark: isDark,
-      profile: user?.photoURL != null
+      profile: (user?.photoURL != null && user!.photoURL!.isNotEmpty)
           ? CachedNetworkImage(
               imageUrl: user!.photoURL!,
+              memCacheWidth: 120,
+              memCacheHeight: 120,
+              maxWidthDiskCache: 250,
+              maxHeightDiskCache: 250,
               fit: BoxFit.cover,
               errorWidget: (_, __, ___) =>
                   _buildDefaultUserAvatar(user, isDark, textColor),
@@ -752,31 +895,30 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         _popupItem(
           textColor: textColor,
           value: 'settings',
-          icon: Icons.tune_rounded,
+          icon: Icons.settings_outlined,
           label: 'Settings',
-          color: isDark ? const Color(0xFFA0ADBF) : const Color(0xFF7B808B),
+          color: textColor,
         ),
         _popupItem(
           textColor: textColor,
           value: 'backup_restore',
-          icon: Icons.backup_outlined,
-          label: 'Backup / Restore',
-          color: isDark ? const Color(0xFFA0ADBF) : const Color(0xFF7B808B),
+          icon: Icons.settings_backup_restore_rounded,
+          label: 'Backup & Restore',
+          color: textColor,
         ),
         _popupItem(
           textColor: textColor,
           value: 'about',
           icon: Icons.info_outline_rounded,
-          label: 'About',
-          color: isDark ? const Color(0xFFA0ADBF) : const Color(0xFF7B808B),
+          label: 'About Opaque',
+          color: textColor,
         ),
-        const PopupMenuDivider(),
         _popupItem(
-          textColor: isDark ? const Color(0xFFE09A9D) : const Color(0xFFB54D52),
+          textColor: textColor,
           value: 'logout',
           icon: Icons.logout_rounded,
-          label: 'Log out',
-          color: isDark ? const Color(0xFFE09A9D) : const Color(0xFFB54D52),
+          label: 'Sign out',
+          color: const Color(0xFFCE7480),
         ),
       ],
       onMenuSelected: (result) async {
@@ -805,10 +947,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildDefaultUserAvatar(User? user, bool isDark, Color textColor) {
-    final initial = (user?.displayName?.isNotEmpty == true)
-        ? user!.displayName![0].toUpperCase()
-        : (user?.email?.isNotEmpty == true)
-        ? user!.email![0].toUpperCase()
+    final name = (user?.displayName?.trim().isNotEmpty == true)
+        ? user!.displayName!.trim()
+        : (_cachedDisplayName?.trim().isNotEmpty == true)
+        ? _cachedDisplayName!.trim()
+        : (AppStorage.prefs?.getString('cached_user_display_name')?.trim().isNotEmpty == true)
+        ? AppStorage.prefs!.getString('cached_user_display_name')!.trim()
+        : (AppStorage.prefs?.getString('cached_user_username')?.trim().isNotEmpty == true)
+        ? AppStorage.prefs!.getString('cached_user_username')!.trim()
+        : (user?.email?.trim().isNotEmpty == true)
+        ? user!.email!.trim()
+        : null;
+
+    final initial = (name != null && name.isNotEmpty)
+        ? name.characters.first.toUpperCase()
         : 'U';
     return Container(
       color: isDark ? Colors.white10 : Colors.black.withOpacity(0.15),
@@ -932,35 +1084,40 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Widget _buildConversationTile(ConversationInfo convo, bool isDark, Color cardColor, Color textColor, Color textGreyColor, Color dividerColor) {
     final unread = convo.unreadCount > 0 || convo.hasUnreadMessages;
-    return Material(color: _isChatSelectionMode && _selectedChats.containsKey(convo.conversationId)
-      ? (isDark ? const Color(0xFF283241) : const Color(0xFFF1F2F5)) : Colors.transparent,
-      borderRadius: BorderRadius.circular(12), child: InkWell(
-        borderRadius: BorderRadius.circular(12), onTap: () { setState(() => _addMenuOpen = false); if (_isChatSelectionMode) { if (!_selectionBusy) _enterChatSelectionMode(convo); } else { _navigateToChat(convo); } },
-        onLongPress: _selectionBusy ? null : () { _searchFocusNode.unfocus(); setState(() => _addMenuOpen = false); _enterChatSelectionMode(convo); },
-        child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16), child: Row(children: [
-          Stack(children: [_buildAvatar(convo, isDark, cardColor),
-            if (_isChatSelectionMode && _selectedChats.containsKey(convo.conversationId))
-              Positioned(right: 0, bottom: 0, child: Container(
-                width: 18, height: 18,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF258447), shape: BoxShape.circle,
-                  border: Border.all(color: Colors.black, width: 1.2)),
-                child: const Icon(Icons.check_rounded, size: 13, color: Colors.black))),
-          ]), SizedBox(width: MediaQuery.sizeOf(context).width < 350 ? 9 : 12),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(convo.chatTitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: GoogleFonts.inter(fontSize: 14, letterSpacing: -.15, fontWeight: unread ? FontWeight.w600 : FontWeight.w500, color: textColor)),
-            const SizedBox(height: 5),
-            Text(convo.isTyping ? 'typing...' : ChatPayloadParser.getPreviewText(convo.lastMessage), maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: GoogleFonts.inter(fontSize: 12, color: convo.isTyping ? const Color(0xFF6087BD) : unread ? (isDark ? const Color(0xFFDCE3EF) : const Color(0xFF4E515C)) : textGreyColor)),
+    return RepaintBoundary(
+      key: ValueKey('tile_${convo.conversationId}'),
+      child: Material(color: _isChatSelectionMode && _selectedChats.containsKey(convo.conversationId)
+        ? (isDark ? const Color(0xFF283241) : const Color(0xFFF1F2F5)) : Colors.transparent,
+        borderRadius: BorderRadius.circular(12), child: InkWell(
+          borderRadius: BorderRadius.circular(12), onTap: () { setState(() => _addMenuOpen = false); if (_isChatSelectionMode) { if (!_selectionBusy) _enterChatSelectionMode(convo); } else { _navigateToChat(convo); } },
+          onLongPress: _selectionBusy ? null : () { _searchFocusNode.unfocus(); setState(() => _addMenuOpen = false); _enterChatSelectionMode(convo); },
+          child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16), child: Row(children: [
+            Stack(children: [_buildAvatar(convo, isDark, cardColor),
+              if (_isChatSelectionMode && _selectedChats.containsKey(convo.conversationId))
+                Positioned(right: 0, bottom: 0, child: Container(
+                  width: 18, height: 18,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF258447), shape: BoxShape.circle,
+                    border: Border.all(color: Colors.black, width: 1.2)),
+                  child: const Icon(Icons.check_rounded, size: 13, color: Colors.black))),
+            ]), SizedBox(width: MediaQuery.sizeOf(context).width < 350 ? 9 : 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(convo.chatTitle, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: (unread ? _tileTitleUnread : _tileTitleRead).copyWith(color: textColor)),
+              const SizedBox(height: 5),
+              Text(convo.isTyping ? 'typing...' : ChatPayloadParser.getPreviewText(convo.lastMessage), maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: _tilePreview.copyWith(color: convo.isTyping ? const Color(0xFF6087BD) : unread ? (isDark ? const Color(0xFFDCE3EF) : const Color(0xFF4E515C)) : textGreyColor)),
+            ])),
+            const SizedBox(width: 8),
+            Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              if (_pinnedChats.contains('${convo.conversationId}')) Padding(
+                padding: const EdgeInsets.only(bottom: 5), child: Icon(Icons.push_pin_rounded, size: 12, color: textGreyColor)),
+              if (convo.lastMessageTimestamp != null) Text(_formatTimestamp(convo.lastMessageTimestamp!.toLocal()),
+                style: _tileTimestamp.copyWith(color: textGreyColor)),
+              if (unread) ...[const SizedBox(height: 12), Semantics(label: '${convo.unreadCount > 0 ? convo.unreadCount : ''} unread messages', child: Container(width: 7, height: 7, decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xFF335FE8))))],
+            ]),
           ])),
-          const SizedBox(width: 8),
-          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            if (_pinnedChats.contains('${convo.conversationId}')) Padding(
-              padding: const EdgeInsets.only(bottom: 5), child: Icon(Icons.push_pin_rounded, size: 12, color: textGreyColor)),
-            if (convo.lastMessageTimestamp != null) Text(_formatTimestamp(convo.lastMessageTimestamp!.toLocal()), style: GoogleFonts.inter(fontSize: 10, color: textGreyColor)),
-            if (unread) ...[const SizedBox(height: 12), Semantics(label: '${convo.unreadCount > 0 ? convo.unreadCount : ''} unread messages', child: Container(width: 7, height: 7, decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xFF335FE8))))],
-          ]),
-        ])),
+        ),
       ),
     );
   }
@@ -970,29 +1127,30 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     onSelected: (index) => setState(() { _currentNavIndex = index; _addMenuOpen = false; }),
   );
 
-  Future<void> _openAddDestination(bool group) async {
+  Future<void> _openAddDestination(String mode) async {
     final ws = context.read<WebSocketService>();
-    setState(() => _addMenuOpen = false);
     if (!ws.isConnected || ws.channel == null) {
       OpaqueToast.info(context, 'Connecting... Please wait a moment.');
       return;
     }
-    if (!group) {
-      setState(() {
-        _friendsInitialTab = FriendTab.search;
-        _friendsOpenRequest++;
-        _currentNavIndex = 2;
-      });
+    if (mode == 'group') {
+      await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => CreateGroupScreen(channel: ws.channel!, onGroupCreated: () => context.read<HomeProvider>().fetchInitialConversations())));
+      if (mounted) context.read<HomeProvider>().fetchInitialConversations();
       return;
     }
-    await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => CreateGroupScreen(channel: ws.channel!, onGroupCreated: () => context.read<HomeProvider>().fetchInitialConversations())));
-    if (mounted) context.read<HomeProvider>().fetchInitialConversations();
+    // 'friend' opens Friends tab at Search sub-tab
+    setState(() {
+      _friendsInitialTab = FriendTab.search;
+      _friendsOpenRequest++;
+      _currentNavIndex = 2;
+      _addMenuOpen = false;
+    });
   }
 
   Widget _buildAddMenu(bool dark) {
     final ink = dark ? const Color(0xFFE0E6EF) : const Color(0xFF343D4C);
-    Widget option(String label, String icon, bool group) => InkWell(
-      borderRadius: BorderRadius.circular(12), onTap: () => _openAddDestination(group),
+    Widget option(String label, String icon, String mode) => InkWell(
+      borderRadius: BorderRadius.circular(12), onTap: () => _openAddDestination(mode),
       child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7), child: Row(children: [
         Container(width: 30, height: 30, alignment: Alignment.center, decoration: BoxDecoration(color: dark ? const Color(0xFF354256) : const Color(0xFFF0F2F6), borderRadius: BorderRadius.circular(10)), child: OpaqueIcon(icon, size: 18, color: ink)),
         const SizedBox(width: 10), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1004,9 +1162,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       AnimatedSize(duration: const Duration(milliseconds: 220), alignment: Alignment.bottomRight, curve: Curves.easeOutCubic,
         child: _addMenuOpen ? Container(width: 216, margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(6),
           decoration: BoxDecoration(color: dark ? const Color(0xFF283241) : Colors.white, borderRadius: BorderRadius.circular(18), border: Border.all(color: dark ? const Color(0xFF354256) : const Color(0xFFE9EAF0)), boxShadow: const [BoxShadow(color: Color(0x14202127), blurRadius: 24, offset: Offset(0, 8))]),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [option('Add new friend', 'add', false),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            option('Add new friend', 'add', 'friend'),
             const Padding(padding: EdgeInsets.symmetric(vertical: 4), child: Divider(height: 1, indent: 48, endIndent: 8, color: Color(0xFFE9EBF0))),
-            option('New group', 'users', true),
+            option('New group', 'users', 'group'),
           ]),
         ) : const SizedBox.shrink()),
       SizedBox(width: 44, height: 44, child: FloatingActionButton(heroTag: 'opaque-add', tooltip: _addMenuOpen ? 'Close add options' : 'Add friend or group',
@@ -1018,6 +1177,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   // ─── Build ─────────────────────────────────────────────────────────────────
+
 
   @override
   Widget build(BuildContext context) {

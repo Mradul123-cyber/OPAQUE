@@ -1,4 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import '../app_config.dart';
+import 'security_pin_screen.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
@@ -133,7 +137,9 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
     });
     try {
       await action();
-    } catch (e) {
+    } catch (e, st) {
+      debugPrint('[AuthFlow] ❌ Exception in _run: $e');
+      debugPrint('[AuthFlow] ❌ Stack trace: $st');
       if (mounted) setState(() => _error = OpaqueAuthService.errorMessage(e));
     } finally {
       if (mounted && !_completingPhone) setState(() => _busy = false);
@@ -142,6 +148,7 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
 
   void _go(_Step step) {
     if (!mounted) return;
+    debugPrint('[AuthFlow] 📍 _go -> $step (method: $_method, register: $_register, user: ${_user?.uid})');
     _emailPoll?.cancel();
     setState(() {
       _step = step;
@@ -164,6 +171,44 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
       /* A stale local draft cannot override an existing server profile. */
     }
     if (!mounted) return;
+
+    // Check if 2FA (6-digit PIN) is enabled for this account
+    try {
+      final token = await user.getIdToken();
+      final res = await http.get(
+        Uri.parse('${AppConfig.baseUrl}/v1/auth/2fa/status'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      if (res.statusCode == 200) {
+        final body = jsonDecode(res.body);
+        if (body['two_factor_enabled'] == true) {
+          if (!mounted) return;
+          final verified = await Navigator.of(context).push<bool>(
+            MaterialPageRoute(
+              builder: (_) => SecurityPinScreen(
+                mode: SecurityPinMode.verify,
+                onSuccess: () => Navigator.of(context).pop(true),
+              ),
+            ),
+          );
+          if (verified != true) {
+            await FirebaseAuth.instance.signOut();
+            if (mounted) {
+              setState(() {
+                _busy = false;
+                _error = 'Two-step verification required to sign in.';
+              });
+              _go(_Step.choose);
+            }
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[Auth] 2FA status check error: $e');
+    }
+
+    if (!mounted) return;
     if (widget.onComplete != null) {
       widget.onComplete!();
     } else {
@@ -176,8 +221,10 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
   }
 
   Future<void> _routeAuthenticated(User user) async {
+    debugPrint('[AuthFlow] 🧭 _routeAuthenticated start. UID: ${user.uid}, email: "${user.email}", emailVerified: ${user.emailVerified}, providers: ${user.providerData.map((p) => p.providerId).toList()}');
     _go(_Step.resume);
     if (OpaqueAuthService.needsEmailVerification(user)) {
+      debugPrint('[AuthFlow] 🧭 User needs email verification');
       _method = _Method.email;
       _email.text = user.email ?? '';
       _username.text = await OpaqueAuthService.pendingUsername(user) ?? '';
@@ -185,11 +232,17 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
       _go(_Step.verify);
       return;
     }
-    if (await OpaqueAuthService.profileExists(user)) {
+    final exists = await OpaqueAuthService.profileExists(user);
+    debugPrint('[AuthFlow] 🧭 profileExists returned: $exists');
+    if (exists) {
+      if (user.photoURL != null && user.photoURL!.isNotEmpty) {
+        unawaited(OpaqueAuthService.saveAvatar(user, user.photoURL!).catchError((_) {}));
+      }
       await _finish();
       return;
     }
     final pending = await OpaqueAuthService.pendingUsername(user);
+    debugPrint('[AuthFlow] 🧭 pending username: "$pending"');
     _register = true;
     _method = user.providerData.any((p) => p.providerId == 'google.com')
         ? _Method.google
@@ -198,6 +251,7 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
         : _Method.email;
     if (pending != null && pending.isNotEmpty) {
       _username.text = pending;
+      debugPrint('[AuthFlow] 🧭 Routing to _Step.profile with username "$pending"');
       _go(_Step.profile);
     } else {
       if (_username.text.isEmpty) {
@@ -207,23 +261,32 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
         _username.text = suggested.length > 30
             ? suggested.substring(0, 30)
             : suggested;
+        debugPrint('[AuthFlow] 🧭 Suggested username: "${_username.text}"');
       }
+      debugPrint('[AuthFlow] 🧭 Routing to _Step.details');
       _go(_Step.details);
     }
   }
 
   Future<void> _select(_Method method) async {
     if (_busy) return;
+    debugPrint('[AuthFlow] 🔘 _select method: $method, register: $_register');
     setState(() {
       _method = method;
       _error = '';
     });
     if (method == _Method.google)
       await _run(() async {
+        debugPrint('[AuthFlow] 🔘 Google sign in initiated...');
         OpaqueAuthService.interactive.value = true;
         final result = await _google.signInWithGoogle();
-        if (result.user != null && mounted)
+        debugPrint('[AuthFlow] 🔘 Google sign in completed. user: ${result.user?.uid}, email: ${result.user?.email}');
+        if (result.user != null && mounted) {
+          if (_avatar == null && result.user!.photoURL != null && result.user!.photoURL!.isNotEmpty) {
+            _avatar = result.user!.photoURL;
+          }
           await _routeAuthenticated(result.user!);
+        }
       });
     else
       _go(_Step.details);
@@ -234,11 +297,17 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
       ? null
       : 'Use 3–30 letters, numbers or underscores.';
   Future<void> _submitDetails() async {
-    if (!(_form.currentState?.validate() ?? false)) return;
+    if (!(_form.currentState?.validate() ?? false)) {
+      debugPrint('[AuthFlow] ⚠️ _submitDetails: form validation failed');
+      return;
+    }
     await _run(() async {
       final user = _user;
+      debugPrint('[AuthFlow] 📝 _submitDetails called! method=$_method, register=$_register, email="${_email.text.trim()}", username="${_username.text.trim()}", existing currentUser=${user?.uid} (email: ${user?.email})');
       if (user != null) {
+        debugPrint('[AuthFlow] 📝 currentUser already exists: ${user.uid}');
         if (OpaqueAuthService.needsEmailVerification(user)) {
+          debugPrint('[AuthFlow] 📝 currentUser needs email verification');
           _go(_Step.verify);
           return;
         }
@@ -247,8 +316,9 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
         _go(_Step.profile);
         return;
       }
-      if (_register)
+      if (_register) {
         await OpaqueAuthService.checkUsername(_username.text.trim());
+      }
       OpaqueAuthService.interactive.value = true;
       if (_method == _Method.phone) {
         await _sendPhone();
@@ -257,6 +327,7 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
       if (_register) {
         _registrationPassword = _password.text;
       }
+      debugPrint('[AuthFlow] 🚀 Calling ${_register ? "createUserWithEmailAndPassword" : "signInWithEmailAndPassword"} for email="${_email.text.trim()}"');
       final credential = _register
           ? await FirebaseAuth.instance.createUserWithEmailAndPassword(
               email: _email.text.trim(),
@@ -267,6 +338,7 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
               password: _password.text,
             );
       _password.clear();
+      debugPrint('[AuthFlow] ✅ Firebase Auth response: UID=${credential.user?.uid}, email="${credential.user?.email}", emailVerified=${credential.user?.emailVerified}');
       if (credential.user == null) throw StateError('Please sign in again.');
       if (_register) {
         await OpaqueAuthService.saveUsername(
@@ -422,24 +494,29 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
     if (_checking || _busy || _step != _Step.verify || _method != _Method.email)
       return;
     _checking = true;
+    debugPrint('[AuthFlow] ✉️ _checkEmail called (silent=$silent). Current user UID: ${_user?.uid}, email: "${_user?.email}", emailVerified: ${_user?.emailVerified}');
     try {
       await _user?.reload();
       if (!mounted || _step != _Step.verify) return;
       final user = _user;
+      debugPrint('[AuthFlow] ✉️ After reload: UID: ${user?.uid}, emailVerified: ${user?.emailVerified}');
       if (user != null && user.emailVerified) {
         if (_pendingEmail != null) {
           _email.text = user.email ?? _pendingEmail!;
           _pendingEmail = null;
         }
         await user.getIdToken(true);
+        debugPrint('[AuthFlow] ✉️ Email confirmed verified! Proceeding to _routeAuthenticated');
         await _run(() => _routeAuthenticated(user));
       } else if (!silent) {
+        debugPrint('[AuthFlow] ✉️ Email not yet verified');
         setState(
           () => _error =
               'Your email is not verified yet. Open the link in your inbox, then try again.',
         );
       }
     } catch (e) {
+      debugPrint('[AuthFlow] ❌ Exception in _checkEmail: $e');
       if (!silent && mounted)
         setState(() => _error = OpaqueAuthService.errorMessage(e));
     } finally {
@@ -475,27 +552,43 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
   }
 
   Future<void> _saveProfile({bool skip = false}) async {
-    if (!skip && !(_form.currentState?.validate() ?? false)) return;
+    debugPrint('[AuthFlow] 🏁 _saveProfile called! skip=$skip, profileCreated=$_profileCreated, user UID=${_user?.uid}, email="${_user?.email}", emailVerified=${_user?.emailVerified}, username="${_username.text.trim()}", displayName="${_displayName.text.trim()}"');
+    if (!skip && !(_form.currentState?.validate() ?? false)) {
+      debugPrint('[AuthFlow] ⚠️ _saveProfile form validation failed');
+      return;
+    }
     await _run(() async {
       final user = _user;
-      if (user == null) throw StateError('Please sign in again.');
+      if (user == null) {
+        debugPrint('[AuthFlow] ❌ _saveProfile: _user is null!');
+        throw StateError('Please sign in again.');
+      }
       try {
         if (!_profileCreated) {
+          debugPrint('[AuthFlow] 🏁 Calling OpaqueAuthService.createProfile...');
           await OpaqueAuthService.createProfile(
             user,
             _username.text.trim(),
             skip ? '' : _displayName.text.trim(),
           );
           _profileCreated = true;
+          debugPrint('[AuthFlow] 🏁 Profile creation flag set to true!');
+        } else {
+          debugPrint('[AuthFlow] ℹ️ _profileCreated was already true, skipping createProfile');
         }
-        if (!skip && _avatar != null)
-          await OpaqueAuthService.saveAvatar(user, _avatar!);
+        final avatarToSave = _avatar ?? user.photoURL;
+        if (!skip && avatarToSave != null && avatarToSave.isNotEmpty) {
+          debugPrint('[AuthFlow] 🏁 Saving avatar: $avatarToSave');
+          await OpaqueAuthService.saveAvatar(user, avatarToSave);
+        }
       } on AuthApiException catch (e) {
+        debugPrint('[AuthFlow] ❌ Caught AuthApiException in _saveProfile: code="${e.code}", message="${e.message}"');
         if (e.code == 'username_taken' || e.code == 'invalid_username')
           _go(_Step.details);
         rethrow;
       }
       _registrationPassword = null;
+      debugPrint('[AuthFlow] 🏁 _saveProfile success! Calling _finish()...');
       await _finish();
     });
   }

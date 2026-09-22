@@ -1,3 +1,4 @@
+import 'backup_contract.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -7,7 +8,6 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:sqflite_sqlcipher/sqflite.dart';
 import 'package:pointycastle/export.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:google_sign_in/google_sign_in.dart';
@@ -187,6 +187,8 @@ enum BackupDestination {
 class AutoBackupSettings {
   final bool enabled;
   final BackupFrequency frequency;
+  final int hour;
+  final int minute;
   final BackupDestination destination;
   final bool wifiOnly;
   final int? mediaAgeLimitDays; // null means include all media
@@ -196,6 +198,8 @@ class AutoBackupSettings {
   AutoBackupSettings({
     this.enabled = false,
     this.frequency = BackupFrequency.weekly,
+    this.hour = 0,
+    this.minute = 30,
     this.destination = BackupDestination.local,
     this.wifiOnly = true,
     this.mediaAgeLimitDays = 30, // Default: 30 days
@@ -206,6 +210,8 @@ class AutoBackupSettings {
   Map<String, dynamic> toJson() => {
         'enabled': enabled,
         'frequency': frequency.name,
+        'hour': hour,
+        'minute': minute,
         'destination': destination.name,
         'wifiOnly': wifiOnly,
         'mediaAgeLimitDays': mediaAgeLimitDays,
@@ -216,6 +222,8 @@ class AutoBackupSettings {
   factory AutoBackupSettings.fromJson(Map<String, dynamic> json, {String? passphrase}) => AutoBackupSettings(
         enabled: json['enabled'] as bool? ?? false,
         frequency: BackupFrequency.fromString(json['frequency'] as String? ?? 'disabled'),
+        hour: (json['hour'] as int? ?? 19).clamp(0, 23),
+        minute: (json['minute'] as int? ?? 59).clamp(0, 59),
         destination: BackupDestination.fromString(json['destination'] as String? ?? 'local'),
         wifiOnly: json['wifiOnly'] as bool? ?? true,
         mediaAgeLimitDays: json['mediaAgeLimitDays'] as int?,
@@ -228,6 +236,8 @@ class AutoBackupSettings {
   AutoBackupSettings copyWith({
     bool? enabled,
     BackupFrequency? frequency,
+    int? hour,
+    int? minute,
     BackupDestination? destination,
     bool? wifiOnly,
     int? mediaAgeLimitDays,
@@ -237,6 +247,8 @@ class AutoBackupSettings {
     return AutoBackupSettings(
       enabled: enabled ?? this.enabled,
       frequency: frequency ?? this.frequency,
+      hour: hour ?? this.hour,
+      minute: minute ?? this.minute,
       destination: destination ?? this.destination,
       wifiOnly: wifiOnly ?? this.wifiOnly,
       mediaAgeLimitDays: mediaAgeLimitDays ?? this.mediaAgeLimitDays,
@@ -249,7 +261,7 @@ class AutoBackupSettings {
 
 /// Backup Service - Handles E2EE backup/restore for messages and attachments
 class BackupService {
-  static const String backupVersion = '1.0.0';
+  static const String backupVersion = BackupContract.version;
   static const int pbkdf2Iterations = 100000;
   static const int aesKeySize = 32; // 256-bit
   static const int nonceSize = 12; // GCM nonce
@@ -315,6 +327,7 @@ class BackupService {
         attachments: attachments,
       );
 
+      if (FirebaseAuth.instance.currentUser?.uid != userUid) throw StateError('Backup account changed');
       debugPrint('[BackupService] Backup created successfully');
       return backupData;
     } catch (e) {
@@ -359,8 +372,7 @@ class BackupService {
       SELECT m.* FROM messages m
       LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
       WHERE dm.message_id IS NULL
-        AND m.content NOT LIKE 'This message was deleted%'
-        AND m.content NOT LIKE '%deleted this message%'
+        AND NOT (m.content = 'This message was deleted' AND (m.is_encrypted = 0 OR m.encrypted_content IS NULL))
         AND m.content NOT LIKE '{"type":"location"%'
       ORDER BY m.timestamp ASC
     ''', [currentUser.uid]);
@@ -377,20 +389,14 @@ class BackupService {
       const platform = MethodChannel('com.zarq/signal');
       final String signalStateJson = await platform.invokeMethod('exportSignalState');
 
-      debugPrint('[BackupService] Signal Protocol state exported successfully');
+      BackupContract.validateSecurityState(signalStateJson);
 
       return {
         'data': signalStateJson,
         'exported_at': DateTime.now().toIso8601String(),
       };
     } catch (e) {
-      debugPrint('[BackupService] Error exporting Signal state: $e');
-      debugPrint('[BackupService] WARNING: Backup will not include Signal sessions');
-      debugPrint('[BackupService] Sessions will need to be re-established after restore');
-      return {
-        'error': e.toString(),
-        'exported_at': DateTime.now().toIso8601String(),
-      };
+      throw StateError('Required security state could not be backed up: $e');
     }
   }
 
@@ -687,163 +693,61 @@ class BackupService {
   // ================== RESTORE ==================
 
   /// Restore backup data to database and storage
+  static bool _restoreRunning = false;
+
   Future<void> restoreBackup(BackupData backupData) async {
+    if (_restoreRunning) throw StateError('A restore is already in progress');
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) throw StateError('Sign in before restoring');
+    final state = backupData.signalProtocolState['data'];
+    if (state is! String) throw const FormatException('Backup is missing required recovery keys.');
+    BackupContract.validate(version: backupData.version, owner: backupData.userUid,
+      currentUid: uid, securityState: state, messages: backupData.messages);
+    // Validate attachment payloads before changing the active database or keys.
+    for (final attachment in backupData.attachments) {
+      base64Decode(attachment.encryptedDataBase64);
+      if (!{'image', 'video', 'audio', 'document'}.contains(attachment.type) ||
+          !RegExp(r'^(\.[a-zA-Z0-9]+)?$').hasMatch(attachment.extension)) {
+        throw const FormatException('Backup contains an invalid attachment.');
+      }
+    }
+    const native = MethodChannel('com.zarq/native_backup');
+    _restoreRunning = true;
+    bool swapping = false;
+    bool begun = false;
     try {
-      final currentUser = FirebaseAuth.instance.currentUser;
-      if (currentUser == null) {
-        throw Exception('User not authenticated');
-      }
-
-      debugPrint('[BackupService] Starting restore...');
-
-      // Show START notification with sound
-      await BackupNotificationService.showStartNotification('Restore');
-
-      // 1. Close and delete existing database (to avoid encryption key mismatch)
-      debugPrint('[BackupService] Closing current database...');
-      await _dbService.close();
-
-      // Delete the old database file (encrypted with wrong key)
-      final dbPath = await getDatabasesPath();
-      final userUid = currentUser.uid;
-      final dbFile = File(path.join(dbPath, 'zarq_messages_$userUid.db'));
-      if (await dbFile.exists()) {
-        await dbFile.delete();
-        debugPrint('[BackupService] Deleted old database file');
-      }
-
-      // 2. Restore Signal Protocol state (CHANGES identity key!)
-      await _restoreSignalProtocolState(backupData.signalProtocolState);
-      debugPrint('[BackupService] Signal Protocol state restored successfully');
-
-      // 3. Reinitialize database with RESTORED identity key
-      debugPrint('[BackupService] Reinitializing database with restored identity key...');
-      await _dbService.init();
-      debugPrint('[BackupService] Database reinitialized successfully');
-
-      // 4. Restore messages (conversations derived automatically)
-      await _restoreMessages(backupData.messages);
-      debugPrint('[BackupService] Restored ${backupData.messages.length} messages');
-
-      // 3. Restore attachments to storage
-      await _restoreAttachments(backupData.attachments);
-      debugPrint('[BackupService] Restored ${backupData.attachments.length} attachments');
-
-      // 5. Set flag for device re-registration after app restart
+      await _dbService.prepareRestore(uid, BackupContract.databasePassword(state), backupData.messages);
+      if (FirebaseAuth.instance.currentUser?.uid != uid) throw StateError('Restore account changed');
+      final settings = await getAutoBackupSettings();
+      await saveAutoBackupSettings(settings.copyWith(enabled: false));
+      await native.invokeMethod('cancelNativeAutoBackup');
+      swapping = true;
+      await _dbService.beginRestoreSwap();
+      begun = true;
+      await native.invokeMethod('beginBackupRestore', {'userUid': uid, 'signalState': state});
+      await _dbService.reopenAfterRestore();
+      if (FirebaseAuth.instance.currentUser?.uid != uid) throw StateError('Restore account changed');
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('needs_device_reregistration', true);
-      debugPrint('[BackupService] ✅ Set flag for device re-registration after restore');
-
-      debugPrint('[BackupService] Restore completed successfully');
-    } catch (e) {
-      debugPrint('[BackupService] Restore error: $e');
+      await native.invokeMethod('finishBackupRestore');
+      begun = false;
+      _dbService.endRestoreSwap();
+      swapping = false;
+      // Database/key commit is complete. Media remains an additive recovery step.
+      await _restoreAttachments(backupData.attachments);
+    } catch (_) {
+      if (swapping) {
+        await _dbService.close();
+        if (begun) {
+          await native.invokeMethod('rollbackBackupRestore');
+          await (await SharedPreferences.getInstance()).reload();
+        }
+        await _dbService.reopenAfterRestore();
+      }
       rethrow;
-    }
-  }
-
-  /// Restore Signal Protocol state via MethodChannel
-  Future<void> _restoreSignalProtocolState(Map<String, dynamic> state) async {
-    try {
-      // Check if state contains actual data
-      if (!state.containsKey('data') || state['data'] == null) {
-        debugPrint('[BackupService] No Signal Protocol state data in backup');
-        debugPrint('[BackupService] Sessions will be re-established when messaging');
-        return;
-      }
-
-      final signalStateJson = state['data'] as String;
-
-      debugPrint('[BackupService] Restoring Signal Protocol state via MethodChannel...');
-
-      const platform = MethodChannel('com.zarq/signal');
-      final bool success = await platform.invokeMethod('importSignalState', {
-        'signalState': signalStateJson,
-      });
-
-      if (success) {
-        debugPrint('[BackupService] ✅ Signal Protocol state restored successfully');
-        debugPrint('[BackupService] All sessions, keys, and prekeys restored');
-
-        // Verify restoration by comparing exported state
-        await Future.delayed(const Duration(milliseconds: 100)); // Give time for import to settle
-        final verifyExport = await platform.invokeMethod('exportSignalState');
-        final originalLength = signalStateJson.length;
-        final restoredLength = (verifyExport as String).length;
-        debugPrint('[BackupService] VERIFICATION: Original size: $originalLength, Restored size: $restoredLength');
-        debugPrint('[BackupService] Data integrity: ${originalLength == restoredLength ? '✅ MATCH' : '⚠️ MISMATCH'}');
-      } else {
-        debugPrint('[BackupService] ❌ Failed to restore Signal Protocol state');
-      }
-    } catch (e) {
-      debugPrint('[BackupService] Error restoring Signal state: $e');
-      debugPrint('[BackupService] Sessions will be re-established when messaging');
-    }
-  }
-
-  /// Restore messages (optimized with batch insert)
-  Future<void> _restoreMessages(List<Map<String, dynamic>> messages) async {
-    final db = _dbService.database;
-
-    debugPrint('[BackupService] Restoring ${messages.length} messages to database');
-
-    // Clear existing messages first (fresh restore)
-    await db.delete('messages');
-    debugPrint('[BackupService] Cleared existing messages');
-
-    // Use batch insert for performance (100x faster than one-by-one)
-    final batch = db.batch();
-    int batchCount = 0;
-    const batchSize = 100; // Insert in chunks of 100
-
-    for (int i = 0; i < messages.length; i++) {
-      final message = messages[i];
-
-      batch.insert(
-        'messages',
-        message,
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-      batchCount++;
-
-      // Commit batch every 100 messages or at the end
-      if (batchCount >= batchSize || i == messages.length - 1) {
-        await batch.commit(noResult: true);
-        debugPrint('[BackupService] Inserted batch of $batchCount messages (${i + 1}/${messages.length})');
-
-        // CRITICAL: Update notification to keep it alive during long restore
-        final progress = 40 + ((i + 1) / messages.length * 8).toInt(); // 40-48%
-        await BackupNotificationService.showProgressNotification(
-          'Restoring messages (${i + 1}/${messages.length})',
-          progress,
-        );
-
-        batchCount = 0;
-      }
-    }
-
-    debugPrint('[BackupService] Successfully inserted ${messages.length} messages');
-
-    // Verify insertion
-    final count = await db.rawQuery('SELECT COUNT(*) as count FROM messages');
-    final messageCount = count.first['count'] as int;
-    debugPrint('[BackupService] Database now contains $messageCount messages');
-
-    // Verify encryption keys for attachments
-    final attachmentMessages = await db.query(
-      'messages',
-      where: 'has_attachment = ?',
-      whereArgs: [1],
-    );
-    debugPrint('[BackupService] Verifying ${attachmentMessages.length} messages with attachments:');
-    for (final msg in attachmentMessages) {
-      final hasEncryptedKey = msg['encrypted_media_key'] != null;
-      final hasEncryptionType = msg['media_encryption_type'] != null;
-      debugPrint('  Message ${msg['id']}: '
-          'attachment_id=${msg['attachment_id']}, '
-          'has_encrypted_key=$hasEncryptedKey, '
-          'encryption_type=${msg['media_encryption_type']}, '
-          'has_iv=${msg['media_encryption_iv'] != null}, '
-          'status=${hasEncryptedKey && hasEncryptionType ? '✅' : '❌'}');
+    } finally {
+      if (swapping) _dbService.endRestoreSwap();
+      _restoreRunning = false;
     }
   }
 
@@ -1484,13 +1388,33 @@ class BackupService {
 
   // ================== AUTO-BACKUP SETTINGS ==================
 
-  static const String _autoBackupSettingsKey = 'auto_backup_settings';
+  String get _autoBackupSettingsKey {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) throw StateError('Sign in to configure backups');
+    return 'auto_backup_settings_$uid';
+  }
 
   /// Get auto-backup settings (with passphrase loaded from secure storage)
   Future<AutoBackupSettings> getAutoBackupSettings() async {
     try {
+      final key = _autoBackupSettingsKey;
+      final uid = FirebaseAuth.instance.currentUser!.uid;
       final prefs = await SharedPreferences.getInstance();
-      final jsonString = prefs.getString(_autoBackupSettingsKey);
+      var jsonString = prefs.getString(key);
+      if (jsonString == null && Platform.isAndroid && prefs.containsKey('auto_backup_settings')) {
+        const native = MethodChannel('com.zarq/native_backup');
+        final owner = await native.invokeMethod<String>('legacyBackupOwner');
+        if (owner == uid && FirebaseAuth.instance.currentUser?.uid == uid) {
+          await SecureStorageService().migrateLegacyAutoBackupPassphrase(uid);
+          final legacy = jsonDecode(prefs.getString('auto_backup_settings')!) as Map<String, dynamic>;
+          // Old jobs have no account/generation input. Require explicit re-enable.
+          legacy['enabled'] = false;
+          jsonString = jsonEncode(legacy);
+          await prefs.setString(key, jsonString);
+          await prefs.setBool('backup_reconfigure_$uid', true);
+          await native.invokeMethod('cancelNativeAutoBackup');
+        }
+      }
 
       if (jsonString == null) {
         return AutoBackupSettings(); // Return default settings
@@ -1502,6 +1426,7 @@ class BackupService {
       final secureStorage = SecureStorageService();
       final passphrase = await secureStorage.getAutoBackupPassphrase();
 
+      if (FirebaseAuth.instance.currentUser?.uid != uid) throw StateError('Backup account changed');
       return AutoBackupSettings.fromJson(jsonData, passphrase: passphrase);
     } catch (e) {
       debugPrint('[BackupService] Error loading auto-backup settings: $e');
@@ -1511,6 +1436,7 @@ class BackupService {
 
   /// Save auto-backup settings (with passphrase saved to secure storage)
   Future<void> saveAutoBackupSettings(AutoBackupSettings settings) async {
+    final key = _autoBackupSettingsKey;
     try {
       // Save passphrase to secure storage (NOT to SharedPreferences)
       if (settings.lastBackupPassphrase != null) {
@@ -1522,7 +1448,8 @@ class BackupService {
       // Save other settings to SharedPreferences
       final prefs = await SharedPreferences.getInstance();
       final jsonString = jsonEncode(settings.toJson());
-      await prefs.setString(_autoBackupSettingsKey, jsonString);
+      if (_autoBackupSettingsKey != key) throw StateError('Backup account changed');
+      await prefs.setString(key, jsonString);
       debugPrint('[BackupService] Auto-backup settings saved');
     } catch (e) {
       debugPrint('[BackupService] Error saving auto-backup settings: $e');

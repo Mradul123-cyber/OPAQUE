@@ -19,6 +19,7 @@ import 'widgets/opaque_navigation.dart';
 import 'package:provider/provider.dart';
 import 'providers/home_provider.dart';
 import 'chat_screen.dart';
+import 'home_screen.dart' show ConversationInfo;
 import 'package:zarq_messenger/app_config.dart';
 import 'widgets/opaque_toast.dart';
 
@@ -40,9 +41,9 @@ class Friend {
   factory Friend.fromJson(Map<String, dynamic> json) {
     return Friend(
       username: json['username'] ?? 'Unknown',
-      avatarUrl: json['avatarUrl'],
-      displayName: json['displayName'],
-      phoneNumber: json['phoneNumber'],
+      avatarUrl: (json['avatarUrl'] ?? json['avatar_url'] ?? json['profile_picture_url'] ?? json['avatar']) as String?,
+      displayName: (json['displayName'] ?? json['display_name']) as String?,
+      phoneNumber: (json['phoneNumber'] ?? json['phone_number']) as String?,
       fromContacts: json['fromContacts'] ?? false,
     );
   }
@@ -918,8 +919,20 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
       decoration: const BoxDecoration(shape: BoxShape.circle, gradient: LinearGradient(colors: [Color(0xFFF0F3FA), Color(0xFFE7ECF5)])),
       child: Text(initial, style: const TextStyle(fontSize: 14, color: Color(0xFF7A8BA7))));
     if (avatarUrl == null || avatarUrl.isEmpty) return fallback;
-    return ClipOval(child: CachedNetworkImage(imageUrl: avatarUrl, width: 40, height: 40, fit: BoxFit.cover,
-      placeholder: (_, _) => fallback, errorWidget: (_, _, _) => fallback));
+    return ClipOval(
+      child: CachedNetworkImage(
+        imageUrl: avatarUrl,
+        memCacheWidth: 120,
+        memCacheHeight: 120,
+        maxWidthDiskCache: 250,
+        maxHeightDiskCache: 250,
+        width: 40,
+        height: 40,
+        fit: BoxFit.cover,
+        placeholder: (_, _) => fallback,
+        errorWidget: (_, _, _) => fallback,
+      ),
+    );
   }
   void _showFriendOptions(Friend friend) {
     final screenWidth = MediaQuery.of(context).size.width;
@@ -966,12 +979,12 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
               CircleAvatar(
                 radius: modalAvatarRadius,
                 backgroundColor: Colors.grey[800],
-                backgroundImage: friend.avatarUrl != null
-                    ? NetworkImage(friend.avatarUrl!)
+                backgroundImage: friend.avatarUrl != null && friend.avatarUrl!.isNotEmpty
+                    ? CachedNetworkImageProvider(friend.avatarUrl!)
                     : null,
-                child: friend.avatarUrl == null
+                child: friend.avatarUrl == null || friend.avatarUrl!.isEmpty
                     ? Text(
-                        friend.primaryDisplay[0].toUpperCase(),
+                        friend.primaryDisplay.isNotEmpty ? friend.primaryDisplay[0].toUpperCase() : '?',
                         style: TextStyle(
                           fontSize: modalAvatarFontSize,
                           color: Colors.white,
@@ -1210,12 +1223,37 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
         // Refresh conversations to get the new/existing conversation
         final homeProvider = Provider.of<HomeProvider>(context, listen: false);
-        await homeProvider.fetchInitialConversations();
+        unawaited(homeProvider.fetchInitialConversations());
 
-        // Find the conversation
-        final conversation = homeProvider.conversations.firstWhere(
-          (c) => c.conversationId == conversationId,
-          orElse: () => throw Exception('Conversation not found'),
+        Friend? friendMatch;
+        for (final f in [..._myFriends, ..._searchResults, ..._receivedRequests, ..._sentRequests]) {
+          if (f.username == username) {
+            friendMatch = f;
+            break;
+          }
+        }
+
+        ConversationInfo? conversation;
+        try {
+          conversation = homeProvider.conversations.firstWhere(
+            (c) => c.conversationId == conversationId,
+          );
+        } catch (_) {
+          conversation = null;
+        }
+
+        final finalConversation = ConversationInfo(
+          conversationId: conversationId,
+          chatTitle: conversation?.chatTitle ?? friendMatch?.primaryDisplay ?? username,
+          isGroup: false,
+          creatorUid: conversation?.creatorUid,
+          avatarUrl: (conversation?.avatarUrl != null && conversation!.avatarUrl!.isNotEmpty)
+              ? conversation.avatarUrl
+              : friendMatch?.avatarUrl,
+          partnerUid: conversation?.partnerUid,
+          isFriend: true,
+          hasUnreadMessages: false,
+          unreadCount: 0,
         );
 
         // Navigate to chat screen
@@ -1225,7 +1263,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
             MaterialPageRoute(
               builder: (context) => ChatScreen(
                 channel: websocketService.channel!,
-                conversationInfo: conversation,
+                conversationInfo: finalConversation,
               ),
             ),
           );
@@ -1239,6 +1277,97 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
       if (mounted) {
         OpaqueToast.error(context, 'Error: $e');
       }
+    }
+  }
+
+  /// Start a conversation with any user by username (even non-friends).
+  /// Handles messaging privacy errors gracefully with user-friendly dialogs.
+  Future<void> _startConversation(String username, Friend friend) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      final websocketService = Provider.of<WebSocketService>(context, listen: false);
+      if (!websocketService.isConnected || websocketService.channel == null) {
+        OpaqueToast.info(context, 'Connecting... Please wait a moment.');
+        return;
+      }
+
+      final token = await user.getIdToken();
+      final response = await http.post(
+        Uri.parse('${AppConfig.baseUrl}/conversations/start'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: json.encode({'targetUsername': username}),
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final data = json.decode(response.body);
+        final conversationId = data['conversationId'] as int;
+
+        final homeProvider = Provider.of<HomeProvider>(context, listen: false);
+        unawaited(homeProvider.fetchInitialConversations());
+
+        final finalConversation = ConversationInfo(
+          conversationId: conversationId,
+          chatTitle: friend.primaryDisplay,
+          isGroup: false,
+          creatorUid: null,
+          avatarUrl: friend.avatarUrl,
+          partnerUid: null,
+          isFriend: false,
+          hasUnreadMessages: false,
+          unreadCount: 0,
+        );
+
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ChatScreen(
+              channel: websocketService.channel!,
+              conversationInfo: finalConversation,
+            ),
+          ),
+        );
+      } else if (response.statusCode == 403) {
+        Map<String, dynamic> data = {};
+        try { data = json.decode(response.body); } catch (_) {}
+        final errorCode = data['error'] as String? ?? '';
+        if (errorCode == 'not_friends') {
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Friends only'),
+              content: Text(
+                '${friend.primaryDisplay} only accepts messages from friends. Send them a friend request?',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _sendFriendRequest(username);
+                  },
+                  child: const Text('Add Friend'),
+                ),
+              ],
+            ),
+          );
+        } else {
+          OpaqueToast.info(context, '${friend.primaryDisplay} is not accepting new messages.');
+        }
+      } else {
+        OpaqueToast.error(context, 'Could not start conversation. Please try again.');
+      }
+    } catch (e) {
+      if (mounted) OpaqueToast.error(context, 'Error: $e');
     }
   }
 
@@ -1274,7 +1403,10 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
                   action('check', 'Accept request from ${friend.primaryDisplay}', () => _acceptRequest(friend.username), color: const Color(0xFF45966E)),
                   action('close', 'Decline request from ${friend.primaryDisplay}', () => _declineRequest(friend.username), color: const Color(0xFFAC8C8B)),
                 ] else if (pending) Tooltip(message: 'Request pending', child: Padding(padding: const EdgeInsets.all(11), child: OpaqueIcon('pending', color: const Color(0xFFC39154))))
-                else action('add', 'Add ${friend.primaryDisplay}', () => _sendFriendRequest(friend.username)),
+                else ...[
+                  action('chats', 'Message ${friend.primaryDisplay}', () => _startConversation(friend.username, friend)),
+                  action('add', 'Add ${friend.primaryDisplay}', () => _sendFriendRequest(friend.username)),
+                ],
               ]),
             ),
           );

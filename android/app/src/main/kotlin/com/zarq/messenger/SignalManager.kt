@@ -24,15 +24,19 @@ import org.whispersystems.libsignal.groups.GroupCipher
 import org.whispersystems.libsignal.groups.GroupSessionBuilder
 import org.whispersystems.libsignal.groups.SenderKeyName
 import org.whispersystems.libsignal.protocol.SenderKeyDistributionMessage
+import org.whispersystems.libsignal.DuplicateMessageException
 import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.locks.ReentrantLock
 
 class SignalManager(private val context: Context) {
 
     companion object {
         private const val TAG = "SignalManager"
         private const val PREFS_NAME = "signal_keys"
+        const val DUPLICATE_MESSAGE_MARKER = "__DUPLICATE_MESSAGE__"
 
         // Key storage keys
         private const val KEY_IDENTITY_KEY_PAIR = "identity_key_pair"
@@ -57,6 +61,14 @@ class SignalManager(private val context: Context) {
     private val sharedPrefs: SharedPreferences
         get() = getUserSpecificSharedPrefs()
     private val secureRandom = SecureRandom()
+
+    // Concurrency lock map per recipient/sender address to guarantee Double Ratchet thread safety
+    private val sessionLocks = ConcurrentHashMap<String, ReentrantLock>()
+
+    private fun getSessionLock(address: SignalProtocolAddress): ReentrantLock {
+        val key = "${address.name}:${address.deviceId}"
+        return sessionLocks.computeIfAbsent(key) { ReentrantLock(true) }
+    }
 
 
     // Secure crypto wrapper for key storage
@@ -107,6 +119,7 @@ class SignalManager(private val context: Context) {
             Log.d(TAG, "Resetting user context...")
             currentUserUid = null // Clear cached UID
             _signalProtocolStore = null // Clear cached store
+            sessionLocks.clear() // Clear session locks from previous user context
 
             // Force regeneration of SharedPreferences for new user
             // The lazy sharedPrefs will be recreated next time it's accessed
@@ -250,24 +263,29 @@ class SignalManager(private val context: Context) {
     }
 
     /**
-     * Get the Identity Key Pair for database encryption
-     * Returns base64 encoded private key (32 bytes)
+     * Derive database encryption key natively using SHA-256(identity_private_key + salt)
+     * SECURITY: The raw Curve25519 identity private key never leaves native memory or enters Dart heap.
+     * Returns a 64-character lowercase hex string for SQLCipher.
      */
-    fun getIdentityKeyPairPrivateKey(): String? {
+    fun getDatabaseEncryptionKey(): String? {
         return try {
-            val identityKeyPair = signalProtocolStore.identityKeyPair
+            val identityKeyPair = signalProtocolStore.identityKeyPair ?: loadIdentityKeyPair()
             if (identityKeyPair != null) {
-                // Return base64 encoded private key (32 bytes)
-                Base64.encodeToString(
-                    identityKeyPair.privateKey.serialize(),
-                    Base64.NO_WRAP
-                )
+                val privateKeyBytes = identityKeyPair.privateKey.serialize()
+                val salt = "zarq_database_encryption_v1".toByteArray(Charsets.UTF_8)
+
+                val md = java.security.MessageDigest.getInstance("SHA-256")
+                md.update(privateKeyBytes)
+                md.update(salt)
+                val digest = md.digest()
+
+                digest.joinToString("") { "%02x".format(it) }
             } else {
-                Log.e(TAG, "Identity key pair not found")
+                Log.e(TAG, "Identity key pair not found for database key derivation")
                 null
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to get identity key pair", e)
+            Log.e(TAG, "Failed to derive database encryption key", e)
             null
         }
     }
@@ -391,13 +409,16 @@ class SignalManager(private val context: Context) {
             // Store new signed prekey
             signalProtocolStore.storeSignedPreKey(newSignedPreKey.id, newSignedPreKey)
 
+            // Prune retired signed prekeys (keeps active + immediately preceding one for in-flight grace period)
+            signalProtocolStore.pruneOldSignedPreKeys(newSignedPreKeyId, keepPreviousCount = 1)
+
             // Update tracking variables
             sharedPrefs.edit()
                 .putInt(KEY_SIGNED_PREKEY_ID, newSignedPreKeyId)
                 .putLong(KEY_LAST_SIGNED_PREKEY_ROTATION, System.currentTimeMillis())
                 .apply()
 
-            Log.d(TAG, "Signed prekey rotated successfully: $currentSignedPreKeyId -> $newSignedPreKeyId")
+            Log.d(TAG, "Signed prekey rotated successfully: $currentSignedPreKeyId -> $newSignedPreKeyId (retired signed prekeys pruned)")
             true
 
         } catch (e: Exception) {
@@ -482,20 +503,32 @@ class SignalManager(private val context: Context) {
     }
 
     /**
-     * Load identity key pair from secure storage
+     * Load identity key pair from secure storage with auto-migration of legacy unencrypted keys
      */
     private fun loadIdentityKeyPair(): IdentityKeyPair? {
         return try {
             val identityKeyPairData = sharedPrefs.getString(KEY_IDENTITY_KEY_PAIR, null)
                 ?: return null
 
-            // Try to decrypt first (new format)
+            // Try to decrypt with Android Keystore
             val jsonString = try {
                 signalCrypto.decryptData(identityKeyPairData)
             } catch (e: Exception) {
-                // Fallback to unencrypted (old format)
-                Log.d(TAG, "Using unencrypted identity key pair")
-                identityKeyPairData
+                // If legacy unencrypted JSON is found, automatically migrate it to Keystore encryption
+                if (identityKeyPairData.trim().startsWith("{") && identityKeyPairData.contains("private_key")) {
+                    Log.w(TAG, "Migrating legacy unencrypted identity key pair to Android Keystore encryption...")
+                    try {
+                        val encrypted = signalCrypto.encryptData(identityKeyPairData)
+                        sharedPrefs.edit().putString(KEY_IDENTITY_KEY_PAIR, encrypted).commit()
+                        Log.i(TAG, "Legacy identity key pair successfully encrypted and migrated to Keystore")
+                    } catch (migrationError: Exception) {
+                        Log.e(TAG, "Failed to encrypt legacy key pair during migration", migrationError)
+                    }
+                    identityKeyPairData
+                } else {
+                    Log.e(TAG, "Failed to decrypt identity key pair and data is not valid legacy JSON", e)
+                    return null
+                }
             }
 
             val json = JSONObject(jsonString)
@@ -518,6 +551,7 @@ class SignalManager(private val context: Context) {
 
     /**
      * Store all generated keys securely using Android Keystore
+     * SECURITY: Never falls back to plaintext storage for identity private keys
      */
     private fun storeKeysSecurely(
         identityKeyPair: IdentityKeyPair,
@@ -548,52 +582,17 @@ class SignalManager(private val context: Context) {
             editor.putInt(KEY_NEXT_PREKEY_ID, preKeys.size + 1)
             editor.putBoolean(KEY_KEYS_GENERATED, true)
 
-            // Apply changes
-            editor.apply()
+            // Synchronously commit changes to disk
+            val committed = editor.commit()
+            if (!committed) {
+                throw Exception("Failed to commit securely stored keys to SharedPreferences")
+            }
 
             Log.d(TAG, "Keys stored securely with Android Keystore encryption")
 
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to store keys securely", e)
-            // Fallback to unencrypted storage if Keystore fails
-            Log.w(TAG, "Falling back to unencrypted storage")
-            storeKeysUnencrypted(identityKeyPair, registrationId, signedPreKey, preKeys, deviceId)
-        }
-    }
-
-    /**
-     * Fallback: Store keys without encryption (for older devices)
-     */
-    private fun storeKeysUnencrypted(
-        identityKeyPair: IdentityKeyPair,
-        registrationId: Int,
-        signedPreKey: SignedPreKeyRecord,
-        preKeys: List<PreKeyRecord>,
-        deviceId: Int
-    ) {
-        try {
-            val editor = sharedPrefs.edit()
-
-            // Store identity key pair as JSON
-            val identityData = JSONObject().apply {
-                put("public_key", Base64.encodeToString(identityKeyPair.publicKey.serialize(), Base64.NO_WRAP))
-                put("private_key", Base64.encodeToString(identityKeyPair.privateKey.serialize(), Base64.NO_WRAP))
-            }
-            editor.putString(KEY_IDENTITY_KEY_PAIR, identityData.toString())
-
-            // Store other data
-            editor.putInt(KEY_REGISTRATION_ID, registrationId)
-            editor.putInt(KEY_DEVICE_ID, deviceId)
-            editor.putInt(KEY_SIGNED_PREKEY_ID, signedPreKey.id)
-            editor.putInt(KEY_NEXT_PREKEY_ID, preKeys.size + 1)
-            editor.putBoolean(KEY_KEYS_GENERATED, true)
-
-            editor.apply()
-            Log.d(TAG, "Keys stored (unencrypted fallback)")
-
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to store keys even with fallback", e)
-            throw Exception("Key storage failed: ${e.message}")
+            Log.e(TAG, "Failed to store keys securely with Android Keystore", e)
+            throw IllegalStateException("Hardware Keystore security failure: cannot store private key safely. Storage aborted to protect cryptographic identity: ${e.message}", e)
         }
     }
 
@@ -622,6 +621,10 @@ class SignalManager(private val context: Context) {
             // Mark store as initialized
             sharedPrefs.edit().putBoolean(KEY_STORE_INITIALIZED, true).apply()
 
+            // Prune any legacy retired signed prekeys accumulated before this fix
+            val currentSignedPreKeyId = sharedPrefs.getInt(KEY_SIGNED_PREKEY_ID, 1)
+            signalProtocolStore.pruneOldSignedPreKeys(currentSignedPreKeyId, keepPreviousCount = 1)
+
             Log.d(TAG, "Store initialized from existing keys")
             return getExistingKeyBundle()
 
@@ -635,35 +638,7 @@ class SignalManager(private val context: Context) {
      * Load stored identity key pair with decryption if needed
      */
     private fun loadStoredIdentityKeyPair(): IdentityKeyPair? {
-        return try {
-            val identityKeyPairData = sharedPrefs.getString(KEY_IDENTITY_KEY_PAIR, null)
-                ?: return null
-
-            // Try to decrypt first (new format)
-            val jsonString = try {
-                signalCrypto.decryptData(identityKeyPairData)
-            } catch (e: Exception) {
-                // Fallback to unencrypted (old format)
-                Log.d(TAG, "Using unencrypted identity key pair")
-                identityKeyPairData
-            }
-
-            val json = JSONObject(jsonString)
-            val publicKeyB64 = json.getString("public_key")
-            val privateKeyB64 = json.getString("private_key")
-
-            val publicKeyBytes = Base64.decode(publicKeyB64, Base64.NO_WRAP)
-            val privateKeyBytes = Base64.decode(privateKeyB64, Base64.NO_WRAP)
-
-            val publicKey = Curve.decodePoint(publicKeyBytes, 0)
-            val privateKey = Curve.decodePrivatePoint(privateKeyBytes)
-
-            IdentityKeyPair(IdentityKey(publicKey), privateKey)
-
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load stored identity key pair", e)
-            null
-        }
+        return loadIdentityKeyPair()
     }
 
     /**
@@ -808,6 +783,9 @@ class SignalManager(private val context: Context) {
         deviceId: Int,
         prekeyBundleData: Map<String, Any>
     ): Boolean {
+        val recipientAddress = SignalProtocolAddress(recipientUid, deviceId)
+        val lock = getSessionLock(recipientAddress)
+        lock.lock()
         return try {
             Log.d(TAG, "=== Establishing session with $recipientUid:$deviceId ===")
 
@@ -819,35 +797,22 @@ class SignalManager(private val context: Context) {
             val prekeyBundle = parsePreKeyBundle(prekeyBundleData)
             Log.d(TAG, "Parsed prekey bundle - Identity: ${prekeyBundle.identityKey != null}, SignedPreKey: ${prekeyBundle.signedPreKey != null}, OneTimePreKey: ${prekeyBundle.preKey != null}")
 
-            // Create Signal Protocol address for the recipient
-            val recipientAddress = SignalProtocolAddress(recipientUid, deviceId)
-
             // Create session builder
             val sessionBuilder = SessionBuilder(signalProtocolStore, recipientAddress)
 
             // Process the prekey bundle to establish session
             sessionBuilder.process(prekeyBundle)
 
-            Log.d(TAG, "Session established, verifying session state...")
-            val sessionRecord = signalProtocolStore.loadSession(recipientAddress)
-            val serializedSize = sessionRecord.serialize()?.size ?: 0
-            Log.d(TAG, "Established session size: $serializedSize bytes")
-
-// Try to create a SessionCipher and check its internal state
-            val testCipher = SessionCipher(signalProtocolStore, recipientAddress)
-            Log.d(TAG, "SessionCipher created successfully")
+            signalProtocolStore.setSessionCreatedTime(recipientAddress, System.currentTimeMillis())
 
             Log.d(TAG, "Session established successfully with $recipientUid:$deviceId")
-
-            // Verify session was created
-            val hasSession = signalProtocolStore.containsSession(recipientAddress)
-            Log.d(TAG, "Session verification: $hasSession")
-
-            return hasSession
+            signalProtocolStore.containsSession(recipientAddress)
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to establish session with $recipientUid:$deviceId", e)
             false
+        } finally {
+            lock.unlock()
         }
     }
 
@@ -969,14 +934,40 @@ class SignalManager(private val context: Context) {
      */
     fun validateSession(recipientUid: String, deviceId: Int): Boolean {
         return try {
-            if (!hasSession(recipientUid, deviceId)) {
-                Log.w(TAG, "No session exists for validation")
+            if (!isStoreInitialized()) {
+                Log.w(TAG, "Store not initialized for session validation")
                 return false
             }
 
-            // For now, if hasSession returns true, we consider it valid
-            // More sophisticated validation can be added later if needed
-            Log.d(TAG, "Session validation passed for $recipientUid:$deviceId")
+            val address = SignalProtocolAddress(recipientUid, deviceId)
+            if (!signalProtocolStore.containsSession(address)) {
+                Log.d(TAG, "No session exists for validation with $recipientUid:$deviceId")
+                return false
+            }
+
+            val sessionRecord = signalProtocolStore.loadSession(address)
+            if (sessionRecord.isFresh) {
+                Log.w(TAG, "Session record is uninitialized/fresh for $recipientUid:$deviceId")
+                return false
+            }
+
+            val sessionState = sessionRecord.sessionState
+            if (sessionState == null) {
+                Log.w(TAG, "Session state is null for $recipientUid:$deviceId")
+                return false
+            }
+
+            if (sessionState.sessionVersion < 3) {
+                Log.w(TAG, "Session version ${sessionState.sessionVersion} is invalid (< 3) for $recipientUid:$deviceId")
+                return false
+            }
+
+            if (sessionState.remoteIdentityKey == null) {
+                Log.w(TAG, "Session has no remote identity key for $recipientUid:$deviceId")
+                return false
+            }
+
+            Log.d(TAG, "Session validation passed for $recipientUid:$deviceId (version: ${sessionState.sessionVersion})")
             true
 
         } catch (e: Exception) {
@@ -1029,173 +1020,49 @@ class SignalManager(private val context: Context) {
     /**
      * Encrypt a plaintext message for a specific recipient
      * Uses the Double Ratchet algorithm via SessionCipher
+     * Thread-safe via per-address ReentrantLock
      */
     fun encryptMessage(
         recipientUid: String,
         plaintext: String,
         deviceId: Int
     ): String? {
+        val recipientAddress = SignalProtocolAddress(recipientUid, deviceId)
+        val lock = getSessionLock(recipientAddress)
+        lock.lock()
         return try {
-            Log.d(TAG, "=== Encrypting message for $recipientUid:$deviceId ===")
-            Log.d(TAG, "Plaintext length: ${plaintext.length}")
-
             if (!isStoreInitialized()) {
                 throw Exception("Protocol store not initialized")
             }
 
-            // Create recipient address
-            val recipientAddress = SignalProtocolAddress(recipientUid, deviceId)
-
-            // Check if session exists
-            if (!signalProtocolStore.containsSession(recipientAddress)) {
-                Log.e(TAG, "No session exists with $recipientUid:$deviceId")
-                throw Exception("No session exists with recipient. Establish session first.")
-            }
-
-            Log.d(TAG, "Before encryption - session exists: ${signalProtocolStore.containsSession(recipientAddress)}")
-
-            // Load session before encryption for debugging
-            val sessionBefore = signalProtocolStore.loadSession(recipientAddress)
-            val sessionSizeBefore = sessionBefore.serialize()?.size ?: 0
-            Log.d(TAG, "Session size before encryption: $sessionSizeBefore bytes")
-
-            // Validate session before encryption
+            // Check if session exists and is cryptographically usable
             if (!validateSession(recipientUid, deviceId)) {
-                Log.w(TAG, "Session validation failed, attempting to continue anyway")
+                Log.d(TAG, "No existing session with $recipientUid:$deviceId, fallback to session setup")
+                return null
             }
 
-            Log.d(TAG, "DEBUG: Recipient address for encryption: $recipientAddress")
-            Log.d(TAG, "DEBUG: Current user context: $currentUserUid")
-            Log.d(TAG, "DEBUG: Session lookup with address: ${recipientAddress.name}:${recipientAddress.deviceId}")
-
-            Log.d(TAG, "=== PRE-ENCRYPTION SESSION CHECK ===")
-            val loadedSession = signalProtocolStore.loadSession(recipientAddress)
-
-            try {
-                val sessionState = loadedSession.sessionState
-                Log.d(TAG, "Session state version: ${sessionState.sessionVersion}")
-                Log.d(TAG, "Has unacknowledged prekey message: ${sessionState.hasUnacknowledgedPreKeyMessage()}")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error reading session state details: $e")
-            }
-            Log.d(TAG, "=== END PRE-ENCRYPTION SESSION CHECK ===")
-
-            Log.d(TAG, "DEBUG: Loaded session for encryption")
-            Log.d(TAG, "DEBUG: Session size: ${loadedSession.serialize()?.size}")
-            Log.d(TAG, "DEBUG: Session exists in store: ${signalProtocolStore.containsSession(recipientAddress)}")
-
-            // Try to force session refresh
-            signalProtocolStore.storeSession(recipientAddress, loadedSession)
-            Log.d(TAG, "DEBUG: Session re-stored before creating cipher")
-
-            try {
-                val testCipher = SessionCipher(signalProtocolStore, recipientAddress)
-                // This will throw if session isn't usable
-                Log.d(TAG, "SessionCipher created successfully, session should be usable")
-            } catch (e: Exception) {
-                Log.e(TAG, "SessionCipher creation indicates session not usable: $e")
-                throw Exception("Session exists but is not usable for encryption")
-            }
-
-            // Create session cipher
+            // Create session cipher and encrypt
+            // Note: SessionCipher automatically advances Double Ratchet and stores updated session
             val sessionCipher = SessionCipher(signalProtocolStore, recipientAddress)
-
-            Log.d(TAG, "About to encrypt with SessionCipher")
-
-            try {
-                val sessionRecord = signalProtocolStore.loadSession(recipientAddress)
-                Log.d(TAG, "DEBUG SESSION INTERNAL STATE:")
-                Log.d(TAG, "Session record exists: ${sessionRecord != null}")
-                Log.d(TAG, "Session serialized size: ${sessionRecord.serialize()?.size ?: 0}")
-
-                // Try to check if session has valid state without calling problematic methods
-                val serializedData = sessionRecord.serialize()
-                if (serializedData != null && serializedData.isNotEmpty()) {
-                    Log.d(TAG, "Session has serialized data: true")
-                    Log.d(TAG, "Session data first 10 bytes: ${serializedData.take(10).joinToString { "%02x".format(it) }}")
-                } else {
-                    Log.d(TAG, "Session has no serialized data")
-                }
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to check session internal state: $e")
-            }
-
-            // Encrypt the message
             val ciphertext = sessionCipher.encrypt(plaintext.toByteArray(Charsets.UTF_8))
-
-            Log.d(TAG, "=== CIPHERTEXT ANALYSIS ===")
-            Log.d(TAG, "Reported type from library: ${ciphertext.type}")
-            Log.d(TAG, "CiphertextMessage.WHISPER_TYPE: ${CiphertextMessage.WHISPER_TYPE}")
-            Log.d(TAG, "CiphertextMessage.PREKEY_TYPE: ${CiphertextMessage.PREKEY_TYPE}")
-            Log.d(TAG, "Type matches WHISPER_TYPE: ${ciphertext.type == CiphertextMessage.WHISPER_TYPE}")
-            Log.d(TAG, "Type matches PREKEY_TYPE: ${ciphertext.type == CiphertextMessage.PREKEY_TYPE}")
-
-            when (ciphertext) {
-                is SignalMessage -> Log.d(TAG, "Ciphertext is SignalMessage object")
-                is PreKeySignalMessage -> Log.d(TAG, "Ciphertext is PreKeySignalMessage object")
-                else -> Log.d(TAG, "Ciphertext is unknown type: ${ciphertext.javaClass.simpleName}")
-            }
-            Log.d(TAG, "=== END CIPHERTEXT ANALYSIS ===")
-
-            // Get the actual class name
-            Log.d(TAG, "Ciphertext class: ${ciphertext.javaClass.name}")
-
-            // Try to access type through reflection to see actual internal value
-            try {
-                val typeField = ciphertext.javaClass.getDeclaredField("type")
-                typeField.isAccessible = true
-                val actualType = typeField.getInt(ciphertext)
-                Log.d(TAG, "Internal type field value: $actualType")
-            } catch (e: Exception) {
-                Log.d(TAG, "Could not access type field: $e")
-            }
-
-            // Serialize and check
-            val serialized = ciphertext.serialize()
-            Log.d(TAG, "After serialize - first byte: 0x${String.format("%02x", serialized[0])}")
-
-            // *** CRITICAL FIX: Save session state after encryption ***
-            Log.d(TAG, "Saving session state after encryption...")
-            val sessionAfter = signalProtocolStore.loadSession(recipientAddress)
-            signalProtocolStore.storeSession(recipientAddress, sessionAfter)
-
-            // Verify session was saved correctly
-            val sessionSizeAfter = sessionAfter.serialize()?.size ?: 0
-            Log.d(TAG, "Session size after encryption: $sessionSizeAfter bytes")
-            Log.d(TAG, "Session state saved successfully")
-
-            //val actualBytes = ciphertext.serialize()
-            //Log.d(TAG, "ENCRYPT: First 5 bytes: ${actualBytes.take(5).joinToString { "0x%02x".format(it) }}")
-            //val actualFirstByte = actualBytes[0].toInt() and 0xFF
-            //val actualType = (actualFirstByte shr 4) and 0x0F
-            //Log.d(TAG, "VERIFICATION: Reported type = ${ciphertext.type}, Actual type = $actualType")
 
             // Convert to base64 for transmission
             val ciphertextB64 = Base64.encodeToString(ciphertext.serialize(), Base64.NO_WRAP)
-
-            Log.d(TAG, "Message encrypted successfully")
-            Log.d(TAG, "Ciphertext type: ${ciphertext.type}")
-            Log.d(TAG, "Ciphertext length: ${ciphertextB64.length}")
-
-            debugSessionState(recipientUid, deviceId, "AFTER_ENCRYPT")
-            testSessionPersistence(recipientUid, deviceId)
-
-            Log.d(TAG, "ENCRYPT DEBUG: Original ciphertext bytes length: ${ciphertext.serialize().size}")
-            Log.d(TAG, "ENCRYPT DEBUG: Base64 length: ${ciphertextB64.length}")
-            Log.d(TAG, "ENCRYPT DEBUG: Base64 first 50 chars: ${ciphertextB64.take(50)}")
-            Log.d(TAG, "ENCRYPT DEBUG: Base64 last 50 chars: ${ciphertextB64.takeLast(50)}")
-
-            return ciphertextB64
+            Log.d(TAG, "Message encrypted successfully for $recipientUid:$deviceId (type: ${ciphertext.type})")
+            ciphertextB64
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to encrypt message for $recipientUid:$deviceId", e)
             null
+        } finally {
+            lock.unlock()
         }
     }
+
     /**
      * Decrypt a received message from a specific sender
      * Handles both PreKeySignalMessage and regular SignalMessage types
+     * Thread-safe via per-address ReentrantLock
      */
     fun decryptMessage(
         senderUid: String,
@@ -1203,80 +1070,47 @@ class SignalManager(private val context: Context) {
         deviceId: Int
     ): String? {
         val senderAddress = SignalProtocolAddress(senderUid, deviceId)
-
+        val lock = getSessionLock(senderAddress)
+        lock.lock()
         return try {
-            Log.d(TAG, "=== DECRYPTION START ===")
-            Log.d(TAG, "Decrypting message from $senderUid:$deviceId")
-            Log.d(TAG, "Store initialized: ${isStoreInitialized()}")
-
             if (!isStoreInitialized()) {
                 throw Exception("Protocol store not initialized")
             }
 
-            // Session state before decryption
-            val sessionExistsBefore = signalProtocolStore.containsSession(senderAddress)
-            Log.d(TAG, "Receiver session exists BEFORE decryption: $sessionExistsBefore")
-
-
             val ciphertextBytes = Base64.decode(ciphertextB64, Base64.NO_WRAP)
-
-            Log.d(TAG, "DECRYPT DEBUG: Received Base64 length: ${ciphertextB64.length}")
-            Log.d(TAG, "DECRYPT DEBUG: Base64 first 50 chars: ${ciphertextB64.take(50)}")
-            Log.d(TAG, "DECRYPT DEBUG: Base64 last 50 chars: ${ciphertextB64.takeLast(50)}")
-            Log.d(TAG, "DECRYPT DEBUG: Decoded bytes length: ${ciphertextBytes.size}")
-
-            val isPreKeyMsg = isPreKeySignalMessage(ciphertextBytes)
-            Log.d(TAG, "Message type: ${if (isPreKeyMsg) "PreKeySignalMessage" else "SignalMessage"}")
-
             val sessionCipher = SessionCipher(signalProtocolStore, senderAddress)
 
-            // Decrypt based on message type
-            val plaintext = if (isPreKeyMsg) {
-                Log.d(TAG, "DECRYPTING: PreKeySignalMessage (establishes session)")
-                val preKeyMessage = PreKeySignalMessage(ciphertextBytes)
-                val result = sessionCipher.decrypt(preKeyMessage)
-
-                Log.d(TAG, "DEBUG: Checking session after PreKey decryption")
-                val sessionAfterDecrypt = signalProtocolStore.loadSession(senderAddress)
-                Log.d(TAG, "DEBUG: Session size after PreKey decrypt: ${sessionAfterDecrypt.serialize()?.size} bytes")
-
-                // *** CRITICAL FIX: Save session state after PreKeySignalMessage decryption ***
-                Log.d(TAG, "Saving session state after PreKeySignalMessage decryption...")
-                val sessionAfterPreKey = signalProtocolStore.loadSession(senderAddress)
-                signalProtocolStore.storeSession(senderAddress, sessionAfterPreKey)
-                Log.d(TAG, "Session established and saved after PreKeySignalMessage")
-
-                result
-            } else {
-                Log.d(TAG, "DECRYPTING: Regular SignalMessage")
-                if (!sessionExistsBefore) {
-                    throw Exception("No session exists for regular SignalMessage")
+            // Decrypt based on session state and message type
+            // Note: SessionCipher automatically advances Double Ratchet and persists session to store
+            val plaintext = if (signalProtocolStore.containsSession(senderAddress)) {
+                try {
+                    val signalMessage = SignalMessage(ciphertextBytes)
+                    sessionCipher.decrypt(signalMessage)
+                } catch (e: DuplicateMessageException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.d(TAG, "Standard SignalMessage failed, attempting as PreKeySignalMessage from $senderUid:$deviceId: ${e.message}")
+                    val preKeyMessage = PreKeySignalMessage(ciphertextBytes)
+                    sessionCipher.decrypt(preKeyMessage)
                 }
-                val signalMessage = SignalMessage(ciphertextBytes)
-                val result = sessionCipher.decrypt(signalMessage)
-
-                // *** CRITICAL FIX: Save session state after SignalMessage decryption ***
-                Log.d(TAG, "Saving session state after SignalMessage decryption...")
-                val sessionAfterSignal = signalProtocolStore.loadSession(senderAddress)
-                signalProtocolStore.storeSession(senderAddress, sessionAfterSignal)
-                Log.d(TAG, "Session state updated and saved after SignalMessage")
-
-                result
+            } else {
+                Log.d(TAG, "DECRYPTING: PreKeySignalMessage from $senderUid:$deviceId (initial session)")
+                val preKeyMessage = PreKeySignalMessage(ciphertextBytes)
+                sessionCipher.decrypt(preKeyMessage)
             }
 
             val decryptedText = String(plaintext, Charsets.UTF_8)
-            Log.d(TAG, "Final decrypted text length: ${decryptedText.length}")
+            Log.d(TAG, "Message decrypted successfully from $senderUid:$deviceId")
+            decryptedText
 
-            // Debug session state after decryption
-            debugSessionState(senderUid, deviceId, "AFTER_DECRYPT")
-
-            Log.d(TAG, "=== DECRYPTION SUCCESS ===")
-            return decryptedText
-
+        } catch (e: DuplicateMessageException) {
+            Log.i(TAG, "Duplicate message from $senderUid:$deviceId (already processed) - safely ignoring")
+            DUPLICATE_MESSAGE_MARKER
         } catch (e: Exception) {
-            Log.e(TAG, "=== DECRYPTION FAILED ===")
             Log.e(TAG, "Failed to decrypt message from $senderUid:$deviceId", e)
             null
+        } finally {
+            lock.unlock()
         }
     }
 
@@ -1348,22 +1182,11 @@ class SignalManager(private val context: Context) {
         }
     }
 
-    /**
-     * Determine if the ciphertext is a PreKeySignalMessage
-     * PreKeySignalMessages are sent when no session exists yet
-     */
-    private fun isPreKeySignalMessage(ciphertextBytes: ByteArray): Boolean {
-        return try {
-            PreKeySignalMessage(ciphertextBytes)
-            true
-        } catch (e: Exception) {
-            false
-        }
-    }
 
     /**
      * Encrypt message and establish session if needed (convenience method)
      * This combines session establishment and encryption in one call
+     * Thread-safe via per-address ReentrantLock
      */
     fun encryptMessageWithSessionSetup(
         recipientUid: String,
@@ -1371,49 +1194,45 @@ class SignalManager(private val context: Context) {
         prekeyBundle: Map<String, Any>? = null,
         deviceId: Int
     ): String? {
+        val recipientAddress = SignalProtocolAddress(recipientUid, deviceId)
+        val lock = getSessionLock(recipientAddress)
+        lock.lock()
         return try {
-            Log.d(TAG, "=== encryptMessageWithSessionSetup START ===")
+            Log.d(TAG, "=== encryptMessageWithSessionSetup START for $recipientUid:$deviceId ===")
 
-            val recipientAddress = SignalProtocolAddress(recipientUid, deviceId)
             val sessionExists = signalProtocolStore.containsSession(recipientAddress)
-
-            Log.d(TAG, "Session exists: $sessionExists")
-
-            // Only establish new session if:
-            // 1. No session exists at all, OR
-            // 2. Session exists but prekey bundle is provided AND session is invalid
             val needsNewSession = !sessionExists ||
                     (prekeyBundle != null && !isSessionUsableForSending(recipientAddress))
 
             if (needsNewSession && prekeyBundle != null) {
-                Log.d(TAG, "Establishing new session")
+                Log.d(TAG, "Establishing new session with $recipientUid:$deviceId")
                 val sessionEstablished = establishSession(recipientUid, deviceId, prekeyBundle)
-
                 if (!sessionEstablished) {
                     throw Exception("Failed to establish session")
                 }
             } else if (!sessionExists) {
                 throw Exception("No session exists and no prekey bundle provided")
             } else {
-                Log.d(TAG, "Using existing session")
+                Log.d(TAG, "Using existing session with $recipientUid:$deviceId")
             }
 
-            // Encrypt the message
-            return encryptMessage(recipientUid, plaintext, deviceId)
+            // Encrypt the message (re-entrant lock allows calling encryptMessage safely)
+            encryptMessage(recipientUid, plaintext, deviceId)
 
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to encrypt with session setup", e)
+            Log.e(TAG, "Failed to encrypt with session setup for $recipientUid:$deviceId", e)
             null
+        } finally {
+            lock.unlock()
         }
     }
 
     // Helper method to check if session is actually usable
     private fun isSessionUsableForSending(address: SignalProtocolAddress): Boolean {
         return try {
+            if (!signalProtocolStore.containsSession(address)) return false
             val session = signalProtocolStore.loadSession(address)
-            val sessionSize = session.serialize()?.size ?: 0
-            // A properly established bidirectional session should be larger
-            sessionSize > 500
+            !session.isFresh && session.sessionState != null && session.sessionState.sessionVersion >= 3
         } catch (e: Exception) {
             false
         }
@@ -1454,7 +1273,7 @@ class SignalManager(private val context: Context) {
 
             // Check if session has valid state
             val hasValidState = try {
-                sessionSize > 500 && sessionRecord.serialize() != null
+                sessionSize > 200 && sessionRecord.sessionState != null
             } catch (e: Exception) {
                 Log.w(TAG, "Session state check failed", e)
                 false
@@ -1476,12 +1295,12 @@ class SignalManager(private val context: Context) {
                 return false
             }
 
-            // Check if there was a recent key change
+            // Check if there was a recent key change after this session was created
             val keyChangeTime = signalProtocolStore.getLastKeyChangeTime(address)
-            val sessionTime = sessionRecord.sessionState?.getSessionVersion()?.toLong() ?: 0L
+            val sessionCreatedTime = signalProtocolStore.getSessionCreatedTime(address)
 
-            if (keyChangeTime > 0 && keyChangeTime > sessionTime) {
-                Log.w(TAG, "🔑 Recipient $recipientUid identity key changed - invalidating stale session")
+            if (keyChangeTime > 0 && keyChangeTime > sessionCreatedTime) {
+                Log.w(TAG, "🔑 Recipient $recipientUid identity key changed after session creation ($keyChangeTime > $sessionCreatedTime) - invalidating stale session")
                 signalProtocolStore.deleteSession(address)
                 Log.d(TAG, "Session validation DECISION: ESTABLISH NEW (key changed)")
                 return false
@@ -1810,7 +1629,7 @@ class SignalManager(private val context: Context) {
                 Log.w(TAG, "⚠️ Identity Key Pair not found in backup - this may cause signature verification failures!")
             }
 
-            editor.apply()
+            check(editor.commit()) { "Security state could not be saved" }
 
             Log.d(TAG, "Signal Protocol state imported successfully")
             true

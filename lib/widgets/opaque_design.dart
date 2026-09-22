@@ -47,26 +47,79 @@ class OpaqueButton extends StatelessWidget {
     required this.onPressed,
     this.primary = false,
     this.danger = false,
+    this.success = false,
   });
   final String label;
   final VoidCallback? onPressed;
-  final bool primary, danger;
+  final bool primary, danger, success;
+
   @override
   Widget build(BuildContext context) {
     final c = OpaqueColors(context);
-    return TextButton(
-      onPressed: onPressed,
-      style: TextButton.styleFrom(
-        backgroundColor: danger
-            ? const Color(0xFFBF6974)
-            : primary
-            ? const Color(0xFF507FC3)
-            : c.soft,
-        foregroundColor: primary || danger ? Colors.white : c.muted,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(11)),
+    final isEnabled = onPressed != null;
+
+    final Color disabledBg =
+        c.dark ? const Color(0xFF2A3341) : const Color(0xFFE2E5E9);
+    final Color disabledFg =
+        c.dark ? const Color(0xFF768396) : const Color(0xFF868E9C);
+
+    Color bgColor;
+    Color fgColor;
+
+    if (!isEnabled) {
+      bgColor = disabledBg;
+      fgColor = disabledFg;
+    } else if (danger) {
+      bgColor = const Color(0xFFBF6974);
+      fgColor = Colors.white;
+    } else if (primary || success) {
+      bgColor = const Color(0xFF22C55E);
+      fgColor = Colors.white;
+    } else {
+      bgColor = c.soft;
+      fgColor = c.ink;
+    }
+
+    final bool hasBlackBorder = primary || success;
+    final Border? border = hasBlackBorder
+        ? Border.all(color: Colors.black, width: 1.5)
+        : (!isEnabled
+            ? Border.all(
+                color: c.dark
+                    ? const Color(0xFF3A4656)
+                    : const Color(0xFFCCD1D9),
+                width: 1,
+              )
+            : null);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(11),
+        border: border,
       ),
-      child: Text(label, style: const TextStyle(fontSize: 12)),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(11),
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(11),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+            child: Center(
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontFamily: 'Inter',
+                  fontSize: 12.5,
+                  fontWeight: isEnabled ? FontWeight.w600 : FontWeight.w500,
+                  color: fgColor,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -175,11 +228,17 @@ class OpaqueSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = OpaqueColors(context);
+    final viewInsets = MediaQuery.viewInsetsOf(context).bottom;
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    final availableHeight = (screenHeight - viewInsets).clamp(100.0, screenHeight);
+
     return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      padding: EdgeInsets.only(bottom: viewInsets),
       child: Container(
         constraints: BoxConstraints(
-          maxHeight: MediaQuery.sizeOf(context).height * .85,
+          maxHeight: viewInsets > 0
+              ? availableHeight * 0.95
+              : screenHeight * 0.85,
         ),
         decoration: BoxDecoration(
           color: c.surface,

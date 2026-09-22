@@ -2,7 +2,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'websocket_service.dart';
-import 'global_call_manager.dart';
 
 class NavigationHandler {
   static const MethodChannel _channel = MethodChannel('com.zarq/navigation');
@@ -19,7 +18,13 @@ class NavigationHandler {
   static void initialize(GlobalKey<NavigatorState> navigatorKey) {
     _navigatorKey = navigatorKey;
     _channel.setMethodCallHandler(_handleMethodCall);
-    // print('[NavigationHandler] Initialized with navigator key');
+
+    // Consume any pending cold-start conversation from notification tap
+    _channel.invokeMethod('getPendingConversation').then((pendingId) {
+      if (pendingId is int) {
+        _navigateToConversation(pendingId, null);
+      }
+    }).catchError((_) {});
   }
 
   // Handle method calls from Kotlin
@@ -189,6 +194,19 @@ class NavigationHandler {
     } catch (e) {
       // print('[NavigationHandler] Failed to send log event: $e');
     }
+  }
+
+  // Notify native Kotlin when entering or leaving a conversation
+  static Future<void> setActiveConversation(int conversationId) async {
+    try {
+      await _channel.invokeMethod('setActiveConversation', {'conversationId': conversationId});
+    } catch (_) {}
+  }
+
+  static Future<void> clearActiveConversation() async {
+    try {
+      await _channel.invokeMethod('clearActiveConversation');
+    } catch (_) {}
   }
 
   // Method for HomeScreen to check if there's a pending conversation to open

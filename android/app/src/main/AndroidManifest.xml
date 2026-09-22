@@ -100,11 +100,11 @@
             </intent-filter>
         </service>
 
-        <!-- ADDED: Signal Protocol Quick Reply Service -->
+        <!-- Superseded: Quick reply is handled directly via goAsync in NotificationActionReceiver -->
         <service
             android:name=".SignalQuickReplyService"
             android:exported="false"
-            android:enabled="true">
+            android:enabled="false">
         </service>
 
         <!-- Call Overlay Foreground Service -->

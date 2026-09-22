@@ -24,6 +24,10 @@ Widget _buildCachedAvatar({
   if (avatarUrl != null && avatarUrl.isNotEmpty) {
     return CachedNetworkImage(
       imageUrl: avatarUrl,
+      memCacheWidth: 120,
+      memCacheHeight: 120,
+      maxWidthDiskCache: 250,
+      maxHeightDiskCache: 250,
       imageBuilder: (context, imageProvider) => CircleAvatar(
         radius: radius,
         backgroundImage: imageProvider,
@@ -334,7 +338,7 @@ class _GlobalCallOverlayState extends State<GlobalCallOverlay> with WidgetsBindi
                 child: call.avatarUrl != null && call.avatarUrl!.isNotEmpty
                   ? CircleAvatar(
                       radius: avatarRadius,
-                      backgroundImage: NetworkImage(call.avatarUrl!),
+                      backgroundImage: CachedNetworkImageProvider(call.avatarUrl!),
                       backgroundColor: Colors.transparent,
                       onBackgroundImageError: (_, __) {},
                       child: Container(),
@@ -618,7 +622,7 @@ class _GlobalCallOverlayState extends State<GlobalCallOverlay> with WidgetsBindi
           call.avatarUrl != null && call.avatarUrl!.isNotEmpty
             ? CircleAvatar(
                 radius: avatarRadius,
-                backgroundImage: NetworkImage(call.avatarUrl!),
+                backgroundImage: CachedNetworkImageProvider(call.avatarUrl!),
                 backgroundColor: Colors.transparent,
                 onBackgroundImageError: (_, __) {},
               )
@@ -812,7 +816,7 @@ class _GlobalCallOverlayState extends State<GlobalCallOverlay> with WidgetsBindi
             call.avatarUrl != null && call.avatarUrl!.isNotEmpty
               ? CircleAvatar(
                   radius: avatarRadius,
-                  backgroundImage: NetworkImage(call.avatarUrl!),
+                  backgroundImage: CachedNetworkImageProvider(call.avatarUrl!),
                   backgroundColor: Colors.transparent,
                   onBackgroundImageError: (_, __) {},
                 )
@@ -965,7 +969,7 @@ class _GlobalCallOverlayState extends State<GlobalCallOverlay> with WidgetsBindi
                     ),
                     child: CircleAvatar(
                       radius: 90,
-                      backgroundImage: NetworkImage(call.avatarUrl!),
+                      backgroundImage: CachedNetworkImageProvider(call.avatarUrl!),
                       backgroundColor: Colors.transparent,
                       onBackgroundImageError: (_, __) {},
                     ),
@@ -1357,7 +1361,7 @@ class _GlobalCallOverlayState extends State<GlobalCallOverlay> with WidgetsBindi
                 CircleAvatar(
                   radius: avatarRadius,
                   backgroundImage: call.avatarUrl != null && call.avatarUrl!.isNotEmpty
-                    ? NetworkImage(call.avatarUrl!)
+                    ? CachedNetworkImageProvider(call.avatarUrl!)
                     : null,
                   backgroundColor: call.avatarUrl == null
                     ? Color(call.callerName.hashCode | 0xFF000000)
@@ -1520,7 +1524,7 @@ class _GlobalCallOverlayState extends State<GlobalCallOverlay> with WidgetsBindi
       child: CircleAvatar(
         radius: avatarRadius,
         backgroundImage: call.avatarUrl != null && call.avatarUrl!.isNotEmpty
-          ? NetworkImage(call.avatarUrl!)
+          ? CachedNetworkImageProvider(call.avatarUrl!)
           : null,
         backgroundColor: call.avatarUrl == null
           ? Color(call.callerName.hashCode | 0xFF000000)
@@ -1574,7 +1578,7 @@ class _GlobalCallOverlayState extends State<GlobalCallOverlay> with WidgetsBindi
             child: CircleAvatar(
               radius: avatarRadius,
               backgroundImage: call.avatarUrl != null && call.avatarUrl!.isNotEmpty
-                ? NetworkImage(call.avatarUrl!)
+                ? CachedNetworkImageProvider(call.avatarUrl!)
                 : null,
               backgroundColor: call.avatarUrl == null
                 ? Color(call.callerName.hashCode | 0xFF000000)

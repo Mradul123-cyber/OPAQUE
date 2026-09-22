@@ -52,24 +52,34 @@ import 'package:google_fonts/google_fonts.dart';
 // Import the NavigationHandler
 import 'services/navigation_handler.dart';
 import 'package:zarq_messenger/app_config.dart';
+import 'services/app_storage.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
-  // Initialize auto-backup workmanager
-  await AutoBackupManager.initialize();
+  // 1. Load local SharedPreferences immediately (~10-15ms)
+  AppStorage.prefs = await SharedPreferences.getInstance();
 
+  // 2. Initialize Firebase asynchronously in background WITHOUT blocking runApp()
+  AppStorage.firebaseInitFuture = Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
+  // 3. Initialize background services asynchronously without blocking
+  unawaited(AutoBackupManager.initialize());
   SentMessageService.initialize();
-
-  // Initialize share service
-  await ShareService.initialize();
+  unawaited(ShareService.initialize());
 
   final databaseService = DatabaseService.instance;
 
-  // Initialize global call manager
+  // Pre-warm local database in background if returning user
+  if (AppStorage.isReturningUser) {
+    unawaited(AppStorage.firebaseInitFuture.then((_) => databaseService.init()).catchError((_) {}));
+  }
+
+  // Initialize global call manager without blocking app startup
   final globalCallManager = GlobalCallManager();
-  await globalCallManager.initialize();
+  unawaited(globalCallManager.initialize());
 
   // Initialize system overlay service and set up callbacks
   SystemOverlayService.initialize();
@@ -77,7 +87,6 @@ void main() async {
     globalCallManager.endCall();
   };
   SystemOverlayService.onToggleMuteFromOverlay = (isMuted) {
-    // The overlay already toggled the state, we just need to sync it
     globalCallManager.toggleMicrophone();
   };
 
@@ -209,6 +218,7 @@ class _MyAppState extends State<MyApp> {
       debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
       if (call.method == 'executeAutoBackupNow') {
+        if (Platform.isAndroid) return false; // Retired unbound trigger; native worker owns Android backups.
         debugPrint('');
         debugPrint(
           '╔════════════════════════════════════════════════════════════╗',
@@ -487,11 +497,44 @@ class _MyAppState extends State<MyApp> {
   }
 }
 
-class AuthGate extends StatelessWidget {
+class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
 
   @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  bool _firebaseReady = Firebase.apps.isNotEmpty;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!_firebaseReady) {
+      AppStorage.firebaseInitFuture.then((_) {
+        if (mounted) {
+          setState(() {
+            _firebaseReady = true;
+          });
+        }
+      }).catchError((err) {
+        debugPrint('[AuthGate] Firebase init error: $err');
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    if (!_firebaseReady) {
+      if (AppStorage.isReturningUser) {
+        return const HomeScreen();
+      }
+      return const Scaffold(
+        backgroundColor: Color(0xFF0F1828),
+        body: SizedBox.expand(),
+      );
+    }
+
     return ValueListenableBuilder<bool>(
       valueListenable: OpaqueAuthService.interactive,
       builder: (context, interactive, _) => StreamBuilder<User?>(
@@ -529,13 +572,22 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   final ValueNotifier<double> _initProgress = ValueNotifier<double>(0.0);
   final ValueNotifier<String> _initStep = ValueNotifier<String>('Starting...');
   final ValueNotifier<bool> _showProgressBar = ValueNotifier<bool>(true);
+  int _fcmUploadRetryCount = 0;
+
+  // Synchronously evaluate returning user status on Frame 1 using pre-loaded prefs
+  late final bool _isReturningUser = () {
+    final prefs = AppStorage.prefs;
+    if (prefs == null) return false;
+    final isInit = prefs.getBool('user_${widget.user.uid}_initialized') ?? false;
+    final needsRestore = prefs.getBool('needs_device_reregistration') ?? false;
+    return isInit && !needsRestore;
+  }();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     KeyRotationService.startBackgroundRotation();
-    // print("[AuthWrapper] initState: Starting user initialization.");
     _initializationFuture = _initializeUserServices();
   }
 
@@ -634,6 +686,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       final keyBundle = await SignalService.generateKeyBundle();
 
       if (keyBundle != null) {
+        SignalService.invalidateCachedDeviceId();
         // print("[AuthWrapper] Successfully generated new keys:");
         // print("  - Registration ID: ${keyBundle['registration_id']}");
         // print("  - Signed PreKey ID: ${keyBundle['signed_prekey_id']}");
@@ -698,16 +751,18 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   // Check if user is already fully initialized - UPDATED
   Future<bool> _isUserAlreadyInitialized() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      // Run SharedPreferences lookup and Signal keys check in parallel
+      final results = await Future.wait([
+        SharedPreferences.getInstance(),
+        _checkExistingKeys(),
+      ]);
+      final prefs = results[0] as SharedPreferences;
+      final hasKeys = results[1] as bool;
+
       final isInitialized =
           prefs.getBool('user_${widget.user.uid}_initialized') ?? false;
 
-      // UPDATED: Also check if Signal keys exist
-      final hasKeys = await _checkExistingKeys();
-
       final fullyInitialized = isInitialized && hasKeys;
-      // print('[AuthWrapper] User initialization status: app_initialized=$isInitialized, signal_keys=$hasKeys, fully_initialized=$fullyInitialized');
-
       return fullyInitialized;
     } catch (e) {
       // print('[AuthWrapper] Error checking initialization status: $e');
@@ -720,6 +775,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('user_${widget.user.uid}_initialized', true);
+      await prefs.setString('cached_user_uid', widget.user.uid);
     } catch (e) {
       // print('[AuthWrapper] Error marking user as initialized: $e');
     }
@@ -801,34 +857,28 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
         // Check if device needs re-registration (after restore)
         final prefs = await SharedPreferences.getInstance();
+        unawaited(prefs.setString('cached_user_uid', widget.user.uid));
         final needsReregistration =
             prefs.getBool('needs_device_reregistration') ?? false;
 
         // Hide progress bar for normal fast startup, show for restore flow
         _showProgressBar.value = needsReregistration;
 
-        // Run these in PARALLEL
-        _updateProgress(0.1, 'Starting up...');
-        await Future.wait([
-          dbService.init(),
-          _checkIfProfileExists().then((exists) {
-            if (!exists) throw Exception("Profile missing");
-          }),
-          _testSignalProtocol(),
-          widget.user
-              .getIdToken(true)
-              .then((token) => websocketService.connect(token)),
-        ]);
+        // Initialize local encrypted database
+        _updateProgress(0.5, 'Starting up...');
+        await dbService.init();
 
-        _updateProgress(0.3, 'Verifying session...');
+        // Connect WebSocket in background without blocking screen transition
+        unawaited(
+          widget.user
+              .getIdToken()
+              .then((token) => websocketService.connect(token)),
+        );
+
+        _updateProgress(0.4, 'Verifying session...');
 
         if (needsReregistration) {
-          // print("[AuthWrapper] 🔄 Device needs re-registration after restore");
-
-          _updateProgress(0.4, 'Restoring encryption keys...');
-          await Future.delayed(const Duration(milliseconds: 400));
-
-          // Get existing key bundle and register to backend
+          // Device needs re-registration after restore
           _updateProgress(0.5, 'Preparing device registration...');
           final keyBundle = await _getExistingKeyBundle();
 
@@ -843,11 +893,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
                     )
                     .toList();
 
-            // print("[AuthWrapper] Re-registering device ${keyBundle['device_id']} to backend...");
-            // print("[AuthWrapper] This will REPLACE any existing device in backend");
-
-            _updateProgress(0.6, 'Re-registering device...');
-            await Future.delayed(const Duration(milliseconds: 300));
+            _updateProgress(0.7, 'Re-registering device...');
 
             await DeviceService.registerDevice(
               deviceId: keyBundle['device_id'] as int,
@@ -863,33 +909,23 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
               oneTimePreKeys: oneTimeKeys,
             );
 
-            // print("[AuthWrapper] ✅ Device re-registered successfully");
+            _updateProgress(0.85, 'Synchronizing sessions...');
 
-            _updateProgress(0.75, 'Synchronizing sessions...');
-            await Future.delayed(const Duration(milliseconds: 400));
-
-            // 🔧 FIX: Upload FCM token after restore (only when re-registration happens)
+            // Upload FCM token after restore
             print("[AuthWrapper] 📤 Uploading FCM token after restore...");
             await _uploadFCMTokenToServer();
 
             // Clear the flag
             await prefs.setBool('needs_device_reregistration', false);
-          } else {
-            // print("[AuthWrapper] ⚠️ Could not get key bundle for re-registration");
           }
         } else {
-          // Normal fast startup without re-registration
-          _updateProgress(0.5, 'Loading encryption keys...');
-
           _updateProgress(0.7, 'Preparing secure connection...');
         }
 
-        _updateProgress(0.85, 'Loading conversations...');
+        _updateProgress(0.9, 'Loading conversations...');
 
-        // Only these need to be sequential (depend on WebSocket)
-        await _markUndeliveredMessagesAsDelivered(websocketService, dbService);
-
-        _updateProgress(0.95, 'Finalizing...');
+        // Flush undelivered message receipts in background without blocking screen render
+        unawaited(_markUndeliveredMessagesAsDelivered(websocketService, dbService));
 
         _updateProgress(1.0, 'Ready!');
 
@@ -960,7 +996,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
       // Step 6 & 7: Connect WebSocket and upload FCM token in parallel
       _updateProgress(0.85, 'Connecting to server...');
-      final token = await widget.user.getIdToken(true);
+      final token = await widget.user.getIdToken();
       await Future.wait([
         websocketService.connect(token),
         _uploadFCMTokenToServer(),
@@ -1034,12 +1070,14 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
         }
       } else {
         print(
-          "[AuthWrapper] ⚠️ No FCM token available yet - will retry on next app start",
+          "[AuthWrapper] ⚠️ No FCM token available yet",
         );
-        // Schedule retry after 2 seconds (token might be generated soon)
-        Future.delayed(const Duration(seconds: 2), () {
-          _uploadFCMTokenToServer();
-        });
+        if (_fcmUploadRetryCount < 3) {
+          _fcmUploadRetryCount++;
+          Future.delayed(Duration(seconds: 2 * _fcmUploadRetryCount), () {
+            _uploadFCMTokenToServer();
+          });
+        }
       }
     } catch (e) {
       print("[AuthWrapper] ❌ Error uploading FCM token: $e");
@@ -1444,6 +1482,9 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       future: _initializationFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
+          if (_isReturningUser) {
+            return const HomeScreen();
+          }
           return ValueListenableBuilder<double>(
             valueListenable: _initProgress,
             builder: (_, progress, __) => AuthStartupView(progress: progress),

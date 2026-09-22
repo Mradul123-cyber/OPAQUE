@@ -125,6 +125,8 @@ flutter:
     - assets/ringtones/incoming.mp3
     - assets/ringtones/outgoing.mp3
     - assets/ringtones/connecting.mp3
+    - assets/sounds/message_sent.wav
+    - assets/sounds/message_received.wav
 
   # To add assets to your application, add an assets section, like this:
   # assets:

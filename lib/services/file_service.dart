@@ -96,6 +96,40 @@ class FileService {
     }
   }
 
+  /// Single-pass image preparation: reads file once, extracts dimensions, and compresses in memory if needed.
+  static Future<Map<String, dynamic>?> prepareImageForSending(String imagePath) async {
+    try {
+      final file = File(imagePath);
+      final rawBytes = await file.readAsBytes();
+
+      final codec = await ui.instantiateImageCodec(rawBytes);
+      final frame = await codec.getNextFrame();
+      final width = frame.image.width;
+      final height = frame.image.height;
+
+      Uint8List finalBytes = rawBytes;
+      if (rawBytes.length >= 500 * 1024) {
+        final compressed = await FlutterImageCompress.compressWithList(
+          rawBytes,
+          quality: imageQuality,
+          minWidth: maxImageSize,
+          minHeight: maxImageSize,
+        );
+        if (compressed.isNotEmpty) {
+          finalBytes = compressed;
+        }
+      }
+
+      return {
+        'bytes': finalBytes,
+        'width': width,
+        'height': height,
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
   // ============================================================
   // VIDEO METHODS
   // ============================================================

@@ -1,13 +1,12 @@
+import 'dart:async';
+import 'app_storage.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'backup_service.dart';
 import 'auto_backup_manager.dart';
 import 'SignalService.dart';
-import 'secure_storage_service.dart';
-import 'dart:convert';
-import 'dart:typed_data';
-import 'package:crypto/crypto.dart';
 
 /// Backup Settings Provider - Manages auto-backup settings state
 class BackupSettingsProvider with ChangeNotifier {
@@ -15,12 +14,70 @@ class BackupSettingsProvider with ChangeNotifier {
 
   AutoBackupSettings _settings = AutoBackupSettings();
   bool _isLoading = false;
+  bool _saving = false;
+  bool _refreshingNative = false;
+  Map<String, dynamic> _native = {};
+  int get lastNativeSuccess => _native['lastSuccess'] as int? ?? 0;
+  String get nativeStatusMessage => _native['message'] as String? ?? '';
+  bool get nativeRunning => ['running', 'cancelling'].contains(_native['status']);
+  bool get nativeCancelling => _native['status'] == 'cancelling';
+  double get nativeProgress => ((_native['progress'] as num? ?? 0) / 100).clamp(0.0, 1.0);
+  DateTime? get nextNativeRun {
+    final value = _native['nextRun'] as int?;
+    return value == null ? null : DateTime.fromMillisecondsSinceEpoch(value);
+  }
+
+  Future<void> refreshNativeStatus() async {
+    if (!Platform.isAndroid || _disposed || _saving || _refreshingNative) return;
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    _refreshingNative = true;
+    try {
+      final status = await AutoBackupManager.nativeStatus();
+      if (_disposed || _saving || FirebaseAuth.instance.currentUser?.uid != uid || status['userUid'] != uid) return;
+      _native = status;
+      _settings = _settings.copyWith(enabled: status['enabled'] == true);
+      notifyListeners();
+    } catch (e) { debugPrint('[BackupSettings] Status unavailable: $e'); }
+    finally { _refreshingNative = false; }
+  }
+
+  Future<void> cancelNativeRun() async {
+    await AutoBackupManager.cancelNativeRun(_native['run'] as String? ?? '');
+    await refreshNativeStatus();
+  }
+
+  Future<void> setTime(int hour, int minute) => _saveAndSchedule(_settings.copyWith(hour: hour, minute: minute));
 
   AutoBackupSettings get settings => _settings;
   bool get isLoading => _isLoading;
 
+  StreamSubscription<User?>? _authSubscription;
+  bool _disposed = false;
+  bool _needsReconfiguration = false;
+  bool get needsReconfiguration => _needsReconfiguration;
+
   BackupSettingsProvider() {
-    _loadSettings();
+    unawaited(_bindAccount());
+  }
+
+  Future<void> _bindAccount() async {
+    try {
+      await AppStorage.firebaseInitFuture;
+      if (_disposed) return;
+      _authSubscription = FirebaseAuth.instance.authStateChanges().listen((_) {
+        _settings = AutoBackupSettings();
+        _native = {};
+        unawaited(_loadSettings());
+      });
+    } catch (e) { debugPrint('[BackupSettings] Initialization failed: $e'); }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _authSubscription?.cancel();
+    super.dispose();
   }
 
   /// Load settings from storage
@@ -29,11 +86,19 @@ class BackupSettingsProvider with ChangeNotifier {
       _isLoading = true;
       notifyListeners();
 
-      _settings = await _backupService.getAutoBackupSettings();
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final loaded = await _backupService.getAutoBackupSettings();
+      final prefs = await SharedPreferences.getInstance();
+      if (_disposed || FirebaseAuth.instance.currentUser?.uid != uid) return;
+      _settings = loaded;
+      await refreshNativeStatus();
+      if (_disposed || FirebaseAuth.instance.currentUser?.uid != uid) return;
+      _needsReconfiguration = prefs.getBool('backup_reconfigure_$uid') ?? false;
 
       _isLoading = false;
       notifyListeners();
     } catch (e) {
+      if (_disposed) return;
       debugPrint('[BackupSettingsProvider] Error loading settings: $e');
       _isLoading = false;
       notifyListeners();
@@ -48,7 +113,8 @@ class BackupSettingsProvider with ChangeNotifier {
   /// Update auto-backup enabled status
   Future<void> setEnabled(bool enabled) async {
     try {
-      final updatedSettings = _settings.copyWith(enabled: enabled);
+      final updatedSettings = _settings.copyWith(enabled: enabled,
+        frequency: enabled && _settings.frequency == BackupFrequency.disabled ? BackupFrequency.weekly : _settings.frequency);
       await _saveAndSchedule(updatedSettings);
     } catch (e) {
       debugPrint('[BackupSettingsProvider] Error setting enabled: $e');
@@ -101,25 +167,8 @@ class BackupSettingsProvider with ChangeNotifier {
   }
 
   /// Update backup passphrase (encrypted)
-  Future<void> setBackupPassphrase(String passphrase) async {
-    try {
-      final updatedSettings = _settings.copyWith(lastBackupPassphrase: passphrase);
-
-      // Save settings first
-      await _backupService.saveAutoBackupSettings(updatedSettings);
-      _settings = updatedSettings;
-      notifyListeners();
-
-      // If auto-backup is enabled, schedule native auto-backup NOW
-      // This is the ONLY place where we actually schedule with credentials
-      if (updatedSettings.enabled && Platform.isAndroid) {
-        await _scheduleNativeAutoBackup(updatedSettings);
-      }
-    } catch (e) {
-      debugPrint('[BackupSettingsProvider] Error setting passphrase: $e');
-      rethrow;
-    }
-  }
+  Future<void> setBackupPassphrase(String passphrase) =>
+      _saveAndSchedule(_settings.copyWith(lastBackupPassphrase: passphrase));
 
   /// Update all settings at once
   Future<void> updateSettings(AutoBackupSettings newSettings) async {
@@ -131,128 +180,77 @@ class BackupSettingsProvider with ChangeNotifier {
     }
   }
 
-  /// Derive database encryption key from Signal identity key
-  /// Same logic as DatabaseService._deriveDatabaseKey()
+  /// Get database encryption key derived securely in native Android Keystore
   Future<String> _deriveDatabaseKey() async {
     try {
-      // Get identity key private key (base64 encoded 32 bytes)
-      final identityKeyB64 = await SignalService.getIdentityKeyPrivateKey();
-
-      if (identityKeyB64 == null) {
-        throw Exception('Identity key not available for database encryption');
+      final dbKey = await SignalService.getDatabaseEncryptionKey();
+      if (dbKey == null) {
+        throw Exception('Database encryption key not available');
       }
-
-      // Decode base64 to get raw bytes
-      final identityKeyBytes = base64.decode(identityKeyB64);
-
-      // Derive key using SHA-256(identity_key + salt)
-      final salt = 'zarq_database_encryption_v1';
-      final input = Uint8List.fromList([...identityKeyBytes, ...utf8.encode(salt)]);
-      final hash = sha256.convert(input);
-
-      // Convert hash to hex string for SQLCipher
-      return hash.toString();
+      return dbKey;
     } catch (e) {
-      debugPrint('[BackupSettingsProvider] Failed to derive database key: $e');
+      debugPrint('[BackupSettingsProvider] Failed to retrieve database key: $e');
       rethrow;
     }
   }
 
   /// Save settings and reschedule auto-backup
   Future<void> _saveAndSchedule(AutoBackupSettings newSettings) async {
-    // Save to storage
-    await _backupService.saveAutoBackupSettings(newSettings);
-
-    // Update local state
-    _settings = newSettings;
-    notifyListeners();
-
-    // ANDROID ONLY: Use native auto-backup (Play Store compliant)
-    if (Platform.isAndroid) {
-      if (newSettings.enabled && newSettings.frequency != BackupFrequency.disabled) {
-        // Check if passphrase is already set
-        if (newSettings.lastBackupPassphrase != null && newSettings.lastBackupPassphrase!.isNotEmpty) {
-          // Passphrase exists, schedule immediately
-          debugPrint('[BackupSettingsProvider] Auto-backup enabled with existing passphrase. Scheduling now...');
-          await _scheduleNativeAutoBackup(newSettings);
-        } else {
-          // No passphrase yet, wait for user to set it
-          debugPrint('[BackupSettingsProvider] Auto-backup enabled. Waiting for passphrase...');
-        }
-        return;
-      } else {
-        // Disable native auto-backup
-        try {
-          await AutoBackupManager.disableNativeAutoBackup();
-          debugPrint('[BackupSettingsProvider] ✅ Native auto-backup disabled');
-        } catch (e) {
-          debugPrint('[BackupSettingsProvider] ❌ Error disabling native auto-backup: $e');
-        }
-        return;
-      }
-    }
-
-    // Fallback for non-Android platforms (should not reach here in production)
-    debugPrint('[BackupSettingsProvider] Using legacy auto-backup (non-Android)');
-    await AutoBackupManager.scheduleAutoBackup(newSettings);
-  }
-
-  /// Schedule native auto-backup with credentials
-  /// Called when passphrase is set
-  Future<void> _scheduleNativeAutoBackup(AutoBackupSettings settings) async {
+    if (_saving) throw StateError('Backup settings are being updated');
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) throw StateError('Sign in to configure backups');
+    _saving = true;
+    var scheduled = false;
     try {
-      debugPrint('[BackupSettingsProvider] Scheduling native auto-backup with credentials...');
-
-      // Get user UID
-      final userUid = FirebaseAuth.instance.currentUser?.uid;
-      if (userUid == null) {
-        debugPrint('[BackupSettingsProvider] ❌ No user UID available');
-        return;
-      }
-
-      // Derive database password (same as DatabaseService)
-      final dbPassword = await _deriveDatabaseKey();
-      debugPrint('[BackupSettingsProvider] ✅ Database password derived');
-
-      // Get backup passphrase from secure storage
-      final secureStorage = SecureStorageService();
-      final passphrase = await secureStorage.getAutoBackupPassphrase();
-
-      if (passphrase == null || passphrase.isEmpty) {
-        debugPrint('[BackupSettingsProvider] ❌ No backup passphrase available');
-        return;
-      }
-
-      debugPrint('[BackupSettingsProvider] ✅ Backup passphrase retrieved');
-
-      // Enable native auto-backup
-      final success = await AutoBackupManager.enableNativeAutoBackup(
-        userUid: userUid,
-        dbPassword: dbPassword,
-        passphrase: passphrase,
-        frequency: settings.frequency,
-        hour: 19,   // 7:59 PM
-        minute: 59,
-      );
-
-      if (success) {
-        debugPrint('[BackupSettingsProvider] ✅ Native auto-backup scheduled successfully!');
+      final enabled = newSettings.enabled && newSettings.frequency != BackupFrequency.disabled;
+      final updated = newSettings.copyWith(enabled: enabled);
+      if (Platform.isAndroid) {
+        if (enabled) {
+          final passphrase = updated.lastBackupPassphrase;
+          if (passphrase == null || passphrase.isEmpty) throw StateError('Set a backup passphrase first');
+          if (!await AutoBackupManager.ensureBackupStoragePermission()) throw StateError('Storage permission is required');
+          final password = await _deriveDatabaseKey();
+          if (FirebaseAuth.instance.currentUser?.uid != uid) throw StateError('Account changed');
+          scheduled = await AutoBackupManager.enableNativeAutoBackup(userUid: uid,
+              dbPassword: password, passphrase: passphrase, frequency: updated.frequency,
+              hour: updated.hour, minute: updated.minute);
+          if (!scheduled) throw StateError('Could not schedule automatic backups');
+        } else if (!await AutoBackupManager.disableNativeAutoBackup()) {
+          throw StateError('Could not disable automatic backups');
+        }
       } else {
-        debugPrint('[BackupSettingsProvider] ❌ Failed to schedule native auto-backup');
+        await AutoBackupManager.scheduleAutoBackup(updated);
       }
-    } catch (e) {
-      debugPrint('[BackupSettingsProvider] ❌ Error scheduling native auto-backup: $e');
+      if (FirebaseAuth.instance.currentUser?.uid != uid) throw StateError('Account changed');
+      await _backupService.saveAutoBackupSettings(updated);
+      final prefs = await SharedPreferences.getInstance();
+      if (scheduled) await prefs.remove('backup_reconfigure_$uid');
+      if (_disposed || FirebaseAuth.instance.currentUser?.uid != uid) return;
+      _settings = updated;
+      if (scheduled) _needsReconfiguration = false;
+      notifyListeners();
+    } catch (_) {
+      if (scheduled && FirebaseAuth.instance.currentUser?.uid == uid) {
+        await AutoBackupManager.disableNativeAutoBackup();
+      }
+      rethrow;
+    } finally {
+      _saving = false;
+      await refreshNativeStatus();
     }
   }
 
   /// Get formatted last backup time
   String? getLastBackupTimeFormatted() {
-    if (_settings.lastBackupTime == null) {
+    final nativeTime = _native['lastSuccess'] as int? ?? 0;
+    final lastBackup = Platform.isAndroid
+        ? (nativeTime > 0 ? DateTime.fromMillisecondsSinceEpoch(nativeTime) : null)
+        : _settings.lastBackupTime;
+    if (lastBackup == null) {
       return null;
     }
 
     final now = DateTime.now();
-    final lastBackup = _settings.lastBackupTime!;
     final difference = now.difference(lastBackup);
 
     if (difference.inMinutes < 1) {

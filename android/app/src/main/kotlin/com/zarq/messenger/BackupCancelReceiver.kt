@@ -16,6 +16,18 @@ class BackupCancelReceiver : BroadcastReceiver() {
         if (intent?.action == ACTION_CANCEL_BACKUP) {
             Log.d(TAG, "Backup cancellation requested via notification")
 
+            val nativeRun = intent.getStringExtra("native_run")
+            val nativeUid = intent.getStringExtra("native_uid")
+            if (context != null && nativeRun != null && nativeUid != null) {
+                val pending = goAsync()
+                val app = context.applicationContext
+                Thread {
+                    try { NativeBackupRuntime.cancelRun(app, nativeUid, nativeRun) }
+                    finally { pending.finish() }
+                }.start()
+                return
+            }
+            // Manual Flutter operations keep their existing cancellation route.
             // Try to notify Flutter via MethodChannel
             MainActivity.flutterEngineInstance?.dartExecutor?.binaryMessenger?.let { messenger ->
                 val channel = MethodChannel(messenger, "com.zarq/backup")

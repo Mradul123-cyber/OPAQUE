@@ -20,7 +20,7 @@ data class BackupData(
     val deviceId: String,
 
     @SerializedName("messages")
-    val messages: List<Message>,
+    val messages: List<Map<String, Any?>>,
 
     @SerializedName("conversations")
     val conversations: List<Conversation>,
@@ -40,7 +40,7 @@ data class Message(
     val id: Int,
 
     @SerializedName("conversationId")
-    val conversationId: Int,
+    val conversationId: Long,
 
     @SerializedName("senderUid")
     val senderUid: String,
@@ -103,7 +103,7 @@ data class Message(
  */
 data class Conversation(
     @SerializedName("conversationId")
-    val conversationId: Int,
+    val conversationId: Long,
 
     @SerializedName("lastMessageTimestamp")
     val lastMessageTimestamp: String,

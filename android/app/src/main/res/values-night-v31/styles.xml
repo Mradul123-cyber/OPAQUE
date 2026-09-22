@@ -5,7 +5,7 @@
         <!-- Android 12+ specific splash screen attributes -->
         <item name="android:windowSplashScreenBackground">@color/splash_background</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon_android12</item>
-        <item name="android:windowSplashScreenAnimationDuration">300</item>
+        <item name="android:windowSplashScreenAnimationDuration">0</item>
 
         <!-- Standard attributes -->
         <item name="android:windowNoTitle">true</item>
