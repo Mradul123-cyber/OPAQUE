@@ -967,6 +967,15 @@ class SignalManager(private val context: Context) {
                 return false
             }
 
+            // Check if recipient identity key changed after session creation (reinstall detection)
+            val keyChangeTime = signalProtocolStore.getLastKeyChangeTime(address)
+            val sessionCreatedTime = signalProtocolStore.getSessionCreatedTime(address)
+            if (keyChangeTime > 0 && keyChangeTime > sessionCreatedTime) {
+                Log.w(TAG, "validateSession: Recipient $recipientUid identity key changed after session creation ($keyChangeTime > $sessionCreatedTime) - deleting stale session")
+                signalProtocolStore.deleteSession(address)
+                return false
+            }
+
             Log.d(TAG, "Session validation passed for $recipientUid:$deviceId (version: ${sessionState.sessionVersion})")
             true
 
@@ -1036,8 +1045,8 @@ class SignalManager(private val context: Context) {
             }
 
             // Check if session exists and is cryptographically usable
-            if (!validateSession(recipientUid, deviceId)) {
-                Log.d(TAG, "No existing session with $recipientUid:$deviceId, fallback to session setup")
+            if (!isSessionValidForSending(recipientUid, deviceId)) {
+                Log.d(TAG, "No existing valid session with $recipientUid:$deviceId, fallback to session setup")
                 return null
             }
 
@@ -1248,9 +1257,11 @@ class SignalManager(private val context: Context) {
 
             Log.w(TAG, "🔄 Resetting stale session for $senderUid:$senderDeviceId due to decryption failure")
 
-            // Delete the stale session
+            // Delete the stale session for this address
             signalProtocolStore.deleteSession(address)
-            Log.i(TAG, "✅ Session deleted successfully - will re-establish on next message")
+            // Also wipe all sessions for this sender UID so sessions from any old device IDs are cleared
+            signalProtocolStore.deleteAllSessions(senderUid)
+            Log.i(TAG, "✅ All sessions for $senderUid deleted successfully - will re-establish on next message")
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to reset session for $senderUid:$senderDeviceId", e)

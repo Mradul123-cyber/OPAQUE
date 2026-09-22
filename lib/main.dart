@@ -74,7 +74,7 @@ void main() async {
 
   // Pre-warm local database in background if returning user
   if (AppStorage.isReturningUser) {
-    unawaited(AppStorage.firebaseInitFuture.then((_) => databaseService.init()).catchError((_) {}));
+    unawaited(databaseService.init().catchError((_) {}));
   }
 
   // Initialize global call manager without blocking app startup
@@ -541,7 +541,13 @@ class _AuthGateState extends State<AuthGate> {
         stream: FirebaseAuth.instance.authStateChanges(),
         initialData: FirebaseAuth.instance.currentUser,
         builder: (context, snapshot) {
-          if (interactive || !snapshot.hasData) return const LoginScreen();
+          if (interactive) return const LoginScreen();
+          if (!snapshot.hasData) {
+            if (AppStorage.isReturningUser && snapshot.connectionState == ConnectionState.waiting) {
+              return const HomeScreen();
+            }
+            return const LoginScreen();
+          }
           final user = snapshot.data!;
           if (OpaqueAuthService.needsEmailVerification(user)) {
             return OpaqueAuthScreen(
@@ -615,15 +621,9 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     );
 
     if (state == AppLifecycleState.resumed) {
-      // print('[AuthWrapper] App resumed - checking WebSocket connection');
       // Small delay to let the network stabilize after app resumes
       Future.delayed(const Duration(milliseconds: 500), () {
-        if (!websocketService.isConnected) {
-          // print('[AuthWrapper] WebSocket disconnected, reconnecting...');
-          websocketService.reconnect();
-        } else {
-          // print('[AuthWrapper] WebSocket already connected');
-        }
+        websocketService.ensureConnected();
       });
     } else if (state == AppLifecycleState.paused) {
       // print('[AuthWrapper] App paused');

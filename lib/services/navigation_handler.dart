@@ -10,6 +10,9 @@ class NavigationHandler {
   // Store target conversation ID for HomeScreen to handle
   static int? pendingConversationId;
 
+  // Direct callback for active HomeScreen to open conversation immediately
+  static void Function(int conversationId)? onOpenConversation;
+
   // Store auto-answer flag for incoming calls
   static String? _autoAnswerCallerUid;
   static bool get hasAutoAnswerPending => _autoAnswerCallerUid != null;
@@ -99,11 +102,10 @@ class NavigationHandler {
       // Navigate to home screen (which will handle opening the conversation)
       Navigator.of(context).popUntil((route) => route.isFirst);
 
-      // print('[NavigationHandler] Set pending conversation ID: $conversationId');
-      // print('[NavigationHandler] HomeScreen should now open this conversation');
-
+      if (onOpenConversation != null) {
+        onOpenConversation!(conversationId);
+      }
     } catch (e) {
-      // print('[NavigationHandler] Navigation error: $e');
       await _logNavigationEvent('Navigation failed: $e');
     }
   }

@@ -22,12 +22,14 @@ import 'chat_screen.dart';
 import 'home_screen.dart' show ConversationInfo;
 import 'package:zarq_messenger/app_config.dart';
 import 'widgets/opaque_toast.dart';
+import 'services/contact_match_service.dart';
 
 class Friend {
   final String username;
   final String? avatarUrl;
   final String? displayName;
   final String? phoneNumber;
+  final String? localName;
   final bool fromContacts;
 
   Friend({
@@ -35,6 +37,7 @@ class Friend {
     this.avatarUrl,
     this.displayName,
     this.phoneNumber,
+    this.localName,
     this.fromContacts = false,
   });
 
@@ -44,12 +47,21 @@ class Friend {
       avatarUrl: (json['avatarUrl'] ?? json['avatar_url'] ?? json['profile_picture_url'] ?? json['avatar']) as String?,
       displayName: (json['displayName'] ?? json['display_name']) as String?,
       phoneNumber: (json['phoneNumber'] ?? json['phone_number']) as String?,
+      localName: json['localName'] as String?,
       fromContacts: json['fromContacts'] ?? false,
     );
   }
 
-  String get displayNameOrUsername => displayName ?? username;
-  String get primaryDisplay => hasDisplayName ? displayName! : username;
+  /// Local contact → display name → username by default.
+  String title({bool preferLocal = true}) => ContactMatchService.resolveName(
+        preferLocal: preferLocal,
+        localName: localName,
+        displayName: displayName,
+        username: username,
+      );
+
+  String get displayNameOrUsername => primaryDisplay;
+  String get primaryDisplay => title(preferLocal: true);
   bool get hasDisplayName => displayName != null && displayName!.isNotEmpty;
 }
 
@@ -585,6 +597,8 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
       final List<String> hashedContacts = [];
       final List<String> allCleanedPhones = []; // Store all for verification
       final Map<String, String> hashToPhoneMap = {}; // Map hash to phone number
+      final Map<String, String> hashToLocalName = {};
+      final deviceEntries = <DeviceContactEntry>[];
       int phoneCount = 0;
       int contactsWithoutPhones = 0;
 
@@ -593,6 +607,9 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
           contactsWithoutPhones++;
           continue;
         }
+        final localName = contact.displayName.trim().isEmpty
+            ? 'Unknown'
+            : contact.displayName.trim();
 
         for (var phone in contact.phones) {
           var cleanedPhone = phone.number.replaceAll(RegExp(r'[^0-9+]'), '');
@@ -623,6 +640,12 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
             final hashStr = digest.toString();
             hashedContacts.add(hashStr);
             hashToPhoneMap[hashStr] = normalizedPhone; // Store mapping
+            hashToLocalName[hashStr] = localName;
+            deviceEntries.add(DeviceContactEntry(
+              localName: localName,
+              phoneNumber: normalizedPhone,
+              phoneHash: hashStr,
+            ));
             allCleanedPhones.add(normalizedPhone);
             phoneCount++;
 
@@ -741,8 +764,10 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
 
                 // Map phoneHash back to actual phone number
                 String? phoneNumber;
+                String? localName;
                 if (data['phoneHash'] != null) {
                   phoneNumber = hashToPhoneMap[data['phoneHash']];
+                  localName = hashToLocalName[data['phoneHash']];
                   if (phoneNumber != null) {
                     // print('[CONTACT_SYNC]    ✓ Mapped hash to phone: ${phoneNumber.substring(0, 6)}...');
                   }
@@ -751,6 +776,7 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
                 return Friend.fromJson({
                   ...data,
                   'phoneNumber': phoneNumber ?? data['phoneNumber'], // Preserve server-provided numbers too.
+                  'localName': localName,
                   'fromContacts': true, // Mark as from contact scan
                 });
               } else {
@@ -765,6 +791,23 @@ class _FindFriendsScreenState extends State<FindFriendsScreen>
           });
 
           // print('[CONTACT_SYNC] ✅ Successfully created ${_searchResults.length} Friend objects');
+
+          // Share matches with Home so contacts appear at first glance.
+          ContactMatchService.instance.applyMatches(
+            matches: _searchResults
+                .where((f) => f.username != 'Unknown')
+                .map(
+                  (f) => OpaqueContactMatch(
+                    username: f.username,
+                    displayName: f.displayName,
+                    localName: f.localName,
+                    phoneNumber: f.phoneNumber,
+                    avatarUrl: f.avatarUrl,
+                  ),
+                )
+                .toList(),
+            deviceContacts: deviceEntries,
+          );
 
           // Save username → phone number mapping to local storage
           await _saveContactPhoneMapping(_searchResults);

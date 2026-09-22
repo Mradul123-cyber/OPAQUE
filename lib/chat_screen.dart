@@ -37,6 +37,7 @@ import 'message_model.dart';
 import 'providers/chat_provider.dart';
 import 'services/database_service.dart';
 import 'services/websocket_service.dart';
+import 'services/app_storage.dart';
 import 'services/device_service.dart';
 import 'services/file_service.dart';
 import 'services/navigation_handler.dart';
@@ -246,15 +247,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     _recipientAvatarUrl = widget.conversationInfo.avatarUrl;
     if (!widget.conversationInfo.isGroup && widget.conversationInfo.partnerUid != null) {
       _recipientUid = widget.conversationInfo.partnerUid;
+      _cachedRecipientDeviceId = null;
       // Immediately check device cache or DB in background to warm up session
-      _getRecipientDeviceId(_recipientUid!).then((deviceId) {
+      _getRecipientDeviceId(_recipientUid!, forceRefresh: true).then((deviceId) {
         if (deviceId != null && mounted) {
           SignalService.hasSession(
             recipientUid: _recipientUid!,
             deviceId: deviceId,
           ).then((hasSession) {
-            if (mounted && hasSession) {
-              _sessionEstablished = true;
+            if (mounted) {
+              setState(() {
+                _sessionEstablished = hasSession;
+              });
             }
           });
         }
@@ -443,6 +447,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
               (conversationId == null || conversationId == widget.conversationInfo.conversationId)) {
             _fetchGroupMemberCount();
           }
+        } else if (type == 'session_reset_completed') {
+          final remoteUid = data['remote_uid'] as String?;
+          final remoteDeviceId = data['remote_device_id'] as int?;
+          if (remoteUid != null && remoteUid == _recipientUid) {
+            _cachedRecipientDeviceId = remoteDeviceId;
+            _sessionEstablished = false;
+          }
         }
         // Note: Call signaling (call_offer, call_answer, ice_candidate, call_rejected, call_ended)
         // is now handled by GlobalCallManager via its own WebSocket listener
@@ -478,6 +489,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       if (newMessage.senderUid != _currentUserUid) {
         _justReceivedMessageIds.add(newMessage.id);
         ChatSoundService.instance.playMessageReceived();
+
+        // Update active device ID for the recipient in real-time
+        if (_recipientUid != null &&
+            newMessage.senderUid == _recipientUid &&
+            newMessage.senderDeviceId != null &&
+            newMessage.senderDeviceId! > 0) {
+          _cachedRecipientDeviceId = newMessage.senderDeviceId;
+          DeviceService.cacheActiveDeviceId(_recipientUid!, newMessage.senderDeviceId!);
+        }
       }
       _chatProvider.addMessage(newMessage);
       _scrollToBottom();
@@ -533,9 +553,38 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       final status = MessageStatus.values.firstWhere(
             (s) => s.toString().split('.').last == statusString,
       );
-      final isMySendingMessage = _chatProvider.messages.any(
-        (m) => m.id == messageId && m.status == MessageStatus.sending && m.senderUid == _currentUserUid,
-      );
+
+      final statusOrder = {
+        MessageStatus.failed: -1,
+        MessageStatus.decryptFailed: -1,
+        MessageStatus.sending: 0,
+        MessageStatus.decrypting: 0,
+        MessageStatus.sent: 1,
+        MessageStatus.delivered: 2,
+        MessageStatus.read: 3,
+      };
+
+      Message? currentMessage;
+      for (final m in _chatProvider.messages) {
+        if (m.id == messageId) {
+          currentMessage = m;
+          break;
+        }
+      }
+
+      if (currentMessage != null) {
+        final currentOrder = statusOrder[currentMessage.status] ?? 0;
+        final newOrder = statusOrder[status] ?? 0;
+        if (currentOrder >= newOrder && currentOrder >= 0 && newOrder >= 0) {
+          // Do not downgrade UI status (e.g. read back to delivered or sent)
+          return;
+        }
+      }
+
+      final isMySendingMessage = currentMessage != null &&
+          currentMessage.status == MessageStatus.sending &&
+          currentMessage.senderUid == _currentUserUid;
+
       if (isMySendingMessage && status == MessageStatus.sent) {
         ChatSoundService.instance.playMessageSent();
       }
@@ -553,21 +602,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     final startTime = DateTime.now();
     print('[ChatScreen] 🚀 _initializeChat started');
 
-    await _getCurrentUser();
-    if (_currentUserUid == null) return;
+    try {
+      await _getCurrentUser();
 
-    // Set recipient info immediately (no await)
-    if (!widget.conversationInfo.isGroup && widget.conversationInfo.partnerUid != null) {
-      _recipientUid = widget.conversationInfo.partnerUid;
+      // Ensure database is initialized before querying messages
+      await _dbService.init();
+
+      if (!widget.conversationInfo.isGroup && widget.conversationInfo.partnerUid != null) {
+        _recipientUid = widget.conversationInfo.partnerUid;
+      }
+
+      // 🚀 SHOW MESSAGES IMMEDIATELY (don't wait for session/encryption)
+      await _refreshMessagesFromDb();
+
+      final elapsed = DateTime.now().difference(startTime).inMilliseconds;
+      print('[ChatScreen] ✅ Messages shown in ${elapsed}ms');
+    } catch (e, st) {
+      print('[ChatScreen] ❌ Error in _initializeChat: $e\n$st');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
-
-    // 🚀 SHOW MESSAGES IMMEDIATELY (don't wait for session/encryption)
-    await _refreshMessagesFromDb();
-
-    final elapsed = DateTime.now().difference(startTime).inMilliseconds;
-    print('[ChatScreen] ✅ Messages shown in ${elapsed}ms');
-
-    if (mounted) setState(() => _isLoading = false);
 
     // Scroll to bottom instantly
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -730,30 +784,37 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
     print('[ChatScreen] ❌ CACHE MISS - Loading from database...');
 
-    // No cache: Load from database (first time or cache expired)
-    final messages = await _dbService.getMessages(
-      conversationId,
-      limit: _messagesPerPage,
-    );
+    try {
+      // No cache: Load from database (first time or cache expired)
+      final messages = await _dbService.getMessages(
+        conversationId,
+        limit: _messagesPerPage,
+      );
 
-    // Check if there are more messages to load
-    final totalCount = await _dbService.getMessageCount(conversationId);
+      // Check if there are more messages to load
+      final totalCount = await _dbService.getMessageCount(conversationId);
 
-    if (mounted) {
-      setState(() {
-        _loadedMessageCount = messages.length;
-        _hasMoreMessages = messages.length < totalCount;
-        _isLoading = false;
-      });
-
-      _chatProvider.setMessages(messages, conversationId: conversationId);
-
-      // Use multiple frame callbacks to ensure scroll happens after ListView builds
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _scrollToBottom(instant: true);
+      if (mounted) {
+        setState(() {
+          _loadedMessageCount = messages.length;
+          _hasMoreMessages = messages.length < totalCount;
+          _isLoading = false;
         });
-      });
+
+        _chatProvider.setMessages(messages, conversationId: conversationId);
+
+        // Use multiple frame callbacks to ensure scroll happens after ListView builds
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _scrollToBottom(instant: true);
+          });
+        });
+      }
+    } catch (e, st) {
+      print('[ChatScreen] ❌ Error loading messages from DB: $e\n$st');
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
@@ -943,19 +1004,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         myDeviceId = await SignalService.getDeviceId();
         if (myDeviceId == null) throw Exception('No device ID');
 
-        // Fast-path: Directly attempt encryption with known device ID
-        try {
-          encryptedMessage = await SignalService.encryptMessage(
-            recipientUid: _recipientUid!,
-            plaintext: messageText,
-            deviceId: recipientDeviceId,
-          );
-          if (encryptedMessage != null) {
-            _sessionEstablished = true;
+        // Fast-path: Directly attempt encryption only if session is established
+        if (_sessionEstablished) {
+          try {
+            encryptedMessage = await SignalService.encryptMessage(
+              recipientUid: _recipientUid!,
+              plaintext: messageText,
+              deviceId: recipientDeviceId,
+            );
+          } catch (_) {
+            _sessionEstablished = false;
+            encryptedMessage = null;
           }
-        } catch (_) {
-          _sessionEstablished = false;
-          encryptedMessage = null;
         }
 
         if (encryptedMessage == null) {
@@ -976,7 +1036,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
             if (prekeyBundle == null) {
               DeviceService.invalidateActiveDeviceIdCache(_recipientUid!);
               _cachedRecipientDeviceId = null;
-              final freshDeviceId = await DeviceService.getActiveDeviceId(_recipientUid!);
+              final freshDeviceId = await DeviceService.getActiveDeviceId(_recipientUid!, forceRefresh: true);
               if (freshDeviceId != null && freshDeviceId != recipientDeviceId) {
                 recipientDeviceId = freshDeviceId;
                 _cachedRecipientDeviceId = freshDeviceId;
@@ -1641,19 +1701,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         }
         _cachedRecipientDeviceId = recipientDeviceId;
 
-        // Fast-path: Directly attempt encryption with known device ID
-        try {
-          encryptedMessage = await SignalService.encryptMessage(
-            recipientUid: _recipientUid!,
-            plaintext: '[Voice message]',
-            deviceId: recipientDeviceId,
-          );
-          if (encryptedMessage != null) {
-            _sessionEstablished = true;
+        // Fast-path: Directly attempt encryption only if session is established
+        if (_sessionEstablished) {
+          try {
+            encryptedMessage = await SignalService.encryptMessage(
+              recipientUid: _recipientUid!,
+              plaintext: '[Voice message]',
+              deviceId: recipientDeviceId,
+            );
+          } catch (_) {
+            _sessionEstablished = false;
+            encryptedMessage = null;
           }
-        } catch (_) {
-          _sessionEstablished = false;
-          encryptedMessage = null;
         }
 
         if (encryptedMessage == null) {
@@ -1911,19 +1970,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         }
         _cachedRecipientDeviceId = recipientDeviceId;
 
-        // Fast-path: Directly attempt encryption with known device ID
-        try {
-          encryptedMessage = await SignalService.encryptMessage(
-            recipientUid: _recipientUid!,
-            plaintext: '[Image]',
-            deviceId: recipientDeviceId,
-          );
-          if (encryptedMessage != null) {
-            _sessionEstablished = true;
+        // Fast-path: Directly attempt encryption only if session is established
+        if (_sessionEstablished) {
+          try {
+            encryptedMessage = await SignalService.encryptMessage(
+              recipientUid: _recipientUid!,
+              plaintext: '[Image]',
+              deviceId: recipientDeviceId,
+            );
+          } catch (_) {
+            _sessionEstablished = false;
+            encryptedMessage = null;
           }
-        } catch (_) {
-          _sessionEstablished = false;
-          encryptedMessage = null;
         }
 
         if (encryptedMessage == null) {
@@ -2202,19 +2260,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         if (recipientDeviceId == null) throw Exception('Recipient device not found');
         _cachedRecipientDeviceId = recipientDeviceId;
 
-        // Fast-path: Directly attempt encryption with known device ID
-        try {
-          encryptedMessage = await SignalService.encryptMessage(
-            recipientUid: _recipientUid!,
-            plaintext: '[Video]',
-            deviceId: recipientDeviceId,
-          );
-          if (encryptedMessage != null) {
-            _sessionEstablished = true;
+        // Fast-path: Directly attempt encryption only if session is established
+        if (_sessionEstablished) {
+          try {
+            encryptedMessage = await SignalService.encryptMessage(
+              recipientUid: _recipientUid!,
+              plaintext: '[Video]',
+              deviceId: recipientDeviceId,
+            );
+          } catch (_) {
+            _sessionEstablished = false;
+            encryptedMessage = null;
           }
-        } catch (_) {
-          _sessionEstablished = false;
-          encryptedMessage = null;
         }
 
         if (encryptedMessage == null) {
@@ -2516,19 +2573,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
         if (recipientDeviceId == null) throw Exception('Recipient device not found');
         _cachedRecipientDeviceId = recipientDeviceId;
 
-        // Fast-path: Directly attempt encryption with known device ID
-        try {
-          encryptedMessage = await SignalService.encryptMessage(
-            recipientUid: _recipientUid!,
-            plaintext: '📄 $fileName',
-            deviceId: recipientDeviceId,
-          );
-          if (encryptedMessage != null) {
-            _sessionEstablished = true;
+        // Fast-path: Directly attempt encryption only if session is established
+        if (_sessionEstablished) {
+          try {
+            encryptedMessage = await SignalService.encryptMessage(
+              recipientUid: _recipientUid!,
+              plaintext: '📄 $fileName',
+              deviceId: recipientDeviceId,
+            );
+          } catch (_) {
+            _sessionEstablished = false;
+            encryptedMessage = null;
           }
-        } catch (_) {
-          _sessionEstablished = false;
-          encryptedMessage = null;
         }
 
         if (encryptedMessage == null) {
@@ -2683,27 +2739,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     }
   }
 
-  Future<int?> _getRecipientDeviceId(String recipientUid) async {
-    if (_cachedRecipientDeviceId != null) {
+  Future<int?> _getRecipientDeviceId(String recipientUid, {bool forceRefresh = false}) async {
+    if (!forceRefresh && _cachedRecipientDeviceId != null) {
       return _cachedRecipientDeviceId;
     }
     try {
-      // 1. Check local DB for known device ID from prior messages (instant, zero network latency)
+      // 1. Check network lookup first (cached in-memory by DeviceService, so zero latency after first fetch)
+      // This is the source of truth and instantly catches reinstalls or device replacements
+      final remoteDeviceId = await DeviceService.getActiveDeviceId(recipientUid, forceRefresh: forceRefresh);
+      if (remoteDeviceId != null && remoteDeviceId > 0) {
+        _cachedRecipientDeviceId = remoteDeviceId;
+        return remoteDeviceId;
+      }
+
+      // 2. Fall back to local DB if offline
       final localDeviceId = await _dbService.getLatestRecipientDeviceId(
         widget.conversationInfo.conversationId,
         recipientUid,
       );
       if (localDeviceId != null && localDeviceId > 0) {
         _cachedRecipientDeviceId = localDeviceId;
-        DeviceService.cacheActiveDeviceId(recipientUid, localDeviceId);
         return localDeviceId;
-      }
-
-      // 2. Fall back to network lookup
-      final remoteDeviceId = await DeviceService.getActiveDeviceId(recipientUid);
-      if (remoteDeviceId != null) {
-        _cachedRecipientDeviceId = remoteDeviceId;
-        return remoteDeviceId;
       }
       return null;
     } catch (e) {
@@ -2715,9 +2771,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     if (_recipientUid == null) return;
 
     try {
-      final recipientDeviceId = await _getRecipientDeviceId(_recipientUid!);
+      final recipientDeviceId = await _getRecipientDeviceId(_recipientUid!, forceRefresh: true);
       if (recipientDeviceId == null) return;
+
+      final previousDeviceId = _cachedRecipientDeviceId;
       _cachedRecipientDeviceId = recipientDeviceId;
+
+      // If device ID changed, session definitely needs to be re-established
+      if (previousDeviceId != null && previousDeviceId != recipientDeviceId) {
+        if (mounted) {
+          setState(() {
+            _sessionEstablished = false;
+          });
+        }
+        return;
+      }
 
       final hasSession = await SignalService.hasSession(
         recipientUid: _recipientUid!,
@@ -2725,7 +2793,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       );
 
       if (mounted) {
-        _sessionEstablished = hasSession;
+        setState(() {
+          _sessionEstablished = hasSession;
+        });
       }
     } catch (e) {
       // print('[ChatScreen] Error checking session: $e');
@@ -3460,14 +3530,47 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   }
 
   Future<void> _getCurrentUser() async {
-    final user = FirebaseAuth.instance.currentUser;
+    var user = FirebaseAuth.instance.currentUser;
     if (user != null) {
       _currentUser = user.displayName ?? user.email ?? "Anonymous User";
       _currentUserUid = user.uid;
 
       // 🚀 OPTIMIZATION: Fetch avatar in BACKGROUND (don't block chat opening)
       _fetchCurrentUserAvatarInBackground();
+      return;
     }
+
+    // Cold-start fallback: Use synchronously cached UID & name from disk
+    final cachedUid = AppStorage.cachedUid;
+    if (cachedUid != null && cachedUid.isNotEmpty) {
+      _currentUserUid = cachedUid;
+      _currentUser = AppStorage.prefs?.getString('cached_user_display_name') ?? "User";
+
+      // Listen for when Firebase Auth restores session in background
+      FirebaseAuth.instance.authStateChanges().firstWhere((u) => u != null).then((u) {
+        if (u != null && mounted) {
+          setState(() {
+            _currentUserUid = u.uid;
+            _currentUser = u.displayName ?? u.email ?? _currentUser;
+          });
+          _fetchCurrentUserAvatarInBackground();
+        }
+      }).catchError((_) {});
+      return;
+    }
+
+    // Fallback if neither is available yet (brief wait)
+    try {
+      user = await FirebaseAuth.instance
+          .authStateChanges()
+          .firstWhere((u) => u != null)
+          .timeout(const Duration(milliseconds: 1000));
+      if (user != null) {
+        _currentUser = user.displayName ?? user.email ?? "Anonymous User";
+        _currentUserUid = user.uid;
+        _fetchCurrentUserAvatarInBackground();
+      }
+    } catch (_) {}
   }
 
   /// Fetch current user's avatar in background without blocking UI

@@ -14,6 +14,7 @@ import 'package:crypto/crypto.dart';
 import '../message_model.dart';
 import '../models/note_model.dart';
 import 'SignalService.dart';
+import 'app_storage.dart';
 
 class DatabaseService {
   static final DatabaseService instance = DatabaseService._init();
@@ -27,6 +28,8 @@ class DatabaseService {
   int? _cachedConversationId;
   List<Message>? _cachedMessages;
 
+  String? get currentUid => FirebaseAuth.instance.currentUser?.uid ?? AppStorage.cachedUid;
+
   Future<void> init() async {
     if (_restoring) throw StateError('Restore is in progress');
     if (_database != null) return;
@@ -36,7 +39,8 @@ class DatabaseService {
   }
 
   Future<void> _openCurrentDatabase() async {
-    if (FirebaseAuth.instance.currentUser == null) throw StateError('Sign in before opening the database');
+    final uid = currentUid;
+    if (uid == null) throw StateError('Sign in before opening the database');
     _database = await _initDB('zarq_messages.db');
   }
 
@@ -118,8 +122,7 @@ class DatabaseService {
 
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
-    final currentUser = FirebaseAuth.instance.currentUser;
-    final userUid = currentUser?.uid ?? 'anonymous';
+    final userUid = currentUid ?? 'anonymous';
     // print("[DatabaseService] DEBUG: Database init - Expected UID: ${userUid}");
 
     final path = join(dbPath, 'zarq_messages_$userUid.db');
@@ -515,8 +518,9 @@ class DatabaseService {
 
   /// Insert message with encryption support
   Future<void> insertMessage(Message message) async {
+    if (_database == null) await init();
     final db = database;
-    final currentUser = FirebaseAuth.instance.currentUser;
+    final uid = currentUid;
 
     // print("[DatabaseService] DEBUG: insertMessage called for message ${message.id}");
 
@@ -528,13 +532,44 @@ class DatabaseService {
 
     // UPDATED: Only check if not already marked as quick reply
     bool isQuickReply = message.isQuickReply; // Use existing flag if set
-    if (!isQuickReply && message.senderUid == currentUser?.uid) {
+    if (!isQuickReply && message.senderUid == uid) {
       final plaintext = await _getLocalSentMessage(message.id);
       isQuickReply = plaintext != null;
       if (isQuickReply) {
         // print("[DatabaseService] DEBUG: Message ${message.id} is a quick reply");
       }
     }
+
+    // Status progression check: do not overwrite a higher status (delivered, read) with sent/sending
+    String finalStatus = message.status.toString().split('.').last;
+    try {
+      final existingRows = await db.query(
+        'messages',
+        columns: ['status'],
+        where: 'id = ?',
+        whereArgs: [message.id],
+        limit: 1,
+      );
+      if (existingRows.isNotEmpty) {
+        final existingStatusString = existingRows.first['status'] as String?;
+        if (existingStatusString != null) {
+          const statusOrder = {
+            'failed': -1,
+            'decryptFailed': -1,
+            'sending': 0,
+            'decrypting': 0,
+            'sent': 1,
+            'delivered': 2,
+            'read': 3,
+          };
+          final existingOrder = statusOrder[existingStatusString] ?? 0;
+          final newOrder = statusOrder[finalStatus] ?? 0;
+          if (existingOrder > newOrder) {
+            finalStatus = existingStatusString;
+          }
+        }
+      }
+    } catch (_) {}
 
     final Map<String, dynamic> data = {
       'id': message.id,
@@ -543,7 +578,7 @@ class DatabaseService {
       'timestamp': message.timestamp.toUtc().toIso8601String(),
       'senderUid': message.senderUid,
       'conversationId': message.conversationId,
-      'status': message.status.toString().split('.').last,
+      'status': finalStatus,
       'encrypted_content': message.encryptedContent,
       'is_encrypted': message.isEncrypted ? 1 : 0,
       'sender_device_id': message.senderDeviceId,
@@ -630,9 +665,10 @@ class DatabaseService {
 
     // print('[DEBUG] Cache miss - fetching from database (limit: $limit, offset: $offset)');
 
+    if (_database == null) await init();
     final db = database;
-    final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null) return [];
+    final uid = currentUid;
+    if (uid == null) return [];
 
     // Build query with pagination support
     // When paginating, we query DESC (newest first) then reverse
@@ -654,7 +690,7 @@ class DatabaseService {
     }
 
     final List<Map<String, dynamic>> maps = await db.rawQuery(query, [
-      currentUser.uid,
+      uid,
       conversationId,
     ]);
 
@@ -665,7 +701,7 @@ class DatabaseService {
     final quickReplyIds = reversedMaps
         .where(
           (map) =>
-              map['senderUid'] == currentUser.uid &&
+              map['senderUid'] == uid &&
               (map['is_quick_reply'] as int?) == 1,
         )
         .map((map) => map['id'] as int)
@@ -748,9 +784,10 @@ class DatabaseService {
 
   /// Get total message count for a conversation (useful for pagination)
   Future<int> getMessageCount(int conversationId) async {
+    if (_database == null) await init();
     final db = database;
-    final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null) return 0;
+    final uid = currentUid;
+    if (uid == null) return 0;
 
     final result = await db.rawQuery(
       '''
@@ -758,7 +795,7 @@ class DatabaseService {
       LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
       WHERE m.conversationId = ? AND dm.message_id IS NULL
     ''',
-      [currentUser.uid, conversationId],
+      [uid, conversationId],
     );
 
     return result.first['count'] as int;
@@ -803,21 +840,8 @@ class DatabaseService {
   Future<int?> getLatestRecipientDeviceId(int conversationId, String recipientUid) async {
     try {
       final db = database;
-      // First look for sent messages to this conversation that have recipient_device_id
-      final sentResult = await db.rawQuery(
-        '''
-        SELECT recipient_device_id FROM messages
-        WHERE conversationId = ? AND recipient_device_id IS NOT NULL AND recipient_device_id > 0
-        ORDER BY timestamp DESC LIMIT 1
-        ''',
-        [conversationId],
-      );
-      if (sentResult.isNotEmpty) {
-        final devId = sentResult.first['recipient_device_id'] as int?;
-        if (devId != null && devId > 0) return devId;
-      }
-
-      // Second look for incoming messages from this recipient that have sender_device_id
+      // First look for incoming messages from this recipient that have sender_device_id
+      // (This reflects the device the contact is actually and most recently using)
       final recvResult = await db.rawQuery(
         '''
         SELECT sender_device_id FROM messages
@@ -830,15 +854,31 @@ class DatabaseService {
         final devId = recvResult.first['sender_device_id'] as int?;
         if (devId != null && devId > 0) return devId;
       }
+
+      // Second look for sent messages to this conversation that have recipient_device_id
+      // (Fallback for when no incoming messages exist yet)
+      final sentResult = await db.rawQuery(
+        '''
+        SELECT recipient_device_id FROM messages
+        WHERE conversationId = ? AND recipient_device_id IS NOT NULL AND recipient_device_id > 0
+        ORDER BY timestamp DESC LIMIT 1
+        ''',
+        [conversationId],
+      );
+      if (sentResult.isNotEmpty) {
+        final devId = sentResult.first['recipient_device_id'] as int?;
+        if (devId != null && devId > 0) return devId;
+      }
     } catch (_) {}
     return null;
   }
 
   /// Get messages that need decryption
   Future<List<Message>> getMessagesNeedingDecryption(int conversationId) async {
+    if (_database == null) await init();
     final db = database;
-    final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null) return [];
+    final uid = currentUid;
+    if (uid == null) return [];
 
     final List<Map<String, dynamic>> maps = await db.rawQuery(
       '''
@@ -851,7 +891,7 @@ class DatabaseService {
         AND dm.message_id IS NULL
       ORDER BY m.timestamp ASC
     ''',
-      [currentUser.uid, conversationId, 'decrypting'],
+      [uid, conversationId, 'decrypting'],
     );
 
     return List.generate(maps.length, (i) => Message.fromJson(maps[i]));
@@ -932,25 +972,26 @@ class DatabaseService {
   }
 
   Future<void> markMessageAsDeletedForMe(int messageId) async {
+    if (_database == null) await init();
     final db = database;
-    final currentUser = FirebaseAuth.instance.currentUser;
+    final uid = currentUid;
 
     // print("[DatabaseService] DEBUG: markMessageAsDeletedForMe called for message $messageId");
 
-    if (currentUser == null) {
+    if (uid == null) {
       // print("[DatabaseService] DEBUG: No current user, aborting deletion mark");
       return;
     }
 
     await db.insert('deleted_messages', {
       'message_id': messageId,
-      'user_uid': currentUser.uid,
+      'user_uid': uid,
       'deleted_at': DateTime.now().millisecondsSinceEpoch,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
 
     _cachedMessages = null;
     _cachedConversationId = null;
-    // print("[DatabaseService] DEBUG: Marked message $messageId as deleted for user ${currentUser.uid}");
+    // print("[DatabaseService] DEBUG: Marked message $messageId as deleted for user $uid");
   }
 
   Future<void> markMessageAsDeletedForEveryone(int messageId) async {
@@ -974,28 +1015,30 @@ class DatabaseService {
   }
 
   Future<void> unmarkMessageAsDeletedForMe(int messageId) async {
+    if (_database == null) await init();
     final db = database;
-    final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null) return;
+    final uid = currentUid;
+    if (uid == null) return;
 
     await db.delete(
       'deleted_messages',
       where: 'message_id = ? AND user_uid = ?',
-      whereArgs: [messageId, currentUser.uid],
+      whereArgs: [messageId, uid],
     );
-    // print("[DatabaseService] Unmarked message $messageId as deleted for user ${currentUser.uid}");
+    // print("[DatabaseService] Unmarked message $messageId as deleted for user $uid");
   }
 
   Future<bool> isMessageDeletedForMe(int messageId) async {
+    if (_database == null) await init();
     final db = database;
-    final currentUser = FirebaseAuth.instance.currentUser;
+    final uid = currentUid;
 
-    if (currentUser == null) return false;
+    if (uid == null) return false;
 
     final result = await db.query(
       'deleted_messages',
       where: 'message_id = ? AND user_uid = ?',
-      whereArgs: [messageId, currentUser.uid],
+      whereArgs: [messageId, uid],
     );
 
     return result.isNotEmpty;
@@ -1054,9 +1097,10 @@ class DatabaseService {
   }
 
   Future<void> cleanupOldDeletedMessages({int daysOld = 30}) async {
+    if (_database == null) await init();
     final db = database;
-    final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null) return;
+    final uid = currentUid;
+    if (uid == null) return;
 
     final cutoffTime = DateTime.now()
         .subtract(Duration(days: daysOld))
@@ -1065,7 +1109,7 @@ class DatabaseService {
     final deletedCount = await db.delete(
       'deleted_messages',
       where: 'deleted_at < ? AND user_uid = ?',
-      whereArgs: [cutoffTime, currentUser.uid],
+      whereArgs: [cutoffTime, uid],
     );
 
     if (deletedCount > 0) {
@@ -1079,7 +1123,7 @@ class DatabaseService {
     if (db != null) await db.close();
   }
 
-  Future<void> updateMessageStatus(
+  Future<bool> updateMessageStatus(
     int messageId,
     MessageStatus newStatus,
   ) async {
@@ -1103,8 +1147,7 @@ class DatabaseService {
 
           // Don't update if status is the same
           if (currentStatus == newStatus) {
-            // print("[DatabaseService] ⏭️ Message $messageId already has status $newStatus, skipping DB update");
-            return;
+            return false;
           }
 
           // Status progression check
@@ -1122,8 +1165,7 @@ class DatabaseService {
           final newOrder = statusOrder[newStatus] ?? 0;
 
           if (currentOrder >= newOrder && currentOrder >= 0 && newOrder >= 0) {
-            // print("[DatabaseService] ⏭️ Message $messageId status not downgraded from $currentStatus to $newStatus");
-            return;
+            return false;
           }
         } catch (e) {
           // If parsing fails, proceed with update
@@ -1137,7 +1179,7 @@ class DatabaseService {
       where: 'id = ?',
       whereArgs: [messageId],
     );
-    // print("[DatabaseService] ✅ Updated message $messageId status to $newStatus");
+    return true;
   }
 
   Future<void> updateMultipleMessageStatus(
@@ -1194,9 +1236,10 @@ class DatabaseService {
     int conversationId,
     MessageStatus status,
   ) async {
+    if (_database == null) await init();
     final db = database;
-    final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null) return [];
+    final uid = currentUid;
+    if (uid == null) return [];
 
     final List<Map<String, dynamic>> maps = await db.rawQuery(
       '''
@@ -1205,13 +1248,14 @@ class DatabaseService {
       WHERE m.conversationId = ? AND m.status = ? AND dm.message_id IS NULL
       ORDER BY m.timestamp ASC
     ''',
-      [currentUser.uid, conversationId, status.toString().split('.').last],
+      [uid, conversationId, status.toString().split('.').last],
     );
 
     return List.generate(maps.length, (i) => Message.fromJson(maps[i]));
   }
 
   Future<List<Message>> getAllUndeliveredMessages(String currentUserUid) async {
+    if (_database == null) await init();
     final db = database;
 
     final List<Map<String, dynamic>> maps = await db.rawQuery(
@@ -1236,6 +1280,7 @@ class DatabaseService {
     int conversationId,
     String currentUserUid,
   ) async {
+    if (_database == null) await init();
     final db = database;
 
     final List<Map<String, dynamic>> maps = await db.rawQuery(
@@ -1261,6 +1306,7 @@ class DatabaseService {
     int conversationId,
     String currentUserUid,
   ) async {
+    if (_database == null) await init();
     final db = database;
     final result = await db.rawQuery(
       '''
@@ -1282,6 +1328,7 @@ class DatabaseService {
     int conversationId,
     String currentUserUid,
   ) async {
+    if (_database == null) await init();
     final db = database;
     final result = await db.rawQuery(
       '''
@@ -1300,9 +1347,10 @@ class DatabaseService {
   }
 
   Future<DateTime?> getLastMessageTimestamp(int conversationId) async {
+    if (_database == null) await init();
     final db = database;
-    final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null) return null;
+    final uid = currentUid;
+    if (uid == null) return null;
 
     final result = await db.rawQuery(
       '''
@@ -1310,7 +1358,7 @@ class DatabaseService {
       LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
       WHERE m.conversationId = ? AND dm.message_id IS NULL
     ''',
-      [currentUser.uid, conversationId],
+      [uid, conversationId],
     );
 
     if (result.isNotEmpty && result.first['last_timestamp'] != null) {
@@ -1320,9 +1368,10 @@ class DatabaseService {
   }
 
   Future<Message?> getLastMessage(int conversationId) async {
+    if (_database == null) await init();
     final db = database;
-    final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null) return null;
+    final uid = currentUid;
+    if (uid == null) return null;
 
     final result = await db.rawQuery(
       '''
@@ -1332,7 +1381,7 @@ class DatabaseService {
       ORDER BY m.timestamp DESC
       LIMIT 1
     ''',
-      [currentUser.uid, conversationId],
+      [uid, conversationId],
     );
 
     if (result.isNotEmpty) {
@@ -1342,7 +1391,7 @@ class DatabaseService {
 
       // Handle quick reply / local plaintext
       if ((map['is_quick_reply'] as int?) == 1 &&
-          map['senderUid'] == currentUser.uid) {
+          map['senderUid'] == uid) {
         final plaintext = await _getLocalSentMessage(messageId);
         if (plaintext != null) content = plaintext;
       }

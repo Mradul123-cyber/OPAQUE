@@ -182,10 +182,11 @@ class SignalProtocolStore(private val context: Context, userUid: String? = null)
             return true
         }
 
-        // 3. SECURITY (C-3): An active session already exists for this address, but incoming PreKey message has a different identity key.
-        // Reject unannounced identity key change while an active session exists to prevent MITM key substitution attacks.
-        Log.w(TAG, "SECURITY: Rejecting incoming identity key change for ${address.name}:${address.deviceId} while active session exists. Untrusted identity key.")
-        return false
+        // 3. Incoming PreKey message with a new identity key: the remote contact re-registered/reinstalled.
+        // Purge the obsolete session so the new session can establish with the new identity key (WhatsApp/Signal model).
+        Log.w(TAG, "Identity key changed for incoming session from ${address.name}:${address.deviceId}. Purging stale session and trusting new identity.")
+        deleteSession(address)
+        return true
     }
 
     /**

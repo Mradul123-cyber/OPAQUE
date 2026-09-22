@@ -17,6 +17,7 @@ class UserSettingsProvider with ChangeNotifier {
     groupScreenStyle: 'static',
     cardBubbleColor: 'blue',
     encryptionAnimationStyle: 'static',
+    preferLocalContactNames: true,
   );
 
   UserSettings get currentSettings => _settings;
@@ -29,6 +30,7 @@ class UserSettingsProvider with ChangeNotifier {
   String get groupScreenStyle => _settings.groupScreenStyle;
   String get cardBubbleColor => _settings.cardBubbleColor;
   String get encryptionAnimationStyle => _settings.encryptionAnimationStyle;
+  bool get preferLocalContactNames => _settings.preferLocalContactNames;
 
   UserSettingsProvider() {
     _loadInitialStyle();
@@ -53,6 +55,7 @@ class UserSettingsProvider with ChangeNotifier {
     String? groupScreenStyle,
     String? cardBubbleColor,
     String? encryptionAnimationStyle,
+    bool? preferLocalContactNames,
   }) async {
     // Update local state
     _settings = UserSettings(
@@ -64,6 +67,8 @@ class UserSettingsProvider with ChangeNotifier {
       cardBubbleColor: cardBubbleColor ?? _settings.cardBubbleColor,
       encryptionAnimationStyle:
           encryptionAnimationStyle ?? _settings.encryptionAnimationStyle,
+      preferLocalContactNames:
+          preferLocalContactNames ?? _settings.preferLocalContactNames,
     );
 
     // Save to local storage (instant, no network call)
@@ -84,6 +89,7 @@ class UserSettingsProvider with ChangeNotifier {
       groupScreenStyle: 'static',
       cardBubbleColor: 'blue',
       encryptionAnimationStyle: 'static',
+      preferLocalContactNames: true,
     );
     notifyListeners();
   }

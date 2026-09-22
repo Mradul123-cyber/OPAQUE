@@ -10,6 +10,9 @@ class UserSettings {
   final String groupScreenStyle;
   final String cardBubbleColor;
   final String encryptionAnimationStyle; // 'dynamic', 'minimal', 'static'
+  /// When true: local contact name → display name → username.
+  /// When false: display name → local contact name → username.
+  final bool preferLocalContactNames;
 
   UserSettings({
     required this.bubbleStyle,
@@ -19,6 +22,7 @@ class UserSettings {
     this.groupScreenStyle = 'static',
     this.cardBubbleColor = 'blue',
     this.encryptionAnimationStyle = 'static', // Default to static
+    this.preferLocalContactNames = true,
   });
 }
 
@@ -33,6 +37,8 @@ class UserSettingsLocalService {
   static const String _cardBubbleColorKey = 'card_bubble_color';
   static const String _encryptionAnimationStyleKey =
       'encryption_animation_style';
+  static const String _preferLocalContactNamesKey =
+      'prefer_local_contact_names';
 
   /// Load settings from local storage
   Future<UserSettings> loadSettings() async {
@@ -48,6 +54,8 @@ class UserSettingsLocalService {
         cardBubbleColor: prefs.getString(_cardBubbleColorKey) ?? 'blue',
         encryptionAnimationStyle:
             prefs.getString(_encryptionAnimationStyleKey) ?? 'static',
+        preferLocalContactNames:
+            prefs.getBool(_preferLocalContactNamesKey) ?? true,
       );
     } catch (e) {
       // Return defaults on error
@@ -59,6 +67,7 @@ class UserSettingsLocalService {
         groupScreenStyle: 'static',
         cardBubbleColor: 'blue',
         encryptionAnimationStyle: 'static',
+        preferLocalContactNames: true,
       );
     }
   }
@@ -78,6 +87,10 @@ class UserSettingsLocalService {
         _encryptionAnimationStyleKey,
         settings.encryptionAnimationStyle,
       ),
+      prefs.setBool(
+        _preferLocalContactNamesKey,
+        settings.preferLocalContactNames,
+      ),
     ]);
   }
 
@@ -93,6 +106,7 @@ class UserSettingsLocalService {
       prefs.remove(_groupScreenStyleKey),
       prefs.remove(_cardBubbleColorKey),
       prefs.remove(_encryptionAnimationStyleKey),
+      prefs.remove(_preferLocalContactNamesKey),
     ]);
   }
 }

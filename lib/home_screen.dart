@@ -22,7 +22,10 @@ import 'dart:convert';
 import 'package:zarq_messenger/providers/home_provider.dart';
 import 'package:zarq_messenger/services/websocket_service.dart';
 import 'package:zarq_messenger/services/user_settings_provider.dart';
+import 'package:zarq_messenger/services/contact_match_service.dart';
 import 'package:zarq_messenger/services/database_service.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:zarq_messenger/app_config.dart';
 import 'package:zarq_messenger/services/SignalService.dart';
 import 'package:zarq_messenger/services/key_rotation_service.dart';
 import 'package:zarq_messenger/services/group_encryption_service.dart';
@@ -69,6 +72,14 @@ class ConversationInfo {
   final String? lastMessage;
   final bool isTyping;
   final bool isOnline;
+  /// Phone contact on Opaque with no chat yet (same list, no special mode).
+  final bool isContactSuggestion;
+  /// Phone contact not on Opaque — shown in search with Invite.
+  final bool isInviteSuggestion;
+  final String? username;
+  final String? localContactName;
+  final String? appDisplayName;
+  final String? phoneNumber;
 
   ConversationInfo({
     required this.conversationId,
@@ -84,6 +95,12 @@ class ConversationInfo {
     this.lastMessage,
     this.isTyping = false,
     this.isOnline = false,
+    this.isContactSuggestion = false,
+    this.isInviteSuggestion = false,
+    this.username,
+    this.localContactName,
+    this.appDisplayName,
+    this.phoneNumber,
   });
 
   factory ConversationInfo.fromJson(Map<String, dynamic> json) {
@@ -101,6 +118,10 @@ class ConversationInfo {
           ? DateTime.tryParse((json['lastMessageTimestamp'] ?? json['last_message_timestamp']) as String)
           : null,
       lastMessage: (json['lastMessage'] ?? json['last_message']) as String?,
+      username: json['username'] as String?,
+      localContactName: json['localContactName'] as String?,
+      appDisplayName: json['appDisplayName'] as String?,
+      phoneNumber: json['phoneNumber'] as String?,
     );
   }
 
@@ -117,6 +138,10 @@ class ConversationInfo {
       'unreadCount': unreadCount,
       'lastMessageTimestamp': lastMessageTimestamp?.toIso8601String(),
       'lastMessage': lastMessage,
+      'username': username,
+      'localContactName': localContactName,
+      'appDisplayName': appDisplayName,
+      'phoneNumber': phoneNumber,
     };
   }
 }
@@ -162,6 +187,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   String? _cachedDisplayName;
 
   StreamSubscription? _websocketSubscription;
+  final ContactMatchService _contacts = ContactMatchService.instance;
 
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -173,6 +199,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _initializeUser();
     _loadBlockedUsers();
     _loadHomeSelectionPreferences();
+    _contacts.addListener(_onContactsChanged);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -182,6 +209,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (homeProvider.conversations.isEmpty) {
         homeProvider.fetchInitialConversations();
       }
+
+      // Ask for contacts (if needed) and show Opaque matches on home ASAP.
+      unawaited(_contacts.ensureSynced());
 
       final websocketService = Provider.of<WebSocketService>(
         context,
@@ -209,11 +239,23 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     });
 
     _searchController.addListener(_onSearchChanged);
+
+    NavigationHandler.onOpenConversation = (conversationId) {
+      if (mounted) {
+        _openConversationById(conversationId);
+      }
+    };
+  }
+
+  void _onContactsChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    NavigationHandler.onOpenConversation = null;
     WidgetsBinding.instance.removeObserver(this);
+    _contacts.removeListener(_onContactsChanged);
     _websocketSubscription?.cancel();
     _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
@@ -240,8 +282,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  // ─── Navigation helpers ────────────────────────────────────────────────────
-
   Future<void> _checkPendingNavigation() async {
     final targetConversationId = NavigationHandler.getPendingConversationId();
     if (targetConversationId != null) {
@@ -249,7 +289,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (homeProvider.conversations.isEmpty) {
         await homeProvider.fetchInitialConversations();
       }
-      await Future.delayed(const Duration(milliseconds: 300));
       await _openConversationById(targetConversationId);
     }
   }
@@ -258,41 +297,39 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     try {
       if (!mounted) return;
       final homeProvider = Provider.of<HomeProvider>(context, listen: false);
-      final websocketService = Provider.of<WebSocketService>(
-        context,
-        listen: false,
-      );
 
-      if (!websocketService.isConnected || websocketService.channel == null) {
-        if (mounted) {
-          OpaqueToast.info(context, 'Still connecting… Please wait a moment.');
-        }
-        return;
+      if (homeProvider.conversations.isEmpty) {
+        await homeProvider.fetchInitialConversations();
       }
 
-      final targetConversation = homeProvider.conversations.firstWhere(
-        (convo) => convo.conversationId == conversationId,
-        orElse: () => throw Exception('Conversation not found'),
-      );
+      ConversationInfo? targetConversation;
+      for (final convo in homeProvider.conversations) {
+        if (convo.conversationId == conversationId) {
+          targetConversation = convo;
+          break;
+        }
+      }
 
-      if (mounted) _navigateToChat(targetConversation);
-    } catch (e) {
-      if (e.toString().contains('Conversation not found')) {
-        try {
-          final homeProvider = Provider.of<HomeProvider>(
-            context,
-            listen: false,
-          );
-          await homeProvider.fetchInitialConversations();
-          final refreshedConvo = homeProvider.conversations.firstWhere(
-            (convo) => convo.conversationId == conversationId,
-          );
-          if (mounted) _navigateToChat(refreshedConvo);
-        } catch (_) {
-          if (mounted) {
-            OpaqueToast.warning(context, 'Conversation not found or no longer exists');
+      if (targetConversation != null) {
+        if (mounted) _navigateToChat(targetConversation);
+      } else {
+        // Refresh conversations and try once more
+        await homeProvider.fetchInitialConversations();
+        for (final convo in homeProvider.conversations) {
+          if (convo.conversationId == conversationId) {
+            targetConversation = convo;
+            break;
           }
         }
+        if (targetConversation != null && mounted) {
+          _navigateToChat(targetConversation);
+        } else if (mounted) {
+          OpaqueToast.warning(context, 'Conversation not found or no longer exists');
+        }
+      }
+    } catch (_) {
+      if (mounted) {
+        OpaqueToast.warning(context, 'Conversation not found or no longer exists');
       }
     }
   }
@@ -686,7 +723,186 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   // ─── Chat navigation ───────────────────────────────────────────────────────
 
+  String _resolvedTitle(ConversationInfo convo, {required bool preferLocal}) {
+    if (convo.isInviteSuggestion) {
+      return ContactMatchService.resolveName(
+        preferLocal: true,
+        localName: convo.localContactName,
+        displayName: null,
+        username: convo.phoneNumber ?? convo.chatTitle,
+      );
+    }
+    if (convo.isGroup) return convo.chatTitle;
+    return ContactMatchService.instance.titleFor(
+      preferLocal: preferLocal,
+      username: convo.username,
+      displayName: convo.appDisplayName,
+      partnerUid: convo.partnerUid,
+      fallback: convo.chatTitle,
+    );
+  }
+
+  List<ConversationInfo> _withContactSuggestions(
+    List<ConversationInfo> conversations, {
+    required bool preferLocal,
+  }) {
+    final partnerUids = <String>{
+      for (final c in conversations)
+        if (c.partnerUid != null && c.partnerUid!.isNotEmpty) c.partnerUid!,
+    };
+    final titlesAsUsernames = <String>{
+      for (final c in conversations)
+        if (!c.isGroup) c.chatTitle.toLowerCase(),
+    };
+    final suggestions = _contacts.homeSuggestions(
+      existingPartnerUids: partnerUids,
+      existingUsernames: titlesAsUsernames,
+    );
+
+    final rows = <ConversationInfo>[
+      for (final c in conversations)
+        if (!c.isContactSuggestion && !c.isInviteSuggestion)
+          ConversationInfo(
+            conversationId: c.conversationId,
+            chatTitle: _resolvedTitle(c, preferLocal: preferLocal),
+            isGroup: c.isGroup,
+            creatorUid: c.creatorUid,
+            avatarUrl: c.avatarUrl,
+            partnerUid: c.partnerUid,
+            isFriend: c.isFriend,
+            hasUnreadMessages: c.hasUnreadMessages,
+            unreadCount: c.unreadCount,
+            lastMessageTimestamp: c.lastMessageTimestamp,
+            lastMessage: c.lastMessage,
+            isTyping: c.isTyping,
+            isOnline: c.isOnline,
+            username: c.username,
+            localContactName: c.localContactName,
+            appDisplayName: c.appDisplayName ?? c.chatTitle,
+            phoneNumber: c.phoneNumber,
+          ),
+    ];
+
+    var syntheticId = -1;
+    for (final match in suggestions) {
+      final title = ContactMatchService.resolveName(
+        preferLocal: preferLocal,
+        localName: match.localName,
+        displayName: match.displayName,
+        username: match.username,
+      );
+      rows.add(
+        ConversationInfo(
+          conversationId: syntheticId--,
+          chatTitle: title,
+          isGroup: false,
+          avatarUrl: match.avatarUrl,
+          partnerUid: match.uid,
+          isContactSuggestion: true,
+          username: match.username,
+          localContactName: match.localName,
+          appDisplayName: match.displayName,
+          phoneNumber: match.phoneNumber,
+          lastMessage: match.displayName != null &&
+                  match.displayName!.isNotEmpty &&
+                  match.displayName != title
+              ? match.displayName
+              : '@${match.username}',
+        ),
+      );
+    }
+    return rows;
+  }
+
+  Future<void> _startChatWithContact(ConversationInfo convo) async {
+    final username = convo.username;
+    if (username == null || username.isEmpty) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    final websocketService = context.read<WebSocketService>();
+    if (!websocketService.isConnected || websocketService.channel == null) {
+      OpaqueToast.info(context, 'Connecting... Please wait a moment.');
+      return;
+    }
+
+    try {
+      final token = await user.getIdToken();
+      final response = await http.post(
+        Uri.parse('${AppConfig.baseUrl}/conversations/start'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: json.encode({'targetUsername': username}),
+      );
+      if (!mounted) return;
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final data = json.decode(response.body) as Map<String, dynamic>;
+        final conversationId = (data['conversationId'] as num).toInt();
+        final homeProvider = context.read<HomeProvider>();
+        unawaited(homeProvider.fetchInitialConversations());
+
+        final started = ConversationInfo(
+          conversationId: conversationId,
+          chatTitle: convo.chatTitle,
+          isGroup: false,
+          avatarUrl: convo.avatarUrl,
+          partnerUid: convo.partnerUid,
+          username: username,
+          localContactName: convo.localContactName,
+          appDisplayName: convo.appDisplayName,
+          phoneNumber: convo.phoneNumber,
+        );
+        _navigateToChat(started);
+        return;
+      }
+
+      if (response.statusCode == 403) {
+        OpaqueToast.info(
+          context,
+          'This person only accepts messages from friends. Add them from Friends.',
+        );
+        return;
+      }
+      OpaqueToast.error(context, 'Could not start chat. Please try again.');
+    } catch (e) {
+      if (mounted) OpaqueToast.error(context, 'Could not start chat.');
+    }
+  }
+
+  Future<void> _inviteContact(ConversationInfo convo) async {
+    final name = convo.localContactName ?? convo.chatTitle;
+    await Share.share(
+      'Hey $name — join me on Opaque to chat privately.\nhttps://opaque.app/invite',
+      subject: 'Join me on Opaque',
+    );
+  }
+
+  void _onConversationTap(ConversationInfo convo) {
+    setState(() => _addMenuOpen = false);
+    if (convo.isInviteSuggestion) {
+      unawaited(_inviteContact(convo));
+      return;
+    }
+    if (convo.isContactSuggestion) {
+      unawaited(_startChatWithContact(convo));
+      return;
+    }
+    if (_isChatSelectionMode) {
+      if (!_selectionBusy) _enterChatSelectionMode(convo);
+      return;
+    }
+    _navigateToChat(convo);
+  }
+
   void _navigateToChat(ConversationInfo convo) async {
+    if (convo.isContactSuggestion || convo.isInviteSuggestion) {
+      _onConversationTap(convo);
+      return;
+    }
+
     final websocketService = Provider.of<WebSocketService>(
       context,
       listen: false,
@@ -721,10 +937,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         .then((_) {
       _loadBlockedUsers();
       if (!mounted) return;
-      // Local-only: sync last message the moment chat closes (no HTTP).
-      context
-          .read<HomeProvider>()
-          .refreshConversationPreviewFromDb(convo.conversationId);
+      final homeProv = context.read<HomeProvider>();
+      final hasConvo = homeProv.conversations.any((c) => c.conversationId == convo.conversationId);
+      if (homeProv.conversations.isEmpty || !hasConvo) {
+        homeProv.fetchInitialConversations();
+      } else {
+        homeProv.refreshConversationPreviewFromDb(convo.conversationId);
+      }
+      unawaited(_contacts.ensureSynced());
     });
 
     if (channel == null) {
@@ -1015,7 +1235,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       },
       cursorColor: const Color(0xFF73747C), style: GoogleFonts.inter(color: textColor, fontSize: 16),
       decoration: InputDecoration(
-        hintText: 'Search conversations', hintStyle: GoogleFonts.inter(color: textGreyColor, fontSize: 12),
+        hintText: 'Search chats or contacts', hintStyle: GoogleFonts.inter(color: textGreyColor, fontSize: 12),
         filled: true, fillColor: isDark ? const Color(0xFF283241) : const Color(0xFFF5F5F7),
         prefixIcon: Padding(padding: const EdgeInsets.all(10), child: OpaqueIcon('search', size: 16, color: textGreyColor)),
         suffixIcon: _isSearching ? IconButton(tooltip: 'Clear search', padding: EdgeInsets.zero, iconSize: 16,
@@ -1028,16 +1248,81 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     )),
   );
 
-  Widget _buildConversationList(List<ConversationInfo> conversations, bool isReady, bool isDark, Color cardColor, Color textColor, Color textGreyColor, Color dividerColor) {
+  Widget _buildConversationList(
+    List<ConversationInfo> conversations,
+    HomeState homeState,
+    bool isReady,
+    bool isDark,
+    Color cardColor,
+    Color textColor,
+    Color textGreyColor,
+    Color dividerColor,
+  ) {
+    final preferLocal = context.watch<UserSettingsProvider>().preferLocalContactNames;
     final query = _searchController.text.trim().toLowerCase();
-    final visible = conversations.where((convo) => (query.isNotEmpty || !isHomeChatHidden(convo.lastMessageTimestamp, _hiddenChats['${convo.conversationId}'])) && convo.chatTitle.toLowerCase().contains(query)
-      && (_conversationFilter == 'All' || (_conversationFilter == 'Unread' && (convo.unreadCount > 0 || convo.hasUnreadMessages)) || (_conversationFilter == 'Groups' && convo.isGroup))).toList();
+    final queryDigits = query.replaceAll(RegExp(r'[^0-9]'), '');
+    final merged = _withContactSuggestions(conversations, preferLocal: preferLocal);
+
+    // Invite rows only appear while searching.
+    if (query.isNotEmpty) {
+      var inviteId = -10000;
+      for (final contact in _contacts.inviteCandidates(query: query)) {
+        merged.add(
+          ConversationInfo(
+            conversationId: inviteId--,
+            chatTitle: contact.localName,
+            isGroup: false,
+            isInviteSuggestion: true,
+            localContactName: contact.localName,
+            phoneNumber: contact.phoneNumber,
+            lastMessage: contact.phoneNumber,
+          ),
+        );
+      }
+    }
+
+    final visible = merged.where((convo) {
+      if (_conversationFilter == 'Unread' &&
+          !(convo.unreadCount > 0 || convo.hasUnreadMessages)) {
+        return false;
+      }
+      if (_conversationFilter == 'Groups' && !convo.isGroup) return false;
+      if (query.isEmpty) {
+        if (convo.isInviteSuggestion) return false;
+        if (convo.isContactSuggestion) return true;
+        return !isHomeChatHidden(
+          convo.lastMessageTimestamp,
+          _hiddenChats['${convo.conversationId}'],
+        );
+      }
+      final title = convo.chatTitle.toLowerCase();
+      final phone = (convo.phoneNumber ?? '').toLowerCase();
+      final phoneDigits = phone.replaceAll(RegExp(r'[^0-9]'), '');
+      final username = (convo.username ?? '').toLowerCase();
+      final display = (convo.appDisplayName ?? '').toLowerCase();
+      final local = (convo.localContactName ?? '').toLowerCase();
+      return title.contains(query) ||
+          username.contains(query) ||
+          display.contains(query) ||
+          local.contains(query) ||
+          phone.contains(query) ||
+          (queryDigits.isNotEmpty && phoneDigits.contains(queryDigits));
+    }).toList();
+
     visible.sort((a, b) {
+      // Real chats with activity stay above contact/invite rows automatically.
       return compareHomeChats(
-        aId: a.conversationId, bId: b.conversationId,
-        aTime: a.lastMessageTimestamp, bTime: b.lastMessageTimestamp,
-        aPinned: _pinnedChats.contains('${a.conversationId}'),
-        bPinned: _pinnedChats.contains('${b.conversationId}'));
+        aId: a.conversationId,
+        bId: b.conversationId,
+        aTime: a.lastMessageTimestamp,
+        bTime: b.lastMessageTimestamp,
+        aPinned: !a.isContactSuggestion &&
+            !a.isInviteSuggestion &&
+            _pinnedChats.contains('${a.conversationId}'),
+        bPinned: !b.isContactSuggestion &&
+            !b.isInviteSuggestion &&
+            _pinnedChats.contains('${b.conversationId}'),
+      );
     });
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
@@ -1048,6 +1333,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       },
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         _buildSearchBar(isDark, cardColor, textColor, textGreyColor),
+        if (_contacts.permissionDenied)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+            child: InkWell(
+              onTap: () => unawaited(_contacts.ensureSynced(force: true)),
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF283241) : const Color(0xFFF1F2F5),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  'Allow contacts access to see people you know on Opaque',
+                  style: GoogleFonts.inter(fontSize: 11, color: textGreyColor),
+                ),
+              ),
+            ),
+          ),
         Container(margin: const EdgeInsets.fromLTRB(20, 12, 20, 8), padding: const EdgeInsets.all(2),
           decoration: BoxDecoration(color: isDark ? const Color(0xFF283241) : const Color(0xFFF1F2F5), borderRadius: BorderRadius.circular(16)),
           child: Row(mainAxisSize: MainAxisSize.min, children: [for (final filter in ['All', 'Unread', 'Groups']) Padding(
@@ -1061,22 +1366,89 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           )]),
         ),
         Expanded(child: Stack(children: [
-          Positioned.fill(child: visible.isEmpty
-            ? Center(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 32), child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(query.isNotEmpty ? 'No matching conversations' : _conversationFilter == 'Unread' ? 'You’re all caught up' : _conversationFilter == 'Groups' ? 'Bring everyone together' : 'Your conversations start here',
-                    textAlign: TextAlign.center, style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600, color: textColor)),
-                  const SizedBox(height: 8),
-                  Text(query.isNotEmpty ? 'Try searching for a different name.' : _conversationFilter == 'Unread' ? 'New unread messages will appear here.' : _conversationFilter == 'Groups' ? 'Tap + to create a group and start chatting.' : 'Tap + to find a friend and start chatting.',
-                    textAlign: TextAlign.center, style: GoogleFonts.inter(fontSize: 12, height: 1.7, color: textGreyColor)),
-                ],
-              )))
-            : ListView.builder(
-                keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                padding: EdgeInsets.fromLTRB(MediaQuery.sizeOf(context).width < 350 ? 9 : 15, 0, MediaQuery.sizeOf(context).width < 350 ? 9 : 15, 80),
-                itemCount: visible.length, itemBuilder: (context, index) => _buildConversationTile(visible[index], isDark, cardColor, textColor, textGreyColor, dividerColor))),
-          if (_addMenuOpen) Positioned.fill(child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => setState(() => _addMenuOpen = false))),
+          Positioned.fill(
+            child: RefreshIndicator(
+              onRefresh: () => context.read<HomeProvider>().fetchInitialConversations(),
+              child: visible.isEmpty
+                  ? LayoutBuilder(
+                      builder: (context, constraints) => SingleChildScrollView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                          child: Center(
+                            child: homeState == HomeState.Loading
+                                ? const CircularProgressIndicator()
+                                : Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 32),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          query.isNotEmpty
+                                              ? 'No matching chats or contacts'
+                                              : _conversationFilter == 'Unread'
+                                                  ? 'You’re all caught up'
+                                                  : _conversationFilter == 'Groups'
+                                                      ? 'Bring everyone together'
+                                                      : 'Your conversations start here',
+                                          textAlign: TextAlign.center,
+                                          style: GoogleFonts.inter(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.w600,
+                                            color: textColor,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          query.isNotEmpty
+                                              ? 'Try a name or phone number from your contacts.'
+                                              : _conversationFilter == 'Unread'
+                                                  ? 'New unread messages will appear here.'
+                                                  : _conversationFilter == 'Groups'
+                                                      ? 'Tap + to create a group and start chatting.'
+                                                      : 'Contacts on Opaque appear here. Tap + to add a friend or group.',
+                                          textAlign: TextAlign.center,
+                                          style: GoogleFonts.inter(
+                                            fontSize: 12,
+                                            height: 1.7,
+                                            color: textGreyColor,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                          ),
+                        ),
+                      ),
+                    )
+                  : ListView.builder(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                      padding: EdgeInsets.fromLTRB(
+                        MediaQuery.sizeOf(context).width < 350 ? 9 : 15,
+                        0,
+                        MediaQuery.sizeOf(context).width < 350 ? 9 : 15,
+                        80,
+                      ),
+                      itemCount: visible.length,
+                      itemBuilder: (context, index) => _buildConversationTile(
+                        visible[index],
+                        isDark,
+                        cardColor,
+                        textColor,
+                        textGreyColor,
+                        dividerColor,
+                      ),
+                    ),
+            ),
+          ),
+          if (_addMenuOpen)
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => setState(() => _addMenuOpen = false),
+              ),
+            ),
         ])),
       ]),
     );
@@ -1084,13 +1456,27 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Widget _buildConversationTile(ConversationInfo convo, bool isDark, Color cardColor, Color textColor, Color textGreyColor, Color dividerColor) {
     final unread = convo.unreadCount > 0 || convo.hasUnreadMessages;
+    final subtitle = convo.isInviteSuggestion
+        ? (convo.phoneNumber ?? 'Invite to Opaque')
+        : convo.isContactSuggestion
+            ? (convo.lastMessage ?? 'On Opaque')
+            : (convo.isTyping
+                ? 'typing...'
+                : ChatPayloadParser.getPreviewText(convo.lastMessage));
     return RepaintBoundary(
-      key: ValueKey('tile_${convo.conversationId}'),
+      key: ValueKey('tile_${convo.conversationId}_${convo.isInviteSuggestion}_${convo.username ?? ''}'),
       child: Material(color: _isChatSelectionMode && _selectedChats.containsKey(convo.conversationId)
         ? (isDark ? const Color(0xFF283241) : const Color(0xFFF1F2F5)) : Colors.transparent,
         borderRadius: BorderRadius.circular(12), child: InkWell(
-          borderRadius: BorderRadius.circular(12), onTap: () { setState(() => _addMenuOpen = false); if (_isChatSelectionMode) { if (!_selectionBusy) _enterChatSelectionMode(convo); } else { _navigateToChat(convo); } },
-          onLongPress: _selectionBusy ? null : () { _searchFocusNode.unfocus(); setState(() => _addMenuOpen = false); _enterChatSelectionMode(convo); },
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => _onConversationTap(convo),
+          onLongPress: (convo.isContactSuggestion || convo.isInviteSuggestion || _selectionBusy)
+              ? null
+              : () {
+                  _searchFocusNode.unfocus();
+                  setState(() => _addMenuOpen = false);
+                  _enterChatSelectionMode(convo);
+                },
           child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16), child: Row(children: [
             Stack(children: [_buildAvatar(convo, isDark, cardColor),
               if (_isChatSelectionMode && _selectedChats.containsKey(convo.conversationId))
@@ -1105,16 +1491,22 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               Text(convo.chatTitle, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: (unread ? _tileTitleUnread : _tileTitleRead).copyWith(color: textColor)),
               const SizedBox(height: 5),
-              Text(convo.isTyping ? 'typing...' : ChatPayloadParser.getPreviewText(convo.lastMessage), maxLines: 1, overflow: TextOverflow.ellipsis,
+              Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: _tilePreview.copyWith(color: convo.isTyping ? const Color(0xFF6087BD) : unread ? (isDark ? const Color(0xFFDCE3EF) : const Color(0xFF4E515C)) : textGreyColor)),
             ])),
             const SizedBox(width: 8),
             Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              if (_pinnedChats.contains('${convo.conversationId}')) Padding(
-                padding: const EdgeInsets.only(bottom: 5), child: Icon(Icons.push_pin_rounded, size: 12, color: textGreyColor)),
-              if (convo.lastMessageTimestamp != null) Text(_formatTimestamp(convo.lastMessageTimestamp!.toLocal()),
-                style: _tileTimestamp.copyWith(color: textGreyColor)),
-              if (unread) ...[const SizedBox(height: 12), Semantics(label: '${convo.unreadCount > 0 ? convo.unreadCount : ''} unread messages', child: Container(width: 7, height: 7, decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xFF335FE8))))],
+              if (convo.isInviteSuggestion)
+                Text('Invite', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600, color: const Color(0xFF507FC3)))
+              else if (convo.isContactSuggestion)
+                Text('Message', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w500, color: textGreyColor))
+              else ...[
+                if (_pinnedChats.contains('${convo.conversationId}')) Padding(
+                  padding: const EdgeInsets.only(bottom: 5), child: Icon(Icons.push_pin_rounded, size: 12, color: textGreyColor)),
+                if (convo.lastMessageTimestamp != null) Text(_formatTimestamp(convo.lastMessageTimestamp!.toLocal()),
+                  style: _tileTimestamp.copyWith(color: textGreyColor)),
+                if (unread) ...[const SizedBox(height: 12), Semantics(label: '${convo.unreadCount > 0 ? convo.unreadCount : ''} unread messages', child: Container(width: 7, height: 7, decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xFF335FE8))))],
+              ],
             ]),
           ])),
         ),
@@ -1221,6 +1613,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     final conversations = homeProvider.conversations;
                     return _buildConversationList(
                       conversations,
+                      homeProvider.state,
                       isReady,
                       isDark,
                       cardColor,

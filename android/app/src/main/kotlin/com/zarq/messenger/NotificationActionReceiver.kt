@@ -34,7 +34,10 @@ class NotificationActionReceiver : BroadcastReceiver() {
         val conversationId = intent.getIntExtra("conversation_id", -1)
         val messageId = intent.getIntExtra("message_id", -1)
 
-        Log.d(TAG, "Action received: $action, conversation: $conversationId, message: $messageId")
+        val msg = "Action received: $action, conversation: $conversationId, message: $messageId"
+        Log.d(TAG, msg)
+        FileLogger.d(context, TAG, msg)
+        FileLogger.d(context, TAG, "--- Log file: ${FileLogger.getLogFilePath(context)} ---")
 
         when (action) {
             ZarqNotificationService.ACTION_MARK_READ -> {
@@ -45,7 +48,9 @@ class NotificationActionReceiver : BroadcastReceiver() {
                             handleMarkAsRead(context, conversationId, messageId)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error in handleMarkAsRead: ${e.message}", e)
+                        val err = "Error in handleMarkAsRead: ${e.message}"
+                        Log.e(TAG, err, e)
+                        FileLogger.e(context, TAG, err, e)
                     } finally {
                         pendingResult.finish()
                     }
@@ -59,7 +64,9 @@ class NotificationActionReceiver : BroadcastReceiver() {
                             handleQuickReply(context, intent, conversationId, messageId)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error in handleQuickReply: ${e.message}", e)
+                        val err = "Error in handleQuickReply: ${e.message}"
+                        Log.e(TAG, err, e)
+                        FileLogger.e(context, TAG, err, e)
                     } finally {
                         pendingResult.finish()
                     }
@@ -76,7 +83,9 @@ class NotificationActionReceiver : BroadcastReceiver() {
                             handleDeclineCall(context, intent)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error in handleDeclineCall: ${e.message}", e)
+                        val err = "Error in handleDeclineCall: ${e.message}"
+                        Log.e(TAG, err, e)
+                        FileLogger.e(context, TAG, err, e)
                     } finally {
                         pendingResult.finish()
                     }
@@ -89,14 +98,31 @@ class NotificationActionReceiver : BroadcastReceiver() {
      * Handle Mark as Read: Updates local database immediately, dismisses notification, and syncs with backend
      */
     private suspend fun handleMarkAsRead(context: Context, conversationId: Int, messageId: Int) {
-        Log.d(TAG, "Marking conversation $conversationId as read")
+        fun fl(msg: String) { Log.d(TAG, msg); FileLogger.d(context, TAG, msg) }
 
-        // 1. Immediately dismiss notification from shade for responsive UX
+        fl("━━━ [MARK_READ] START conversationId=$conversationId messageId=$messageId ━━━")
+
+        // 1. Immediately dismiss notification
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.cancel(ZarqNotificationService.NOTIFICATION_ID_BASE + conversationId)
+        fl("[MARK_READ] Notification dismissed for conversationId=$conversationId")
 
-        // 2. Mark locally in SQLCipher DB
-        val myUid = FirebaseAuth.getInstance().currentUser?.uid
+        // 2. Mark locally in SQLCipher DB and sync with backend
+        syncConversationMarkAsRead(context, conversationId)
+
+        fl("━━━ [MARK_READ] END ━━━")
+    }
+
+    /**
+     * Mark all unread messages in conversation as read both locally in SQLCipher and on backend
+     */
+    private suspend fun syncConversationMarkAsRead(context: Context, conversationId: Int) {
+        fun fl(msg: String) { Log.d(TAG, msg); FileLogger.d(context, TAG, msg) }
+        fun fle(msg: String, t: Throwable? = null) { Log.e(TAG, msg, t); FileLogger.e(context, TAG, msg, t) }
+
+        // 1. Mark locally in SQLCipher DB
+        val currentUser = FirebaseAuth.getInstance().currentUser
+        val myUid = currentUser?.uid
         if (myUid != null) {
             try {
                 val signalManager = SignalManager(context)
@@ -104,19 +130,55 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 if (dbKey != null) {
                     val sqlHelper = SQLCipherHelper(context)
                     val rows = sqlHelper.markConversationReadLocally(myUid, dbKey, conversationId)
-                    Log.d(TAG, "Marked $rows messages as read locally in conversation $conversationId")
+                    fl("[MARK_READ] Local DB: marked $rows messages as read in conversation $conversationId")
+                } else {
+                    fle("[MARK_READ] dbKey is null — skipping local DB update")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to update local DB on mark as read: ${e.message}", e)
+                fle("[MARK_READ] Local DB error: ${e.message}", e)
             }
+        } else {
+            fle("[MARK_READ] myUid is null — skipping local DB update")
         }
 
-        // 3. Inform backend
+        // 2. Inform backend
         try {
-            val success = markConversationAsReadOnBackend(conversationId)
-            Log.d(TAG, "Backend mark as read result: $success")
+            val authToken = getFirebaseAuthToken(context)
+            if (authToken == null) {
+                fle("[MARK_READ] Cannot call backend — auth token is null")
+                return
+            }
+
+            val targetUrl = "$BASE_URL/v1/conversations/$conversationId/mark_read"
+            fl("[MARK_READ] POST $targetUrl")
+            val url = URL(targetUrl)
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Authorization", "Bearer $authToken")
+                doOutput = false
+                connectTimeout = 7000
+                readTimeout = 7000
+            }
+
+            val responseCode = connection.responseCode
+            val responseBody = try {
+                if (responseCode in 200..299)
+                    connection.inputStream.bufferedReader().readText()
+                else
+                    connection.errorStream?.bufferedReader()?.readText() ?: "(no error body)"
+            } catch (ex: Exception) { "(could not read body: ${ex.message})" }
+
+            fl("[MARK_READ] Backend response: HTTP $responseCode — body: $responseBody")
+            connection.disconnect()
+
+            if (responseCode in 200..299) {
+                fl("[MARK_READ] ✅ Backend marked read successfully")
+            } else {
+                fle("[MARK_READ] ❌ Backend returned error HTTP $responseCode")
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to send mark as read to backend: ${e.message}", e)
+            fle("[MARK_READ] ❌ Network exception: ${e.javaClass.simpleName} — ${e.message}", e)
         }
     }
 
@@ -154,15 +216,19 @@ class NotificationActionReceiver : BroadcastReceiver() {
      * Handle encrypted quick reply directly in receiver without background service start restrictions
      */
     private suspend fun handleQuickReply(context: Context, intent: Intent, conversationId: Int, messageId: Int) {
-        Log.d(TAG, "Processing direct quick reply for conversation $conversationId")
+        fun fl(msg: String) { Log.d(TAG, msg); FileLogger.d(context, TAG, msg) }
+        fun fle(msg: String, t: Throwable? = null) { Log.e(TAG, msg, t); FileLogger.e(context, TAG, msg, t) }
+
+        fl("━━━ [QUICK_REPLY] START conversationId=$conversationId ━━━")
 
         val replyText = RemoteInput.getResultsFromIntent(intent)
             ?.getCharSequence(ZarqNotificationService.KEY_TEXT_REPLY)?.toString()
 
         if (replyText.isNullOrEmpty()) {
-            Log.w(TAG, "Quick reply text is empty")
+            fle("[QUICK_REPLY] Reply text is empty — aborting")
             return
         }
+        fl("[QUICK_REPLY] Reply text length=${replyText.length}")
 
         val recipientUid = intent.getStringExtra("recipient_uid")
         val senderUid = intent.getStringExtra("sender_uid")
@@ -171,45 +237,73 @@ class NotificationActionReceiver : BroadcastReceiver() {
         val senderName = intent.getStringExtra("sender_name") ?: "User"
         val isGroup = intent.getBooleanExtra("is_group", false)
 
+        fl("[QUICK_REPLY] Intent extras → recipientUid=$recipientUid senderUid=$senderUid myUid=$myUid isGroup=$isGroup senderName=$senderName")
+
         if (recipientUid.isNullOrEmpty() || senderUid.isNullOrEmpty() || myUid.isNullOrEmpty()) {
-            Log.e(TAG, "Missing UIDs for quick reply: recipientUid=$recipientUid, senderUid=$senderUid, myUid=$myUid")
+            fle("[QUICK_REPLY] ❌ Missing UIDs — recipientUid=$recipientUid senderUid=$senderUid myUid=$myUid")
             showErrorNotification(context, conversationId, "Authentication required - tap to open app")
             return
         }
 
         val encryptForUid = if (myUid == senderUid) recipientUid else senderUid
         var targetDeviceId = intent.getIntExtra("sender_device_id", -1)
+        fl("[QUICK_REPLY] encryptForUid=$encryptForUid targetDeviceId(from intent)=$targetDeviceId")
 
         val signalManager = SignalManager(context)
-        if (!signalManager.hasKeys() || !signalManager.isStoreInitialized()) {
-            Log.e(TAG, "SignalManager encryption not ready")
+        val hasKeys = signalManager.hasKeys()
+        val isStoreInit = signalManager.isStoreInitialized()
+        fl("[QUICK_REPLY] SignalManager hasKeys=$hasKeys isStoreInitialized=$isStoreInit")
+        if (!hasKeys || !isStoreInit) {
+            fle("[QUICK_REPLY] ❌ SignalManager not ready — hasKeys=$hasKeys isStoreInit=$isStoreInit")
             showErrorNotification(context, conversationId, "Encryption not ready - tap to open app")
             return
         }
 
         // Resolve recipient device ID if missing
         if (targetDeviceId <= 0) {
-            targetDeviceId = getRecipientDeviceId(encryptForUid) ?: 1
+            fl("[QUICK_REPLY] targetDeviceId not in intent, fetching from backend for uid=$encryptForUid")
+            targetDeviceId = getRecipientDeviceId(context, encryptForUid) ?: 1
+            fl("[QUICK_REPLY] resolved targetDeviceId=$targetDeviceId")
         }
 
         // Encrypt reply message using Signal Protocol
+        fl("[QUICK_REPLY] Starting encryption — isGroup=$isGroup encryptForUid=$encryptForUid deviceId=$targetDeviceId")
         val encryptedContent = try {
             if (isGroup) {
-                signalManager.encryptGroupMessage(
+                fl("[QUICK_REPLY] Using group encryption for conversationId=$conversationId")
+                var ciphertext = signalManager.encryptGroupMessage(
                     groupId = conversationId.toString(),
                     plaintext = replyText
                 )
+                if (ciphertext == null) {
+                    fl("[QUICK_REPLY] encryptGroupMessage failed (no sender key). Creating and distributing sender key...")
+                    val distributed = setupAndDistributeSenderKey(context, conversationId.toString(), signalManager)
+                    if (distributed) {
+                        fl("[QUICK_REPLY] Sender key distributed successfully, retrying encryptGroupMessage...")
+                        ciphertext = signalManager.encryptGroupMessage(
+                            groupId = conversationId.toString(),
+                            plaintext = replyText
+                        )
+                    } else {
+                        fle("[QUICK_REPLY] ❌ Failed to distribute sender key for group $conversationId")
+                    }
+                }
+                ciphertext
             } else {
                 val hasSession = signalManager.hasSession(encryptForUid, targetDeviceId)
+                fl("[QUICK_REPLY] hasSession($encryptForUid, $targetDeviceId)=$hasSession")
                 if (hasSession) {
+                    fl("[QUICK_REPLY] Encrypting with existing session")
                     signalManager.encryptMessage(
                         recipientUid = encryptForUid,
                         plaintext = replyText,
                         deviceId = targetDeviceId
                     )
                 } else {
-                    val prekeyBundle = fetchPrekeyBundle(encryptForUid, targetDeviceId)
+                    fl("[QUICK_REPLY] No session — fetching prekey bundle for $encryptForUid:$targetDeviceId")
+                    val prekeyBundle = fetchPrekeyBundle(context, encryptForUid, targetDeviceId)
                     if (prekeyBundle != null) {
+                        fl("[QUICK_REPLY] Got prekey bundle (keys=${prekeyBundle.keys}), setting up session")
                         signalManager.encryptMessageWithSessionSetup(
                             recipientUid = encryptForUid,
                             plaintext = replyText,
@@ -217,24 +311,27 @@ class NotificationActionReceiver : BroadcastReceiver() {
                             deviceId = targetDeviceId
                         )
                     } else {
-                        Log.e(TAG, "Could not fetch prekey bundle for $encryptForUid:$targetDeviceId")
+                        fle("[QUICK_REPLY] ❌ Could not fetch prekey bundle for $encryptForUid:$targetDeviceId")
                         null
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Encryption exception: ${e.message}", e)
+            fle("[QUICK_REPLY] ❌ Encryption exception: ${e.javaClass.simpleName} — ${e.message}", e)
             null
         }
 
         if (encryptedContent == null) {
-            Log.e(TAG, "Failed to encrypt quick reply message")
+            fle("[QUICK_REPLY] ❌ encryptedContent is null — cannot send")
             showErrorNotification(context, conversationId, "Failed to encrypt - tap to open app")
             return
         }
+        fl("[QUICK_REPLY] Encryption success — encryptedContent length=${encryptedContent.length}")
 
-        // Send to backend
-        val (sendSuccess, serverMessageId) = sendEncryptedMessage(conversationId, encryptedContent)
+        fl("[QUICK_REPLY] Sending encrypted message to backend for conversationId=$conversationId")
+        val (sendSuccess, serverMessageId) = sendEncryptedMessage(context, conversationId, encryptedContent)
+        fl("[QUICK_REPLY] sendEncryptedMessage result — success=$sendSuccess serverMessageId=$serverMessageId")
+
         if (sendSuccess && serverMessageId != null) {
             val dbKey = signalManager.getDatabaseEncryptionKey()
             val isoTimestamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
@@ -255,123 +352,224 @@ class NotificationActionReceiver : BroadcastReceiver() {
                         contentB64 = encryptedContent,
                         timestamp = isoTimestamp
                     )
-                    Log.d(TAG, "Saved quick reply $serverMessageId to local DB")
+                    fl("[QUICK_REPLY] ✅ Saved quick reply $serverMessageId to local DB")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error saving quick reply to local DB: ${e.message}", e)
+                    fle("[QUICK_REPLY] Error saving quick reply to local DB: ${e.message}", e)
                 }
+            } else {
+                fle("[QUICK_REPLY] dbKey null — skipping local DB insert")
             }
 
-            // Also save to shared prefs for optimistic UI synchronization
             storeLocalSentMessage(context, conversationId, replyText, myUid, serverMessageId)
-
-            // Update notification with sent status and inline message
             showReplySentNotification(context, conversationId, senderName, replyText)
+            fl("[QUICK_REPLY] ✅ Quick reply complete — messageId=$serverMessageId")
+
+            // Automatically mark conversation messages as read since user replied
+            fl("[QUICK_REPLY] Marking conversation $conversationId as read...")
+            syncConversationMarkAsRead(context, conversationId)
         } else {
-            Log.e(TAG, "Failed to send quick reply message to backend")
+            fle("[QUICK_REPLY] ❌ Failed to send — success=$sendSuccess serverMessageId=$serverMessageId")
             showErrorNotification(context, conversationId, "Failed to send reply - tap to open app")
         }
+
+        fl("━━━ [QUICK_REPLY] END ━━━")
     }
 
-    private suspend fun fetchPrekeyBundle(recipientUid: String, deviceId: Int): Map<String, Any>? {
+    private suspend fun fetchPrekeyBundle(context: Context, recipientUid: String, deviceId: Int): Map<String, Any>? {
         return withContext(Dispatchers.IO) {
             try {
-                val token = getFirebaseAuthToken() ?: return@withContext null
-                val url = URL("$BASE_URL/v1/prekey_bundle?uid=$recipientUid&device_id=$deviceId")
-                val connection = (url.openConnection() as HttpURLConnection).apply {
+                val token = getFirebaseAuthToken(context)
+                if (token == null) {
+                    Log.e(TAG, "[PREKEY] Auth token null"); FileLogger.e(context, TAG, "[PREKEY] Auth token null")
+                    return@withContext null
+                }
+                val targetUrl = "$BASE_URL/v1/prekey_bundle?uid=$recipientUid&device_id=$deviceId"
+                Log.d(TAG, "[PREKEY] GET $targetUrl"); FileLogger.d(context, TAG, "[PREKEY] GET $targetUrl")
+                val connection = (URL(targetUrl).openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
                     setRequestProperty("Authorization", "Bearer $token")
                     setRequestProperty("Accept", "application/json")
-                    connectTimeout = 7000
-                    readTimeout = 7000
+                    connectTimeout = 7000; readTimeout = 7000
                 }
-
-                if (connection.responseCode == 200) {
+                val responseCode = connection.responseCode
+                Log.d(TAG, "[PREKEY] HTTP $responseCode"); FileLogger.d(context, TAG, "[PREKEY] HTTP $responseCode")
+                if (responseCode == 200) {
                     val response = connection.inputStream.bufferedReader().readText()
                     val json = JSONObject(response)
                     val map = mutableMapOf<String, Any>()
-                    json.keys().forEach { key ->
-                        map[key] = json.get(key)
-                    }
+                    json.keys().forEach { key -> map[key] = json.get(key) }
                     connection.disconnect()
+                    val msg = "[PREKEY] ✅ Bundle keys=${map.keys}"
+                    Log.d(TAG, msg); FileLogger.d(context, TAG, msg)
                     map
                 } else {
-                    connection.disconnect()
-                    null
+                    val errBody = connection.errorStream?.bufferedReader()?.readText() ?: "(no body)"
+                    val msg = "[PREKEY] ❌ HTTP $responseCode — $errBody"
+                    Log.e(TAG, msg); FileLogger.e(context, TAG, msg)
+                    connection.disconnect(); null
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to fetch prekey bundle: ${e.message}")
-                null
+                val msg = "[PREKEY] ❌ ${e.javaClass.simpleName}: ${e.message}"
+                Log.e(TAG, msg, e); FileLogger.e(context, TAG, msg, e); null
             }
         }
     }
 
-    private suspend fun getRecipientDeviceId(recipientUid: String): Int? {
+    private suspend fun getRecipientDeviceId(context: Context, recipientUid: String): Int? {
         return withContext(Dispatchers.IO) {
             try {
-                val token = getFirebaseAuthToken() ?: return@withContext null
-                val url = URL("$BASE_URL/v1/users/$recipientUid/device")
-                val connection = (url.openConnection() as HttpURLConnection).apply {
+                val token = getFirebaseAuthToken(context)
+                if (token == null) {
+                    Log.e(TAG, "[DEVICE_ID] Auth token null"); FileLogger.e(context, TAG, "[DEVICE_ID] Auth token null")
+                    return@withContext null
+                }
+                val targetUrl = "$BASE_URL/v1/users/$recipientUid/device"
+                Log.d(TAG, "[DEVICE_ID] GET $targetUrl"); FileLogger.d(context, TAG, "[DEVICE_ID] GET $targetUrl")
+                val connection = (URL(targetUrl).openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
                     setRequestProperty("Authorization", "Bearer $token")
-                    connectTimeout = 7000
-                    readTimeout = 7000
+                    connectTimeout = 7000; readTimeout = 7000
                 }
-
-                if (connection.responseCode == 200) {
+                val responseCode = connection.responseCode
+                Log.d(TAG, "[DEVICE_ID] HTTP $responseCode"); FileLogger.d(context, TAG, "[DEVICE_ID] HTTP $responseCode")
+                if (responseCode == 200) {
                     val response = connection.inputStream.bufferedReader().readText()
-                    val json = JSONObject(response)
+                    val deviceId = JSONObject(response).getInt("device_id")
                     connection.disconnect()
-                    json.getInt("device_id")
+                    val msg = "[DEVICE_ID] ✅ device_id=$deviceId for uid=$recipientUid"
+                    Log.d(TAG, msg); FileLogger.d(context, TAG, msg)
+                    deviceId
                 } else {
-                    connection.disconnect()
-                    null
+                    val errBody = connection.errorStream?.bufferedReader()?.readText() ?: "(no body)"
+                    val msg = "[DEVICE_ID] ❌ HTTP $responseCode — $errBody"
+                    Log.e(TAG, msg); FileLogger.e(context, TAG, msg)
+                    connection.disconnect(); null
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to get device ID: ${e.message}")
-                null
+                val msg = "[DEVICE_ID] ❌ ${e.javaClass.simpleName}: ${e.message}"
+                Log.e(TAG, msg, e); FileLogger.e(context, TAG, msg, e); null
             }
         }
     }
 
-    private suspend fun sendEncryptedMessage(conversationId: Int, encryptedContent: String): Pair<Boolean, Int?> {
+    private suspend fun setupAndDistributeSenderKey(
+        context: Context,
+        groupId: String,
+        signalManager: SignalManager
+    ): Boolean {
         return withContext(Dispatchers.IO) {
+            fun fl(msg: String) { Log.d(TAG, msg); FileLogger.d(context, TAG, msg) }
+            fun fle(msg: String, t: Throwable? = null) { Log.e(TAG, msg, t); FileLogger.e(context, TAG, msg, t) }
+
             try {
-                val token = getFirebaseAuthToken() ?: return@withContext Pair(false, null)
-                val url = URL("$BASE_URL/v1/messages/send")
-                val connection = (url.openConnection() as HttpURLConnection).apply {
+                fl("[SENDER_KEY] Creating sender key distribution for group $groupId")
+                val distributionB64 = signalManager.createSenderKeyDistribution(groupId)
+                if (distributionB64.isNullOrEmpty()) {
+                    fle("[SENDER_KEY] Failed to create sender key distribution locally")
+                    return@withContext false
+                }
+
+                val token = getFirebaseAuthToken(context)
+                if (token.isNullOrEmpty()) {
+                    fle("[SENDER_KEY] Auth token is null")
+                    return@withContext false
+                }
+
+                val myDeviceId = signalManager.getDeviceId()
+                val targetUrl = "$BASE_URL/groups/$groupId/sender-keys/distribute"
+                fl("[SENDER_KEY] Uploading sender key to $targetUrl (deviceId=$myDeviceId)")
+
+                val connection = (URL(targetUrl).openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     setRequestProperty("Content-Type", "application/json")
                     setRequestProperty("Authorization", "Bearer $token")
                     doOutput = true
-                    connectTimeout = 10000
-                    readTimeout = 10000
+                    connectTimeout = 7000
+                    readTimeout = 7000
                 }
 
+                val payload = JSONObject().apply {
+                    put("sender_key_distribution", distributionB64)
+                    put("device_id", myDeviceId)
+                }
+
+                connection.outputStream.use { it.write(payload.toString().toByteArray()) }
+
+                val responseCode = connection.responseCode
+                connection.disconnect()
+
+                if (responseCode in 200..299) {
+                    fl("[SENDER_KEY] ✅ Sender key distributed successfully to group $groupId")
+                    true
+                } else {
+                    fle("[SENDER_KEY] ❌ Failed to distribute sender key: HTTP $responseCode")
+                    false
+                }
+            } catch (e: Exception) {
+                fle("[SENDER_KEY] ❌ Exception distributing sender key: ${e.message}", e)
+                false
+            }
+        }
+    }
+
+    private suspend fun sendEncryptedMessage(context: Context, conversationId: Int, encryptedContent: String): Pair<Boolean, Int?> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val token = getFirebaseAuthToken(context)
+                if (token == null) {
+                    val msg = "[SEND_MSG] ❌ Auth token null"
+                    Log.e(TAG, msg); FileLogger.e(context, TAG, msg)
+                    return@withContext Pair(false, null)
+                }
+                val msg0 = "[SEND_MSG] Auth token OK — posting to $BASE_URL/v1/messages/send"
+                Log.d(TAG, msg0); FileLogger.d(context, TAG, msg0)
+
+                val connection = (URL("$BASE_URL/v1/messages/send").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("Authorization", "Bearer $token")
+                    doOutput = true; connectTimeout = 10000; readTimeout = 10000
+                }
                 val payload = JSONObject().apply {
                     put("conversation_id", conversationId)
                     put("content_b64", encryptedContent)
                     put("message_type", "chat")
                 }
+                val msg1 = "[SEND_MSG] Payload keys=${payload.keys().asSequence().toList()} conversationId=$conversationId"
+                Log.d(TAG, msg1); FileLogger.d(context, TAG, msg1)
 
-                connection.outputStream.use {
-                    it.write(payload.toString().toByteArray())
-                }
+                connection.outputStream.use { it.write(payload.toString().toByteArray()) }
 
                 val responseCode = connection.responseCode
-                Log.d(TAG, "Backend send response code: $responseCode")
+                val responseBody = try {
+                    if (responseCode in 200..299) connection.inputStream.bufferedReader().readText()
+                    else connection.errorStream?.bufferedReader()?.readText() ?: "(no error body)"
+                } catch (ex: Exception) { "(could not read body: ${ex.message})" }
+
+                val msg2 = "[SEND_MSG] HTTP $responseCode — body: $responseBody"
+                Log.d(TAG, msg2); FileLogger.d(context, TAG, msg2)
 
                 if (responseCode in 200..299) {
-                    val response = connection.inputStream.bufferedReader().readText()
-                    val json = JSONObject(response)
-                    val messageId = json.optInt("message_id", -1)
+                    val messageId = JSONObject(responseBody).optInt("message_id", -1)
                     connection.disconnect()
-                    if (messageId != -1) Pair(true, messageId) else Pair(false, null)
+                    if (messageId != -1) {
+                        val msg3 = "[SEND_MSG] ✅ message_id=$messageId"
+                        Log.d(TAG, msg3); FileLogger.d(context, TAG, msg3)
+                        Pair(true, messageId)
+                    } else {
+                        val msg3 = "[SEND_MSG] ❌ message_id missing from response"
+                        Log.e(TAG, msg3); FileLogger.e(context, TAG, msg3)
+                        Pair(false, null)
+                    }
                 } else {
                     connection.disconnect()
+                    val msg3 = "[SEND_MSG] ❌ Backend error HTTP $responseCode"
+                    Log.e(TAG, msg3); FileLogger.e(context, TAG, msg3)
                     Pair(false, null)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to send message: ${e.message}", e)
+                val msg = "[SEND_MSG] ❌ ${e.javaClass.simpleName}: ${e.message}"
+                Log.e(TAG, msg, e); FileLogger.e(context, TAG, msg, e)
                 Pair(false, null)
             }
         }
@@ -450,24 +648,34 @@ class NotificationActionReceiver : BroadcastReceiver() {
     }
 
     /**
-     * Get Firebase Auth token with automatic forced-refresh retry
+     * Get Firebase Auth token with automatic forced-refresh retry.
+     * context is optional — when provided, also logs to file.
      */
-    private suspend fun getFirebaseAuthToken(): String? {
+    private suspend fun getFirebaseAuthToken(context: Context? = null): String? {
         return withContext(Dispatchers.IO) {
+            fun fl(msg: String) { Log.d(TAG, msg); context?.let { FileLogger.d(it, TAG, msg) } }
+            fun fle(msg: String, t: Throwable? = null) { Log.e(TAG, msg, t); context?.let { FileLogger.e(it, TAG, msg, t) } }
+
+            val user = FirebaseAuth.getInstance().currentUser
+            fl("[AUTH_TOKEN] currentUser=${user?.uid ?: "NULL"}")
+            if (user == null) {
+                fle("[AUTH_TOKEN] ❌ No Firebase user — not logged in")
+                return@withContext null
+            }
             try {
-                val user = FirebaseAuth.getInstance().currentUser ?: return@withContext null
-                val task = user.getIdToken(false)
-                val result = task.await()
-                result.token
+                val result = user.getIdToken(false).await()
+                val token = result.token
+                fl("[AUTH_TOKEN] ✅ Cached token OK (len=${token?.length})")
+                token
             } catch (e: Exception) {
-                // If cached token failed, try forced refresh
+                fl("[AUTH_TOKEN] Cached token failed (${e.message}), trying forced refresh...")
                 try {
-                    val user = FirebaseAuth.getInstance().currentUser ?: return@withContext null
-                    val task = user.getIdToken(true)
-                    val result = task.await()
-                    result.token
+                    val result = user.getIdToken(true).await()
+                    val token = result.token
+                    fl("[AUTH_TOKEN] ✅ Refreshed token OK (len=${token?.length})")
+                    token
                 } catch (e2: Exception) {
-                    Log.e(TAG, "Failed to get auth token after refresh: ${e2.message}", e2)
+                    fle("[AUTH_TOKEN] ❌ Both cached and refresh failed: ${e2.message}", e2)
                     null
                 }
             }

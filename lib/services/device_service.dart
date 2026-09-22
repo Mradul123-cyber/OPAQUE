@@ -222,6 +222,7 @@ class DeviceService {
       'conversation_id': conversationId,
     };
     if (senderDeviceId != null) {
+      requestBody['sender_device_id'] = senderDeviceId;
       requestBody['senderDeviceId'] = senderDeviceId;
     }
 
@@ -311,21 +312,29 @@ class DeviceService {
 
   // In-memory cache for user active device IDs to prevent blocking network requests on chat reopen
   static final Map<String, int> _activeDeviceIdCache = {};
+  static final Map<String, DateTime> _activeDeviceIdCacheTime = {};
+  static const Duration _cacheTtl = Duration(minutes: 5);
 
   static void cacheActiveDeviceId(String userUid, int deviceId) {
     _activeDeviceIdCache[userUid] = deviceId;
+    _activeDeviceIdCacheTime[userUid] = DateTime.now();
   }
 
   static void invalidateActiveDeviceIdCache([String? userUid]) {
     if (userUid != null) {
       _activeDeviceIdCache.remove(userUid);
+      _activeDeviceIdCacheTime.remove(userUid);
     } else {
       _activeDeviceIdCache.clear();
+      _activeDeviceIdCacheTime.clear();
     }
   }
 
-  static Future<int?> getActiveDeviceId(String userUid) async {
-    if (_activeDeviceIdCache.containsKey(userUid)) {
+  static Future<int?> getActiveDeviceId(String userUid, {bool forceRefresh = false}) async {
+    final cachedTime = _activeDeviceIdCacheTime[userUid];
+    final isExpired = cachedTime == null || DateTime.now().difference(cachedTime) > _cacheTtl;
+
+    if (!forceRefresh && !isExpired && _activeDeviceIdCache.containsKey(userUid)) {
       return _activeDeviceIdCache[userUid];
     }
 
@@ -356,7 +365,7 @@ class DeviceService {
         final data = jsonDecode(resp.body);
         final devId = data['device_id'] as int?;
         if (devId != null) {
-          _activeDeviceIdCache[userUid] = devId;
+          cacheActiveDeviceId(userUid, devId);
         }
         return devId;
       } else if (resp.statusCode == 404) {

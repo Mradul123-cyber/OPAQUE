@@ -91,6 +91,7 @@ class HomeProvider with ChangeNotifier {
   }
 
   Future<void> _saveDiskCache(List<ConversationInfo> list) async {
+    if (list.isEmpty && _conversations.isNotEmpty) return;
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw = jsonEncode(list.map((c) => c.toJson()).toList());
@@ -109,7 +110,10 @@ class HomeProvider with ChangeNotifier {
 
   // Fetches the initial list of conversations - LOCAL FIRST
   Future<void> fetchInitialConversations() async {
-    if (_state == HomeState.Loading) return;
+    // Try loading disk cache if not yet loaded in memory
+    if (_conversations.isEmpty) {
+      await _loadDiskCache();
+    }
 
     // 🚀 1. INSTANT: If already populated (from disk cache or memory), show immediately
     if (_conversations.isNotEmpty) {
@@ -119,30 +123,22 @@ class HomeProvider with ChangeNotifier {
       return;
     }
 
-    // Try loading disk cache if not yet loaded
-    await _loadDiskCache();
-    if (_conversations.isNotEmpty) {
-      _state = HomeState.Success;
-      notifyListeners();
-      _refreshConversationsInBackground();
-      return;
-    }
-
-    // 2. No local data found (fresh account): Load from server
+    // 2. No local data found (fresh account or cold start): Load from server/local DB
     _state = HomeState.Loading;
     notifyListeners();
 
     try {
       final convos = await _conversationService.fetchConversations();
-      _conversations = convos;
-      _cachedConversations = List.from(convos);
-      _lastCacheTime = DateTime.now();
+      if (convos.isNotEmpty) {
+        _conversations = convos;
+        _cachedConversations = List.from(convos);
+        _lastCacheTime = DateTime.now();
+        _saveDiskCache(convos);
+      }
       _state = HomeState.Success;
-      _saveDiskCache(convos);
     } catch (e) {
-      _conversations = [];
-      _state = HomeState.Success;
       _errorMessage = null;
+      _state = HomeState.Success;
     }
     notifyListeners();
   }
@@ -153,11 +149,13 @@ class HomeProvider with ChangeNotifier {
     _refreshing = true;
     try {
       final conversations = await _conversationService.fetchConversations();
-      _conversations = _mergePreferringNewerPreviews(conversations);
-      _cachedConversations = List.from(_conversations);
-      _lastCacheTime = DateTime.now();
-      notifyListeners();
-      _saveDiskCache(_conversations);
+      if (conversations.isNotEmpty) {
+        _conversations = _mergePreferringNewerPreviews(conversations);
+        _cachedConversations = List.from(_conversations);
+        _lastCacheTime = DateTime.now();
+        notifyListeners();
+        _saveDiskCache(_conversations);
+      }
     } catch (_) {
       // Silently fail in background - user already sees cached local data
     } finally {
@@ -170,6 +168,10 @@ class HomeProvider with ChangeNotifier {
     List<ConversationInfo> incoming,
   ) {
     if (_conversations.isEmpty) return incoming;
+    if (incoming.isEmpty) return _conversations;
+    final incomingById = {
+      for (final c in incoming) c.conversationId: c,
+    };
     final existingById = {
       for (final c in _conversations) c.conversationId: c,
     };
@@ -201,6 +203,12 @@ class HomeProvider with ChangeNotifier {
         isOnline: incomingConvo.isOnline,
       );
     }).toList();
+
+    for (final existing in _conversations) {
+      if (!incomingById.containsKey(existing.conversationId)) {
+        merged.add(existing);
+      }
+    }
 
     merged.sort((a, b) {
       final aTs = a.lastMessageTimestamp;

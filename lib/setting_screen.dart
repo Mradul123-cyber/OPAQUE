@@ -737,6 +737,81 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  void _showContactNamePreferenceDialog() {
+    final c = OpaqueColors(context);
+    final settings = context.read<UserSettingsProvider>();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        Widget option(String title, String subtitle, bool preferLocal) {
+          final isSelected = settings.preferLocalContactNames == preferLocal;
+          return InkWell(
+            onTap: () {
+              Navigator.pop(ctx);
+              settings.saveSettings(preferLocalContactNames: preferLocal);
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+              decoration: BoxDecoration(
+                border: Border(bottom: BorderSide(color: c.line)),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(title, style: c.text(13, bold: isSelected)),
+                        const SizedBox(height: 3),
+                        Text(subtitle, style: c.text(10, muted: true)),
+                      ],
+                    ),
+                  ),
+                  if (isSelected)
+                    Icon(Icons.check_circle, color: c.ink, size: 18)
+                  else
+                    Icon(Icons.radio_button_unchecked, color: c.muted, size: 18),
+                ],
+              ),
+            ),
+          );
+        }
+
+        return Container(
+          decoration: BoxDecoration(
+            color: c.surface,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          padding: const EdgeInsets.fromLTRB(8, 12, 8, 24),
+          child: SafeArea(
+            top: false,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                  child: Text('Contact names', style: c.text(16, bold: true)),
+                ),
+                option(
+                  'Phone contact name',
+                  'Local name, then display name, then username',
+                  true,
+                ),
+                option(
+                  'Opaque display name',
+                  'Display name, then local name, then username',
+                  false,
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   void _showLastSeenPrivacyDialog() {
     final c = OpaqueColors(context);
     showModalBottomSheet(
@@ -3541,6 +3616,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
               label('PREFERENCES'),
+              row(
+                Icons.badge_outlined,
+                'Contact names',
+                context.watch<UserSettingsProvider>().preferLocalContactNames
+                    ? 'Prefer names from your phone contacts'
+                    : 'Prefer Opaque display names',
+                _showContactNamePreferenceDialog,
+              ),
               row(
                 Icons.palette_outlined,
                 'Style',

@@ -16,6 +16,7 @@ import 'key_rotation_service.dart';
 import 'sent_message_service.dart';
 import 'navigation_handler.dart';
 import 'group_encryption_service.dart';
+import 'device_service.dart';
 import 'package:zarq_messenger/app_config.dart';
 
 // Message queue item for reliable delivery
@@ -625,32 +626,65 @@ class WebSocketService with ChangeNotifier {
       final dbService = DatabaseService.instance;
       final existingMessage = await dbService.getMessageById(messageId);
 
-      final senderDeviceId = editData['sender_device_id'] is int
+      int? senderDeviceId = editData['sender_device_id'] is int
           ? editData['sender_device_id'] as int
-          : int.tryParse(editData['sender_device_id']?.toString() ?? '') ?? existingMessage?.senderDeviceId;
+          : int.tryParse(editData['sender_device_id']?.toString() ?? '');
+      if (senderDeviceId == null || senderDeviceId <= 0) {
+        senderDeviceId = existingMessage?.senderDeviceId;
+      }
+      if (senderDeviceId == null || senderDeviceId <= 0) {
+        senderDeviceId = await DeviceService.getActiveDeviceId(senderUid ?? '');
+      }
+      final resolvedSenderDeviceId = (senderDeviceId != null && senderDeviceId > 0) ? senderDeviceId : 1;
 
       String? decryptedText;
       final currentUser = FirebaseAuth.instance.currentUser;
       final isMe = currentUser != null && currentUser.uid == senderUid;
 
       if (!isMe && senderUid != null) {
-        // Try decrypting with group encryption first if group, then Signal Protocol (1-on-1)
-        try {
-          decryptedText = await GroupEncryptionService.decryptGroupMessage(
-            groupId: conversationId.toString(),
-            ciphertext: contentB64,
-            senderUid: senderUid,
-            senderDeviceId: senderDeviceId ?? 1,
-          );
-        } catch (_) {
+        final isGroup = editData['is_group'] as bool? ?? false;
+        if (isGroup) {
+          try {
+            decryptedText = await GroupEncryptionService.decryptGroupMessage(
+              groupId: conversationId.toString(),
+              ciphertext: contentB64,
+              senderUid: senderUid,
+              senderDeviceId: resolvedSenderDeviceId,
+            );
+          } catch (e) {
+            debugPrint('[WebSocketService] Group decrypt error: $e');
+          }
+        } else {
           try {
             decryptedText = await SignalService.decryptMessage(
               senderUid: senderUid,
               ciphertextB64: contentB64,
-              deviceId: senderDeviceId,
+              deviceId: resolvedSenderDeviceId,
             );
           } catch (e) {
-            debugPrint('[WebSocketService] Could not decrypt edited message $messageId: $e');
+            debugPrint('[WebSocketService] 1-on-1 Signal decrypt error: $e');
+          }
+        }
+
+        // If primary attempt failed to return a string, try the alternate mode
+        if (decryptedText == null || decryptedText.isEmpty) {
+          if (isGroup) {
+            try {
+              decryptedText = await SignalService.decryptMessage(
+                senderUid: senderUid,
+                ciphertextB64: contentB64,
+                deviceId: resolvedSenderDeviceId,
+              );
+            } catch (_) {}
+          } else {
+            try {
+              decryptedText = await GroupEncryptionService.decryptGroupMessage(
+                groupId: conversationId.toString(),
+                ciphertext: contentB64,
+                senderUid: senderUid,
+                senderDeviceId: resolvedSenderDeviceId,
+              );
+            } catch (_) {}
           }
         }
       }
@@ -670,7 +704,7 @@ class WebSocketService with ChangeNotifier {
               conversationId: conversationId,
               username: editData['sender_username'] as String? ?? 'User',
               senderUid: senderUid ?? '',
-              senderDeviceId: senderDeviceId,
+              senderDeviceId: resolvedSenderDeviceId,
               content: decryptedText,
               encryptedContent: contentB64,
               isEdited: true,
@@ -979,11 +1013,15 @@ class WebSocketService with ChangeNotifier {
             );
           } catch (_) {}
 
+          final myActiveDeviceId = await SignalService.getDeviceId();
           try {
             final sessionResetNotification = {
               'type': 'session_reset_required',
+              'target_uid': senderUid,
+              'target_device_id': senderDeviceId,
               'recipient_uid': senderUid,
-              'recipient_device_id': senderDeviceId,
+              'sender_uid': currentUser.uid,
+              'sender_device_id': myActiveDeviceId,
               'reason': 'decryption_failed',
               'timestamp': DateTime.now().toUtc().toIso8601String(),
             };
@@ -1007,10 +1045,14 @@ class WebSocketService with ChangeNotifier {
 
           // Notify sender that their session is invalid and needs to be reset
           try {
+            final myActiveDeviceId = await SignalService.getDeviceId();
             final sessionResetNotification = {
               'type': 'session_reset_required',
+              'target_uid': senderUid,
+              'target_device_id': senderDeviceId,
               'recipient_uid': senderUid,
-              'recipient_device_id': senderDeviceId,
+              'sender_uid': currentUser.uid,
+              'sender_device_id': myActiveDeviceId,
               'reason': 'decryption_failed',
               'timestamp': DateTime.now().toUtc().toIso8601String(),
             };
@@ -1120,7 +1162,7 @@ class WebSocketService with ChangeNotifier {
     });
   }
 
-  void _handleMessageStatus(Map<String, dynamic> statusData) {
+  Future<void> _handleMessageStatus(Map<String, dynamic> statusData) async {
     try {
       final messageId = statusData['message_id'] as int?;
       final newStatus = statusData['status'] as String?;
@@ -1154,7 +1196,11 @@ class WebSocketService with ChangeNotifier {
           return;
         }
 
-        _updateMessageStatusInDatabase(messageId, status);
+        final wasUpdated = await _updateMessageStatusInDatabase(messageId, status);
+        if (!wasUpdated) {
+          // Status in DB is already same or higher (e.g. read) - do not downgrade in UI
+          return;
+        }
 
         _streamController.add({
           'type': 'message_status_update',
@@ -1168,15 +1214,15 @@ class WebSocketService with ChangeNotifier {
     }
   }
 
-  Future<void> _updateMessageStatusInDatabase(
+  Future<bool> _updateMessageStatusInDatabase(
     int messageId,
     MessageStatus status,
   ) async {
     try {
       final dbService = DatabaseService.instance;
-      await dbService.updateMessageStatus(messageId, status);
+      return await dbService.updateMessageStatus(messageId, status);
     } catch (e) {
-      // print("[WebSocketService] Error updating message status: $e");
+      return false;
     }
   }
 
@@ -1290,6 +1336,12 @@ class WebSocketService with ChangeNotifier {
     int messageId,
     int conversationId,
   ) async {
+    // If message is already marked as read in local DB, do not send delivered!
+    final existing = await DatabaseService.instance.getMessageById(messageId);
+    if (existing != null && existing.status == MessageStatus.read) {
+      return;
+    }
+
     // Check if we already marked this message as delivered recently
     final prefs = await SharedPreferences.getInstance();
     final deliveredKey = 'delivered_$messageId';
@@ -1578,26 +1630,40 @@ class WebSocketService with ChangeNotifier {
     Map<String, dynamic> resetData,
   ) async {
     try {
-      final recipientUid = resetData['recipient_uid'] as String?;
-      final recipientDeviceId = resetData['recipient_device_id'] as int?;
+      // The peer who could not decrypt our message is sender_uid (or failed_user_uid)
+      final remoteUid = (resetData['sender_uid'] ?? resetData['failed_user_uid']) as String?;
+      final remoteDeviceId = (resetData['sender_device_id'] ?? resetData['failed_device_id']) as int?;
       final reason = resetData['reason'] as String? ?? 'unknown';
 
-      if (recipientUid == null || recipientDeviceId == null) {
-        // print("[WebSocketService] ⚠️ Invalid session reset data: missing recipient info");
+      if (remoteUid == null) {
+        debugPrint("[WebSocketService] ⚠️ Invalid session reset data: missing remoteUid");
         return;
       }
 
-      // print("[WebSocketService] 🔄 Session reset required for $recipientUid:$recipientDeviceId (reason: $reason)");
+      debugPrint("[WebSocketService] 🔄 Session reset required for remote contact $remoteUid:$remoteDeviceId (reason: $reason)");
 
-      // Reset the stale session on sender's side
+      // Reset the stale session on our side for the remote peer (wipes all sessions for remoteUid)
       await SignalService.resetSessionDueToDecryptionFailure(
-        senderUid: recipientUid,
-        senderDeviceId: recipientDeviceId,
+        senderUid: remoteUid,
+        senderDeviceId: (remoteDeviceId != null && remoteDeviceId > 0) ? remoteDeviceId : 1,
       );
 
-      // print("[WebSocketService] ✅ Session reset complete - will fetch fresh PreKeys on next send");
+      // Invalidate active device ID cache to force fresh lookup on next send
+      DeviceService.invalidateActiveDeviceIdCache(remoteUid);
+      if (remoteDeviceId != null && remoteDeviceId > 0) {
+        DeviceService.cacheActiveDeviceId(remoteUid, remoteDeviceId);
+      }
+
+      // Notify UI (e.g. ChatScreen) so it can clear in-memory caches and re-establish session
+      _streamController.add({
+        'type': 'session_reset_completed',
+        'remote_uid': remoteUid,
+        'remote_device_id': remoteDeviceId,
+      });
+
+      debugPrint("[WebSocketService] ✅ Session reset complete for $remoteUid - will fetch fresh PreKeys on next send");
     } catch (e) {
-      // print("[WebSocketService] ❌ Error handling session reset: $e");
+      debugPrint("[WebSocketService] ❌ Error handling session reset: $e");
     }
   }
 
@@ -1710,41 +1776,86 @@ class WebSocketService with ChangeNotifier {
           result == ConnectivityResult.ethernet,
     );
 
-    // print("[WebSocketService] 📡 Connectivity changed: $results (hasConnection: $hasConnection)");
-
     if (!hasConnection) {
-      // Lost network connection
-      // print("[WebSocketService] ⚠️ Network connection lost");
+      // Lost network connection - immediately teardown dead socket
+      debugPrint("[WebSocketService] [CONNECTIVITY] ⚠️ Network connection lost (results: $results) - tearing down dead socket");
       _wasDisconnectedDueToNetwork = true;
-
-      // If currently connected, the connection will naturally fail and trigger _handleDisconnection
-      // No need to manually disconnect here
-    } else if (_wasDisconnectedDueToNetwork && !_isConnected) {
-      // Network came back and we were previously disconnected due to network
-      // print("[WebSocketService] ✅ Network connection restored - triggering immediate reconnection");
+      _stopHeartbeat();
+      _stopQueueProcessor();
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      try {
+        _channel?.sink.close();
+      } catch (_) {}
+      _channel = null;
+      _streamSubscription?.cancel();
+      _streamSubscription = null;
+      if (_isConnected) {
+        _isConnected = false;
+        notifyListeners();
+      }
+    } else {
+      // Network came back!
+      debugPrint("[WebSocketService] [CONNECTIVITY] ✅ Network restored (results: $results) - preparing immediate reconnection");
       _wasDisconnectedDueToNetwork = false;
-
-      // Reset reconnect attempts for fresh start
       _reconnectAttempts = 0;
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
 
-      // Get fresh token and reconnect immediately
+      // Allow 600ms for OS network routing, DHCP, and DNS resolution to stabilize
+      await Future.delayed(const Duration(milliseconds: 600));
+
       try {
         final user = FirebaseAuth.instance.currentUser;
         if (user != null) {
+          debugPrint("[WebSocketService] [CONNECTIVITY] 🔄 Reconnecting WebSocket after network restored...");
           final freshToken = await user.getIdToken(true);
-          // print("[WebSocketService] 🔄 Reconnecting with fresh token after network restoration");
           await connect(freshToken);
+          debugPrint("[WebSocketService] [CONNECTIVITY] ✅ Reconnected successfully after network restoration");
+        } else {
+          debugPrint("[WebSocketService] [CONNECTIVITY] ℹ️ Network restored but currentUser is null");
         }
       } catch (e) {
-        // print("[WebSocketService] ❌ Failed to reconnect after network restoration: $e");
+        debugPrint("[WebSocketService] [CONNECTIVITY] ❌ Immediate reconnection failed: $e - scheduling retry timer");
+        _scheduleReconnect();
       }
     }
   }
 
-  void _handleDisconnection() {
-    if (!_isConnected && !_isReconnecting) return;
+  void _scheduleReconnect() {
+    if (_reconnectTimer != null && _reconnectTimer!.isActive) return;
 
-    // print("[WebSocketService] ⚠️ DISCONNECTION DETECTED ⚠️");
+    if (_reconnectAttempts < _maxReconnectAttempts) {
+      _reconnectAttempts++;
+      final delays = [1, 2, 5, 10, 30];
+      final delaySec = delays.length >= _reconnectAttempts
+          ? delays[_reconnectAttempts - 1]
+          : 30;
+
+      debugPrint("[WebSocketService] [RECONNECT] ⏱️ Scheduling reconnect attempt $_reconnectAttempts/$_maxReconnectAttempts in ${delaySec}s");
+
+      _reconnectTimer = Timer(Duration(seconds: delaySec), () async {
+        try {
+          final user = FirebaseAuth.instance.currentUser;
+          if (user != null) {
+            debugPrint("[WebSocketService] [RECONNECT] 🔄 Executing scheduled reconnect attempt $_reconnectAttempts...");
+            final freshToken = await user.getIdToken(true);
+            await connect(freshToken);
+            debugPrint("[WebSocketService] [RECONNECT] ✅ Scheduled reconnect attempt $_reconnectAttempts succeeded");
+          }
+        } catch (e) {
+          debugPrint("[WebSocketService] [RECONNECT] ❌ Scheduled reconnect attempt $_reconnectAttempts failed: $e");
+          _scheduleReconnect();
+        }
+      });
+    } else {
+      debugPrint("[WebSocketService] [RECONNECT] ⚠️ Max reconnection attempts reached");
+    }
+  }
+
+  void _handleDisconnection() {
+    debugPrint("[WebSocketService] ⚠️ Disconnection detected (isConnected=$_isConnected, isReconnecting=$_isReconnecting)");
+    final wasConnected = _isConnected;
     _isConnected = false;
     _isReconnecting = false;
 
@@ -1752,54 +1863,37 @@ class WebSocketService with ChangeNotifier {
     _stopHeartbeat();
     _stopQueueProcessor();
 
-    _reconnectTimer?.cancel();
-    _reconnectTimer = null;
+    if (wasConnected) {
+      notifyListeners();
+    }
 
-    notifyListeners();
+    _scheduleReconnect();
+  }
 
-    if (_lastToken != null && _reconnectAttempts < _maxReconnectAttempts) {
-      _reconnectAttempts++;
-      final delays = [1, 2, 5, 10, 30];
-      final delaySec = delays.length >= _reconnectAttempts
-          ? delays[_reconnectAttempts - 1]
-          : 30;
-
-      // print("[WebSocketService] Attempting reconnect in ${delaySec}s (attempt $_reconnectAttempts/$_maxReconnectAttempts)");
-
-      _reconnectTimer = Timer(Duration(seconds: delaySec), () async {
-        try {
-          // Refresh token before reconnecting (in case old token expired)
-          final user = FirebaseAuth.instance.currentUser;
-          if (user != null) {
-            final freshToken = await user.getIdToken(true); // Force refresh
-            // print("[WebSocketService] Got fresh token for reconnection");
-            await connect(freshToken);
-          } else {
-            // print("[WebSocketService] No user logged in, cannot reconnect");
-          }
-        } catch (e) {
-          // print("[WebSocketService] Reconnection attempt failed: $e");
-        }
-      });
-    } else if (_reconnectAttempts >= _maxReconnectAttempts) {
-      // print("[WebSocketService] Max reconnection attempts reached. Manual intervention required.");
+  /// Ensures WebSocket is connected and functional (called on app resume or network return)
+  Future<void> ensureConnected() async {
+    if (!_isConnected || _channel == null) {
+      await reconnect();
+    } else {
+      _sendPing();
     }
   }
 
   Future<void> reconnect() async {
     _reconnectAttempts = 0;
     try {
-      // Refresh token before manual reconnect
       final user = FirebaseAuth.instance.currentUser;
       if (user != null) {
-        final freshToken = await user.getIdToken(true); // Force refresh
-        // print("[WebSocketService] Manual reconnect with fresh token");
+        debugPrint("[WebSocketService] [RECONNECT] 🔄 Manual reconnect with fresh token...");
+        final freshToken = await user.getIdToken(true);
         await connect(freshToken);
+        debugPrint("[WebSocketService] [RECONNECT] ✅ Manual reconnect succeeded");
       } else {
-        // print("[WebSocketService] No user logged in for manual reconnect");
+        debugPrint("[WebSocketService] [RECONNECT] ⚠️ No user logged in for manual reconnect");
       }
     } catch (e) {
-      // print("[WebSocketService] Manual reconnect failed: $e");
+      debugPrint("[WebSocketService] [RECONNECT] ❌ Manual reconnect failed: $e");
+      _scheduleReconnect();
     }
   }
 

@@ -178,10 +178,28 @@ class ZarqNotificationService : FirebaseMessagingService() {
                         )
                     }
 
+                    // If group message decryption failed (e.g. freshly reinstalled app, missing sender key)
+                    if (decryptedPlaintext == null && isGroup) {
+                        Log.d(TAG, "Group message decryption returned null for group $conversationId. Attempting to fetch sender keys from backend...")
+                        val fetched = fetchAndProcessGroupSenderKeys(conversationId.toString(), signalManager)
+                        if (fetched) {
+                            Log.d(TAG, "Fetched sender keys from backend. Retrying group decryption...")
+                            decryptedPlaintext = signalManager.decryptGroupMessage(
+                                groupId = conversationId.toString(),
+                                senderUid = senderUid,
+                                senderDeviceId = senderDeviceId,
+                                ciphertextB64 = contentB64
+                            )
+                            if (decryptedPlaintext != null) {
+                                Log.d(TAG, "Successfully decrypted group message after fetching sender keys!")
+                            }
+                        }
+                    }
+
                     if (decryptedPlaintext == SignalManager.DUPLICATE_MESSAGE_MARKER) {
                         Log.d(TAG, "Message $messageId already decrypted previously")
                         decryptedPlaintext = null
-                    } else {
+                    } else if (decryptedPlaintext != null) {
                         Log.d(TAG, "Successfully decrypted message in notification service")
                     }
                 }
@@ -477,6 +495,62 @@ class ZarqNotificationService : FirebaseMessagingService() {
         notificationManager.notify(CALL_NOTIFICATION_ID, notification)
 
         Log.d(TAG, "Incoming call notification displayed for $callerName")
+    }
+
+    /**
+     * Fetch and process missing sender keys from backend for group message decryption in background
+     */
+    private fun fetchAndProcessGroupSenderKeys(groupId: String, signalManager: SignalManager): Boolean {
+        return try {
+            val user = FirebaseAuth.getInstance().currentUser ?: return false
+            val tokenTask = user.getIdToken(false)
+            val tokenResult = com.google.android.gms.tasks.Tasks.await(tokenTask)
+            val token = tokenResult.token ?: return false
+
+            val targetUrl = "${AppConfig.BASE_URL}/groups/$groupId/sender-keys"
+            Log.d(TAG, "Fetching sender keys for group $groupId from $targetUrl")
+            val connection = (URL(targetUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                setRequestProperty("Authorization", "Bearer $token")
+                connectTimeout = 7000
+                readTimeout = 7000
+            }
+
+            val responseCode = connection.responseCode
+            if (responseCode in 200..299) {
+                val responseBody = connection.inputStream.bufferedReader().readText()
+                connection.disconnect()
+
+                val jsonArray = org.json.JSONArray(responseBody)
+                var count = 0
+                for (i in 0 until jsonArray.length()) {
+                    val item = jsonArray.getJSONObject(i)
+                    val sUid = item.optString("sender_uid")
+                    val devId = item.optInt("device_id", 1)
+                    val distribution = item.optString("sender_key_distribution")
+
+                    if (sUid.isNotEmpty() && sUid != user.uid && distribution.isNotEmpty()) {
+                        val success = signalManager.processSenderKeyDistribution(
+                            senderUid = sUid,
+                            senderDeviceId = devId,
+                            groupId = groupId,
+                            distributionMessageB64 = distribution
+                        )
+                        if (success) count++
+                    }
+                }
+                Log.d(TAG, "Processed $count group sender keys from backend for group $groupId")
+                count > 0
+            } else {
+                val errorBody = connection.errorStream?.bufferedReader()?.readText() ?: "(no body)"
+                Log.w(TAG, "Failed to fetch sender keys: HTTP $responseCode - $errorBody")
+                connection.disconnect()
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching sender keys for group $groupId: ${e.message}", e)
+            false
+        }
     }
 
 }

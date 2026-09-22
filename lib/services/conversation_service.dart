@@ -14,83 +14,103 @@ class ConversationService {
   // Fetches the list of conversations for the currently logged-in user.
   Future<List<ConversationInfo>> fetchConversations() async {
     final dbService = DatabaseService.instance;
-    if (Firebase.apps.isEmpty) {
-      await AppStorage.firebaseInitFuture;
-    }
-    final user = FirebaseAuth.instance.currentUser;
+    await dbService.init();
 
+    if (Firebase.apps.isEmpty) {
+      try {
+        await AppStorage.firebaseInitFuture;
+      } catch (_) {}
+    }
+    var user = FirebaseAuth.instance.currentUser;
     if (user == null) {
+      try {
+        user = await FirebaseAuth.instance
+            .authStateChanges()
+            .firstWhere((u) => u != null)
+            .timeout(const Duration(milliseconds: 1500));
+      } catch (_) {}
+    }
+
+    final uid = user?.uid ?? AppStorage.cachedUid;
+    if (uid == null) {
       return [];
     }
 
-    try {
-      final token = await user.getIdToken();
-      final url = Uri.parse('$_baseUrl/conversations');
+    if (user != null) {
+      try {
+        final token = await user.getIdToken();
+        final url = Uri.parse('$_baseUrl/conversations');
 
-      final response = await http
-          .get(
-            url,
-            headers: {
-              'Authorization': 'Bearer $token',
-              'Content-Type': 'application/json',
-            },
-          )
-          .timeout(
-            const Duration(seconds: 10),
-          ); // Add timeout for faster offline detection
-
-      if (response.statusCode == 200) {
-        final List<dynamic> convosFromServer = json.decode(response.body);
-
-        // Parse conversations first
-        final baseConversations = convosFromServer
-            .map((data) => ConversationInfo.fromJson(data))
-            .toList();
-
-        // Add unread status, count, and last message to each (in parallel)
-        final conversationsWithMetadata = await Future.wait(
-          baseConversations.map((convo) async {
-            final unreadFuture = dbService.getUnreadMessageCount(
-              convo.conversationId,
-              user.uid,
+        final response = await http
+            .get(
+              url,
+              headers: {
+                'Authorization': 'Bearer $token',
+                'Content-Type': 'application/json',
+              },
+            )
+            .timeout(
+              const Duration(seconds: 10),
             );
-            final lastMsgFuture = dbService.getLastMessage(convo.conversationId);
-            final unreadCount = await unreadFuture;
-            final lastMsg = await lastMsgFuture;
 
-            return ConversationInfo(
-              conversationId: convo.conversationId,
-              chatTitle: convo.chatTitle,
-              isGroup: convo.isGroup,
-              creatorUid: convo.creatorUid,
-              avatarUrl: convo.avatarUrl,
-              partnerUid: convo.partnerUid,
-              isFriend: convo.isFriend,
-              hasUnreadMessages: unreadCount > 0,
-              unreadCount: unreadCount,
-              lastMessageTimestamp: lastMsg?.timestamp,
-              lastMessage: lastMsg?.content,
-            );
-          }),
-        );
+        if (response.statusCode == 200) {
+          final List<dynamic> convosFromServer = json.decode(response.body);
 
-        // Sort by last message timestamp (newest first)
-        conversationsWithMetadata.sort((a, b) {
-          if (a.lastMessageTimestamp == null && b.lastMessageTimestamp == null)
-            return 0;
-          if (a.lastMessageTimestamp == null) return 1;
-          if (b.lastMessageTimestamp == null) return -1;
-          return b.lastMessageTimestamp!.compareTo(a.lastMessageTimestamp!);
-        });
+          // Parse conversations first
+          final baseConversations = convosFromServer
+              .map((data) => ConversationInfo.fromJson(data))
+              .toList();
 
-        return conversationsWithMetadata;
-      } else {
-        throw Exception('Failed to load conversations: ${response.body}');
+          // Add unread status, count, and last message to each (in parallel)
+          final conversationsWithMetadata = await Future.wait(
+            baseConversations.map((convo) async {
+              final unreadFuture = dbService.getUnreadMessageCount(
+                convo.conversationId,
+                uid,
+              );
+              final lastMsgFuture = dbService.getLastMessage(convo.conversationId);
+              final unreadCount = await unreadFuture;
+              final lastMsg = await lastMsgFuture;
+
+              return ConversationInfo(
+                conversationId: convo.conversationId,
+                chatTitle: convo.chatTitle,
+                isGroup: convo.isGroup,
+                creatorUid: convo.creatorUid,
+                avatarUrl: convo.avatarUrl,
+                partnerUid: convo.partnerUid,
+                isFriend: convo.isFriend,
+                hasUnreadMessages: unreadCount > 0,
+                unreadCount: unreadCount,
+                lastMessageTimestamp: lastMsg?.timestamp,
+                lastMessage: lastMsg?.content,
+              );
+            }),
+          );
+
+          // Sort by last message timestamp (newest first)
+          conversationsWithMetadata.sort((a, b) {
+            if (a.lastMessageTimestamp == null && b.lastMessageTimestamp == null)
+              return 0;
+            if (a.lastMessageTimestamp == null) return 1;
+            if (b.lastMessageTimestamp == null) return -1;
+            return b.lastMessageTimestamp!.compareTo(a.lastMessageTimestamp!);
+          });
+
+          return conversationsWithMetadata;
+        } else {
+          print('[ConversationService] ⚠️ Failed to load conversations (${response.statusCode}) - Using offline mode');
+          return await _buildConversationsFromLocalDatabase();
+        }
+      } on FirebaseAuthException catch (e) {
+        print('[ConversationService] ⚠️ Auth exception: $e - Using offline mode');
+        return await _buildConversationsFromLocalDatabase();
+      } catch (e) {
+        print('[ConversationService] ⚠️ API failed: $e - Using offline mode');
+        return await _buildConversationsFromLocalDatabase();
       }
-    } on FirebaseAuthException catch (e) {
-      throw Exception('Authentication error: ${e.message}');
-    } catch (e) {
-      print('[ConversationService] ⚠️ API failed: $e - Using offline mode');
+    } else {
+      print('[ConversationService] ⚠️ No active Firebase session yet - using local database');
       return await _buildConversationsFromLocalDatabase();
     }
   }
@@ -98,8 +118,10 @@ class ConversationService {
   Future<List<ConversationInfo>> _buildConversationsFromLocalDatabase() async {
     try {
       final dbService = DatabaseService.instance;
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return [];
+      await dbService.init();
+
+      final uid = FirebaseAuth.instance.currentUser?.uid ?? AppStorage.cachedUid;
+      if (uid == null) return [];
 
       final db = dbService.database;
       final result = await db.rawQuery(
@@ -109,7 +131,7 @@ class ConversationService {
         LEFT JOIN deleted_messages dm ON m.id = dm.message_id AND dm.user_uid = ?
         WHERE dm.message_id IS NULL
       ''',
-        [user.uid],
+        [uid],
       );
 
       final conversations = <ConversationInfo>[];
@@ -118,7 +140,7 @@ class ConversationService {
         final conversationId = row['conversationId'] as int;
         final unreadCount = await dbService.getUnreadMessageCount(
           conversationId,
-          user.uid,
+          uid,
         );
         final lastMsg = await dbService.getLastMessage(conversationId);
         final allMessages = await dbService.getMessages(
@@ -131,7 +153,7 @@ class ConversationService {
           String? partnerUid;
 
           for (final message in allMessages) {
-            if (message.senderUid != user.uid && message.senderUid != null) {
+            if (message.senderUid != uid && message.senderUid != null) {
               chatTitle = message.username;
               partnerUid = message.senderUid;
               break;
