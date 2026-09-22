@@ -135,7 +135,7 @@ class ZarqNotificationService : FirebaseMessagingService() {
         val contentB64 = remoteMessage.data["content_b64"]
         val senderDeviceId = remoteMessage.data["sender_device_id"]?.toIntOrNull() ?: 1
         val isGroup = remoteMessage.data["is_group"]?.toBoolean() ?: false
-        val messageType = remoteMessage.data["message_type"] ?: "chat"
+        val messageType = remoteMessage.data["msg_type"] ?: "chat"
 
         // Check if conversation is muted
         val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)

@@ -225,14 +225,22 @@ class SignalQuickReplyService : IntentService("SignalQuickReplyService") {
      * Get Firebase Auth token (same logic as NotificationActionReceiver)
      */
     private suspend fun getFirebaseAuthToken(): String? {
-        return try {
-            withContext(Dispatchers.Main) {
-                val user = FirebaseAuth.getInstance().currentUser
-                user?.getIdToken(false)?.await()?.token
+        return withContext(Dispatchers.IO) {
+            try {
+                val user = FirebaseAuth.getInstance().currentUser ?: return@withContext null
+                val result = user.getIdToken(false).await()
+                result.token
+            } catch (e: Exception) {
+                // If cached token failed, try forced refresh
+                try {
+                    val user = FirebaseAuth.getInstance().currentUser ?: return@withContext null
+                    val result = user.getIdToken(true).await()
+                    result.token
+                } catch (e2: Exception) {
+                    Log.e(TAG, "Failed to get auth token after refresh: ${e2.message}", e2)
+                    null
+                }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to get auth token: ${e.message}")
-            null
         }
     }
 
