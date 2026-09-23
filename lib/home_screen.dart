@@ -188,9 +188,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   StreamSubscription? _websocketSubscription;
   final ContactMatchService _contacts = ContactMatchService.instance;
-  Timer? _contactSearchDebounce;
   List<ConversationInfo> _dynamicContactRows = [];
-  int _contactSearchGen = 0;
 
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -213,10 +211,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         homeProvider.fetchInitialConversations();
       }
 
-      // Home: load cache, then rematch sample phones now that user is authenticated.
+      // Home: load cache, rematch sample phones, and ensure full contacts synced.
       unawaited(() async {
         await _contacts.loadCachedMatches();
         await _contacts.rematchCachedAfterAuth();
+        if (_contacts.indexedContacts.length <= 12) {
+          await _contacts.syncContacts();
+        }
       }());
 
       final websocketService = Provider.of<WebSocketService>(
@@ -263,7 +264,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _contacts.removeListener(_onContactsChanged);
     _websocketSubscription?.cancel();
-    _contactSearchDebounce?.cancel();
     _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
     _searchFocusNode.dispose();
@@ -282,67 +282,60 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           _dynamicContactRows = [];
         });
       }
-      _contactSearchDebounce?.cancel();
       return;
     }
 
-    _contactSearchDebounce?.cancel();
-    _contactSearchDebounce = Timer(const Duration(milliseconds: 50), () {
-      if (!mounted) return;
-      final hits = _contacts.searchContacts(query);
-      final preferLocal =
-          context.read<UserSettingsProvider>().preferLocalContactNames;
-      var id = -20000;
-      final rows = <ConversationInfo>[];
-      for (final hit in hits) {
-        if (hit.isOnOpaque) {
-          final m = hit.opaque!;
-          final title = ContactMatchService.resolveName(
-            preferLocal: preferLocal,
-            localName: m.localName ?? hit.localName,
-            displayName: m.displayName,
+    final hits = _contacts.searchContacts(query);
+    final preferLocal =
+        context.read<UserSettingsProvider>().preferLocalContactNames;
+    var id = -20000;
+    final rows = <ConversationInfo>[];
+    for (final hit in hits) {
+      if (hit.isOnOpaque) {
+        final m = hit.opaque!;
+        final title = ContactMatchService.resolveName(
+          preferLocal: preferLocal,
+          localName: m.localName ?? hit.localName,
+          displayName: m.displayName,
+          username: m.username,
+        );
+        rows.add(
+          ConversationInfo(
+            conversationId: id--,
+            chatTitle: title,
+            isGroup: false,
+            avatarUrl: m.avatarUrl,
+            partnerUid: m.uid,
+            isContactSuggestion: true,
             username: m.username,
-          );
-          rows.add(
-            ConversationInfo(
-              conversationId: id--,
-              chatTitle: title,
-              isGroup: false,
-              avatarUrl: m.avatarUrl,
-              partnerUid: m.uid,
-              isContactSuggestion: true,
-              username: m.username,
-              localContactName: m.localName ?? hit.localName,
-              appDisplayName: m.displayName,
-              phoneNumber: m.phoneNumber ?? hit.phoneNumber,
-              lastMessage: m.displayName != null &&
-                      m.displayName!.isNotEmpty &&
-                      m.displayName != title
-                  ? m.displayName
-                  : '@${m.username}',
-            ),
-          );
-        } else {
-          rows.add(
-            ConversationInfo(
-              conversationId: id--,
-              chatTitle: hit.localName,
-              isGroup: false,
-              isInviteSuggestion: true,
-              localContactName: hit.localName,
-              phoneNumber: hit.phoneNumber,
-              lastMessage: hit.phoneNumber,
-            ),
-          );
-        }
+            localContactName: m.localName ?? hit.localName,
+            appDisplayName: m.displayName,
+            phoneNumber: m.phoneNumber ?? hit.phoneNumber,
+            lastMessage: m.displayName != null &&
+                    m.displayName!.isNotEmpty &&
+                    m.displayName != title
+                ? m.displayName
+                : '@${m.username}',
+          ),
+        );
+      } else {
+        rows.add(
+          ConversationInfo(
+            conversationId: id--,
+            chatTitle: hit.localName,
+            isGroup: false,
+            isInviteSuggestion: true,
+            localContactName: hit.localName,
+            phoneNumber: hit.phoneNumber,
+            lastMessage: hit.phoneNumber,
+          ),
+        );
       }
-      if (mounted) {
-        setState(() {
-          _isSearching = true;
-          _addMenuOpen = false;
-          _dynamicContactRows = rows;
-        });
-      }
+    }
+    setState(() {
+      _isSearching = true;
+      _addMenuOpen = false;
+      _dynamicContactRows = rows;
     });
   }
 
@@ -854,9 +847,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             isTyping: c.isTyping,
             isOnline: c.isOnline,
             username: c.username,
-            localContactName: c.localContactName,
+            localContactName: c.localContactName ??
+                _contacts.matchForUid(c.partnerUid)?.localName ??
+                (c.username != null
+                    ? _contacts.matchForUsername(c.username!)?.localName
+                    : null),
             appDisplayName: c.appDisplayName ?? c.chatTitle,
-            phoneNumber: c.phoneNumber,
+            phoneNumber: c.phoneNumber ??
+                _contacts.matchForUid(c.partnerUid)?.phoneNumber ??
+                (c.username != null
+                    ? _contacts.matchForUsername(c.username!)?.phoneNumber
+                    : null),
           ),
     ];
 
@@ -918,6 +919,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (response.statusCode == 200 || response.statusCode == 201) {
         final data = json.decode(response.body) as Map<String, dynamic>;
         final conversationId = (data['conversationId'] as num).toInt();
+        String? partnerUid = (data['partnerUid'] ?? data['partner_uid'] ?? data['targetUid']) as String? ?? convo.partnerUid;
+
+        if (partnerUid == null || partnerUid.isEmpty) {
+          partnerUid = _contacts.matchForUsername(username)?.uid;
+        }
+
+        // If partnerUid is still null, resolve it from the user profile endpoint
+        if (partnerUid == null || partnerUid.isEmpty) {
+          try {
+            final profileRes = await http.get(
+              Uri.parse('${AppConfig.baseUrl}/profiles/user?username=${Uri.encodeComponent(username)}'),
+              headers: {'Authorization': 'Bearer $token'},
+            );
+            if (profileRes.statusCode == 200) {
+              final profileData = json.decode(profileRes.body) as Map<String, dynamic>;
+              partnerUid = (profileData['uid'] ?? profileData['firebase_uid']) as String?;
+            }
+          } catch (_) {}
+        }
+
         final homeProvider = context.read<HomeProvider>();
         unawaited(homeProvider.fetchInitialConversations());
 
@@ -926,7 +947,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           chatTitle: convo.chatTitle,
           isGroup: false,
           avatarUrl: convo.avatarUrl,
-          partnerUid: convo.partnerUid,
+          partnerUid: partnerUid,
           username: username,
           localContactName: convo.localContactName,
           appDisplayName: convo.appDisplayName,
@@ -1324,6 +1345,56 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     )),
   );
 
+  int _scoreSearchResult(ConversationInfo convo, String query, String queryDigits) {
+    int score = 0;
+    final title = convo.chatTitle.toLowerCase();
+    final local = (convo.localContactName ?? '').toLowerCase();
+    final username = (convo.username ?? '').toLowerCase();
+    final display = (convo.appDisplayName ?? '').toLowerCase();
+    final phoneDigits =
+        (convo.phoneNumber ?? '').replaceAll(RegExp(r'[^0-9]'), '');
+
+    // 1. Exact matches (Highest priority: 100 pts)
+    if (title == query || local == query || username == query || display == query) {
+      score += 100;
+    } else if (queryDigits.isNotEmpty && phoneDigits == queryDigits) {
+      score += 100;
+    }
+    // 2. Prefix matches (High priority: 60 pts)
+    else if (title.startsWith(query) || local.startsWith(query) || username.startsWith(query) || display.startsWith(query)) {
+      score += 60;
+    } else if (queryDigits.length >= 3 && phoneDigits.startsWith(queryDigits)) {
+      score += 60;
+    }
+    // 3. Word-start matches (40 pts)
+    else if (title.split(' ').any((w) => w.startsWith(query)) || local.split(' ').any((w) => w.startsWith(query))) {
+      score += 40;
+    }
+    // 4. Substring contains matches (20 pts)
+    else if (title.contains(query) || local.contains(query) || username.contains(query) || display.contains(query)) {
+      score += 20;
+    } else if (queryDigits.length >= 3 && phoneDigits.contains(queryDigits)) {
+      score += 20;
+    }
+
+    // Bonus: Active chats and Opaque contacts rank above raw external "Invite" contacts
+    if (!convo.isInviteSuggestion) {
+      score += 25;
+    }
+
+    // Bonus: Real chats with existing messages
+    if (!convo.isContactSuggestion && !convo.isInviteSuggestion) {
+      score += 10;
+    }
+
+    // Bonus: Pinned chats
+    if (_pinnedChats.contains('${convo.conversationId}')) {
+      score += 5;
+    }
+
+    return score;
+  }
+
   Widget _buildConversationList(
     List<ConversationInfo> conversations,
     HomeState homeState,
@@ -1402,21 +1473,36 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           (queryDigits.isNotEmpty && phoneDigits.contains(queryDigits));
     }).toList();
 
-    visible.sort((a, b) {
-      // Real chats with activity stay above contact/invite rows automatically.
-      return compareHomeChats(
-        aId: a.conversationId,
-        bId: b.conversationId,
-        aTime: a.lastMessageTimestamp,
-        bTime: b.lastMessageTimestamp,
-        aPinned: !a.isContactSuggestion &&
-            !a.isInviteSuggestion &&
-            _pinnedChats.contains('${a.conversationId}'),
-        bPinned: !b.isContactSuggestion &&
-            !b.isInviteSuggestion &&
-            _pinnedChats.contains('${b.conversationId}'),
-      );
-    });
+    if (query.isEmpty) {
+      visible.sort((a, b) {
+        return compareHomeChats(
+          aId: a.conversationId,
+          bId: b.conversationId,
+          aTime: a.lastMessageTimestamp,
+          bTime: b.lastMessageTimestamp,
+          aPinned: !a.isContactSuggestion &&
+              !a.isInviteSuggestion &&
+              _pinnedChats.contains('${a.conversationId}'),
+          bPinned: !b.isContactSuggestion &&
+              !b.isInviteSuggestion &&
+              _pinnedChats.contains('${b.conversationId}'),
+        );
+      });
+    } else {
+      visible.sort((a, b) {
+        final scoreA = _scoreSearchResult(a, query, queryDigits);
+        final scoreB = _scoreSearchResult(b, query, queryDigits);
+        if (scoreA != scoreB) {
+          return scoreB.compareTo(scoreA);
+        }
+        final timeA = a.lastMessageTimestamp?.millisecondsSinceEpoch ?? 0;
+        final timeB = b.lastMessageTimestamp?.millisecondsSinceEpoch ?? 0;
+        if (timeA != timeB) {
+          return timeB.compareTo(timeA);
+        }
+        return a.chatTitle.toLowerCase().compareTo(b.chatTitle.toLowerCase());
+      });
+    }
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
       onTap: () {
@@ -1587,8 +1673,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
               if (convo.isInviteSuggestion)
                 Text('Invite', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600, color: const Color(0xFF507FC3)))
-              else if (convo.isContactSuggestion)
-                Text('Message', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w500, color: textGreyColor))
               else ...[
                 if (_pinnedChats.contains('${convo.conversationId}')) Padding(
                   padding: const EdgeInsets.only(bottom: 5), child: Icon(Icons.push_pin_rounded, size: 12, color: textGreyColor)),

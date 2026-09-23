@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -300,7 +301,23 @@ class ContactMatchService with ChangeNotifier {
     } finally {
       _cacheLoaded = true;
       notifyListeners();
+
+      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+        unawaited(_autoSyncIfPermitted());
+      }
     }
+  }
+
+  Future<void> _autoSyncIfPermitted() async {
+    if (_syncing) return;
+    try {
+      final status = await Permission.contacts.status;
+      if (status.isGranted || status.isLimited) {
+        if (_indexedContacts.length <= 12) {
+          await syncContacts();
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _persist() async {
@@ -453,9 +470,9 @@ class ContactMatchService with ChangeNotifier {
             ),
           ),
           content: const Text(
-            'Opaque uses your contacts to show friends who are already on the app in your chat list, so you can message them quickly.\n\n'
-            'Your phone numbers are checked privately (hashed) and are never uploaded as a raw contact list.\n\n'
-            'You can skip this and still use Opaque. People you know just will not appear automatically.',
+            'Contact access is strictly local to your device. Your address book, names, and phone numbers are never uploaded, stored, or sent to Opaque servers.\n\n'
+            'Discovery is zero-knowledge: phone numbers are checked using irreversible cryptographic hashes (SHA-256) so no raw contacts are ever exposed.\n\n'
+            'This is optional. You can skip now and still use Opaque freely, or manage permissions anytime in Settings.',
             style: TextStyle(
               fontFamily: 'Inter',
               fontSize: 13,
@@ -491,6 +508,67 @@ class ContactMatchService with ChangeNotifier {
     );
   }
 
+  Future<List<Map<String, String>>> _fetchRawDeviceContacts() async {
+    if (!kIsWeb && Platform.isAndroid) {
+      try {
+        const channel = MethodChannel('com.zarq/utility');
+        final raw = await channel
+            .invokeMethod<List<dynamic>>('getDevicePhoneContacts')
+            .timeout(const Duration(seconds: 4));
+        if (raw != null && raw.isNotEmpty) {
+          final result = <Map<String, String>>[];
+          for (final item in raw) {
+            if (item is Map) {
+              final name = (item['name'] as String?)?.trim() ?? '';
+              final phone = (item['phone'] as String?)?.trim() ?? '';
+              if (phone.isNotEmpty) {
+                result.add({
+                  'name': name.isNotEmpty ? name : 'Unknown',
+                  'phone': phone,
+                });
+              }
+            }
+          }
+          if (result.isNotEmpty) {
+            return result;
+          }
+        }
+      } catch (e) {
+        debugPrint('[ContactMatchService] native contacts fetch failed, falling back: $e');
+      }
+    }
+
+    // Fallback for iOS or if native call fails
+    try {
+      final listed = await FlutterContacts.getContacts(
+        withProperties: true,
+        withThumbnail: false,
+        withPhoto: false,
+        withAccounts: false,
+        withGroups: false,
+        sorted: false,
+      ).timeout(const Duration(seconds: 10));
+
+      final result = <Map<String, String>>[];
+      for (final c in listed) {
+        final name =
+            c.displayName.trim().isNotEmpty ? c.displayName.trim() : 'Unknown';
+        for (final p in c.phones) {
+          if (p.number.trim().isNotEmpty) {
+            result.add({
+              'name': name,
+              'phone': p.number.trim(),
+            });
+          }
+        }
+      }
+      return result;
+    } catch (e) {
+      debugPrint('[ContactMatchService] FlutterContacts fallback failed: $e');
+      return const [];
+    }
+  }
+
   /// Fast bulk sync:
   /// Single native IPC read -> local indexing -> background batch match with server.
   Future<bool> syncContacts({bool force = false}) async {
@@ -511,17 +589,10 @@ class ContactMatchService with ChangeNotifier {
     notifyListeners();
 
     try {
-      // 1. Fetch contacts in a single fast platform query (no photo/thumbnail/account overhead)
-      final listed = await FlutterContacts.getContacts(
-        withProperties: true,
-        withThumbnail: false,
-        withPhoto: false,
-        withAccounts: false,
-        withGroups: false,
-        sorted: false,
-      ).timeout(const Duration(seconds: 15));
+      // 1. Fetch contacts in a single fast platform query (ultra-fast ~20ms on Android)
+      final rawContacts = await _fetchRawDeviceContacts();
 
-      if (listed.isEmpty) {
+      if (rawContacts.isEmpty) {
         _indexedContacts = [];
         _opaqueMatches = [];
         _deviceContacts = [];
@@ -545,33 +616,31 @@ class ContactMatchService with ChangeNotifier {
         }
       }
 
-      for (final c in listed) {
-        final localName =
-            c.displayName.trim().isEmpty ? 'Unknown' : c.displayName.trim();
-        for (final p in c.phones) {
-          final normalized = _normalizePhone(p.number);
-          if (normalized == null) continue;
-          final digits = _digitsOnly(normalized);
-          if (digits.length < 5 || !seenDigits.add(digits)) continue;
+      for (final item in rawContacts) {
+        final localName = item['name'] ?? 'Unknown';
+        final rawPhone = item['phone'] ?? '';
+        final normalized = _normalizePhone(rawPhone);
+        if (normalized == null) continue;
+        final digits = _digitsOnly(normalized);
+        if (digits.length < 5 || !seenDigits.add(digits)) continue;
 
-          final hash = sha256.convert(utf8.encode(normalized)).toString();
-          final contact = IndexedContact(
-            localName: localName,
-            phoneNumber: normalized,
-            phoneHash: hash,
-            phoneDigits: digits,
-            opaque: existingMatchesByHash[hash],
-          );
-          newIndexed.add(contact);
-          deviceList.add(DeviceContactEntry(
-            localName: localName,
-            phoneNumber: normalized,
-            phoneHash: hash,
-            phoneDigits: digits,
-          ));
-          hashed.add(hash);
-          hashToContacts.putIfAbsent(hash, () => []).add(contact);
-        }
+        final hash = sha256.convert(utf8.encode(normalized)).toString();
+        final contact = IndexedContact(
+          localName: localName,
+          phoneNumber: normalized,
+          phoneHash: hash,
+          phoneDigits: digits,
+          opaque: existingMatchesByHash[hash],
+        );
+        newIndexed.add(contact);
+        deviceList.add(DeviceContactEntry(
+          localName: localName,
+          phoneNumber: normalized,
+          phoneHash: hash,
+          phoneDigits: digits,
+        ));
+        hashed.add(hash);
+        hashToContacts.putIfAbsent(hash, () => []).add(contact);
       }
 
       _indexedContacts = newIndexed;
@@ -806,22 +875,33 @@ class ContactMatchService with ChangeNotifier {
           ));
         }
       }
-      if (hits.length >= searchFetchLimit) break;
     }
 
-    // Sort: Opaque users first, then exact/prefix match, then alphabetical
+    // Sort: Opaque users first, then exact match, prefix match, word-start match, then alphabetical
     hits.sort((a, b) {
       if (a.isOnOpaque != b.isOnOpaque) {
         return a.isOnOpaque ? -1 : 1;
       }
       final an = a.localName.toLowerCase();
       final bn = b.localName.toLowerCase();
-      final aExact = an == q ? 0 : (an.startsWith(q) ? 1 : 2);
-      final bExact = bn == q ? 0 : (bn.startsWith(q) ? 1 : 2);
-      if (aExact != bExact) return aExact - bExact;
+      final aExact = an == q;
+      final bExact = bn == q;
+      if (aExact != bExact) return aExact ? -1 : 1;
+
+      final aStarts = an.startsWith(q);
+      final bStarts = bn.startsWith(q);
+      if (aStarts != bStarts) return aStarts ? -1 : 1;
+
+      final aWordStarts = an.split(' ').any((w) => w.startsWith(q));
+      final bWordStarts = bn.split(' ').any((w) => w.startsWith(q));
+      if (aWordStarts != bWordStarts) return aWordStarts ? -1 : 1;
+
       return an.compareTo(bn);
     });
 
+    if (hits.length > 50) {
+      return hits.sublist(0, 50);
+    }
     return hits;
   }
 

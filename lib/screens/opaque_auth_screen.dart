@@ -156,17 +156,11 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
       _step = step;
       _error = '';
     });
-    if (step == _Step.verify && _method == _Method.email)
+    if (step == _Step.verify && _method == _Method.email) {
       _emailPoll = Timer.periodic(
         const Duration(seconds: 5),
         (_) => _checkEmail(silent: true),
       );
-    // System contacts permission belongs on this dedicated step only (not Home).
-    if (step == _Step.contacts) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || _step != _Step.contacts) return;
-        unawaited(_promptContactsPermissionOnStep());
-      });
     }
   }
 
@@ -1518,6 +1512,48 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
     ];
   }
 
+  Widget _privacyItem({
+    required IconData icon,
+    required String title,
+    required String description,
+    required AuthPalette c,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Icon(icon, size: 18, color: c.ink),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: c.ink,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                description,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  height: 1.45,
+                  color: c.muted,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   List<Widget> _contactsStep(BuildContext context) {
     final c = AuthPalette(context);
     final contacts = ContactMatchService.instance;
@@ -1525,8 +1561,8 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
       _heading(
         context,
         'Find people you know',
-        'Opaque will ask for contacts access so it can show friends already on the app in your chat list.\nNumbers are checked privately and never uploaded as a raw list.',
-        kicker: 'OPTIONAL · CONTACTS',
+        'Easily discover friends already on Opaque while keeping your address book completely private.',
+        kicker: 'PRIVATE · OPTIONAL',
       ),
       Container(
         width: double.infinity,
@@ -1539,29 +1575,39 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'What we use contacts for',
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: c.ink,
-              ),
+            _privacyItem(
+              icon: Icons.lock_outline_rounded,
+              title: 'Local device access only',
+              description:
+                  'Contact permissions on Android are strictly local to your device. Your address book, names, and phone numbers are never uploaded, stored, or sent to Opaque servers.',
+              c: c,
             ),
-            const SizedBox(height: 8),
-            Text(
-              'Show a few people from your phone who are already on Opaque, and let you search contacts later.',
-              style: TextStyle(fontSize: 12, height: 1.55, color: c.muted),
+            const SizedBox(height: 14),
+            _privacyItem(
+              icon: Icons.shield_outlined,
+              title: 'Zero-knowledge discovery',
+              description:
+                  'To match friends, phone numbers are converted locally into irreversible cryptographic hashes (SHA-256). We cannot view or reconstruct your contacts.',
+              c: c,
+            ),
+            const SizedBox(height: 14),
+            _privacyItem(
+              icon: Icons.tune_rounded,
+              title: 'Always in your control',
+              description:
+                  'This step is optional. You can skip now and still use Opaque freely, or manage contact permissions anytime in Settings.',
+              c: c,
             ),
           ],
         ),
       ),
-      const SizedBox(height: 8),
+      const SizedBox(height: 10),
       _errorView(context),
       if (_contactsPermissionPrompted && contacts.permissionDenied)
         Padding(
           padding: const EdgeInsets.only(bottom: 8),
           child: Text(
-            'Contacts access was not granted. You can continue and enable it later in Friends.',
+            'Contacts access was not granted. You can continue and enable it later in Settings.',
             style: TextStyle(fontSize: 12, height: 1.45, color: c.muted),
           ),
         ),
@@ -1591,10 +1637,10 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
       _primary(
         'Continue',
         () => _run(() async {
-          if (!_contactsPermissionPrompted) {
-            await _promptContactsPermissionOnStep();
-          }
-          if (!ContactMatchService.instance.permissionDenied) {
+          final granted =
+              await ContactMatchService.instance.requestPermissionForDedicatedSetup();
+          _contactsPermissionPrompted = true;
+          if (granted) {
             await ContactMatchService.instance.prepareFromDedicatedSetupStep();
           } else {
             await ContactMatchService.instance.skipContactsSetup();

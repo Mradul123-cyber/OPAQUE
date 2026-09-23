@@ -139,6 +139,57 @@ class MainActivity : FlutterActivity() {
                         } ?: result.error("NO_USER", "No authenticated user", null)
                     }
 
+                    "getDevicePhoneContacts" -> {
+                        Thread {
+                            try {
+                                val contactsList = mutableListOf<Map<String, String>>()
+                                val hasPermission = ContextCompat.checkSelfPermission(
+                                    this@MainActivity,
+                                    Manifest.permission.READ_CONTACTS
+                                ) == PackageManager.PERMISSION_GRANTED
+
+                                if (!hasPermission) {
+                                    runOnUiThread { result.success(emptyList<Map<String, String>>()) }
+                                    return@Thread
+                                }
+
+                                val projection = arrayOf(
+                                    android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                                    android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER
+                                )
+                                val cursor = contentResolver.query(
+                                    android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                                    projection,
+                                    null,
+                                    null,
+                                    "${android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC"
+                                )
+
+                                cursor?.use {
+                                    val nameIndex = it.getColumnIndex(android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                                    val numIndex = it.getColumnIndex(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER)
+                                    val seen = HashSet<String>()
+
+                                    while (it.moveToNext()) {
+                                        val name = if (nameIndex >= 0) it.getString(nameIndex) ?: "" else ""
+                                        val num = if (numIndex >= 0) it.getString(numIndex) ?: "" else ""
+                                        if (num.isNotBlank()) {
+                                            val key = "$name|$num"
+                                            if (seen.add(key)) {
+                                                contactsList.add(mapOf("name" to name, "phone" to num))
+                                            }
+                                        }
+                                    }
+                                }
+
+                                runOnUiThread { result.success(contactsList) }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error reading phone contacts: ${e.message}", e)
+                                runOnUiThread { result.success(emptyList<Map<String, String>>()) }
+                            }
+                        }.start()
+                    }
+
                     else -> result.notImplemented()
                 }
             }

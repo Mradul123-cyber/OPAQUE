@@ -252,24 +252,28 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
     // 🚀 Pre-warm recipient UID & session immediately so first message sends instantly
     _recipientAvatarUrl = widget.conversationInfo.avatarUrl;
-    if (!widget.conversationInfo.isGroup && widget.conversationInfo.partnerUid != null) {
-      _recipientUid = widget.conversationInfo.partnerUid;
-      _cachedRecipientDeviceId = null;
-      // Immediately check device cache or DB in background to warm up session
-      _getRecipientDeviceId(_recipientUid!, forceRefresh: true).then((deviceId) {
-        if (deviceId != null && mounted) {
-          SignalService.hasSession(
-            recipientUid: _recipientUid!,
-            deviceId: deviceId,
-          ).then((hasSession) {
-            if (mounted) {
-              setState(() {
-                _sessionEstablished = hasSession;
-              });
-            }
-          });
-        }
-      });
+    if (!widget.conversationInfo.isGroup) {
+      if (widget.conversationInfo.partnerUid != null && widget.conversationInfo.partnerUid!.isNotEmpty) {
+        _recipientUid = widget.conversationInfo.partnerUid;
+        _cachedRecipientDeviceId = null;
+        // Immediately check device cache or DB in background to warm up session
+        _getRecipientDeviceId(_recipientUid!, forceRefresh: true).then((deviceId) {
+          if (deviceId != null && mounted) {
+            SignalService.hasSession(
+              recipientUid: _recipientUid!,
+              deviceId: deviceId,
+            ).then((hasSession) {
+              if (mounted) {
+                setState(() {
+                  _sessionEstablished = hasSession;
+                });
+              }
+            });
+          }
+        });
+      } else if (widget.conversationInfo.username != null && widget.conversationInfo.username!.isNotEmpty) {
+        unawaited(_resolveRecipientUidByUsername(widget.conversationInfo.username!));
+      }
     }
 
     // 🚀 FIX: Mark messages as read IMMEDIATELY to clear badge instantly
@@ -946,7 +950,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       return;
     }
 
-    if (!widget.conversationInfo.isGroup && _recipientUid == null) return;
+    if (!widget.conversationInfo.isGroup && _recipientUid == null) {
+      final uname = widget.conversationInfo.username;
+      if (uname != null && uname.isNotEmpty) {
+        await _resolveRecipientUidByUsername(uname);
+      }
+      if (_recipientUid == null) {
+        OpaqueToast.error(context, 'Unable to identify recipient. Please try again.');
+        return;
+      }
+    }
 
     _controller.clear();
     // Immediately cancel typing indicator so recipient's UI updates instantly
@@ -2745,6 +2758,42 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       if (mounted) {
         OpaqueToast.error(context, 'Failed to send document: $e');
       }
+    }
+  }
+
+  Future<void> _resolveRecipientUidByUsername(String uname) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+      final token = await user.getIdToken();
+      final res = await http.get(
+        Uri.parse('${AppConfig.baseUrl}/profiles/user?username=${Uri.encodeComponent(uname)}'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body) as Map<String, dynamic>;
+        final uid = (data['uid'] ?? data['firebase_uid']) as String?;
+        if (uid != null && uid.isNotEmpty && mounted) {
+          setState(() {
+            _recipientUid = uid;
+            _cachedRecipientDeviceId = null;
+          });
+          final deviceId = await _getRecipientDeviceId(uid, forceRefresh: true);
+          if (deviceId != null && mounted) {
+            final hasSession = await SignalService.hasSession(
+              recipientUid: uid,
+              deviceId: deviceId,
+            );
+            if (mounted) {
+              setState(() {
+                _sessionEstablished = hasSession;
+              });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[ChatScreen] Error resolving recipient UID for $uname: $e');
     }
   }
 
