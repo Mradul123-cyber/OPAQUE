@@ -591,6 +591,29 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+            "getIdentityKey" -> {
+                try {
+                    val keyBundle = signalManager.getKeyBundleForRegistration()
+                    val identityKeyB64 = keyBundle["identity_key_b64"] as? String
+                    result.success(identityKeyB64)
+                } catch (e: Exception) {
+                    Log.e(TAG, "getIdentityKey error: $e")
+                    result.error("GET_IDENTITY_KEY_ERROR", e.message, null)
+                }
+            }
+
+            "getRemoteIdentityKey" -> {
+                try {
+                    val recipientUid = call.argument<String>("recipientUid")
+                        ?: throw Exception("Missing recipientUid")
+                    val remoteKeyB64 = signalManager.getRemoteIdentityKey(recipientUid)
+                    result.success(remoteKeyB64)
+                } catch (e: Exception) {
+                    Log.e(TAG, "getRemoteIdentityKey error: $e")
+                    result.error("GET_REMOTE_IDENTITY_KEY_ERROR", e.message, null)
+                }
+            }
+
             "exportSignalState" -> {
                 try {
                     Log.d(TAG, "exportSignalState called")

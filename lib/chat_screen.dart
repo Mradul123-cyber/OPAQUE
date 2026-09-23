@@ -62,6 +62,8 @@ import 'widgets/global_call_overlay.dart';
 import 'widgets/voice_message_recorder.dart';
 import 'widgets/voice_message_player.dart';
 import 'screens/group_info_screen.dart';
+import 'screens/profile_info_screen.dart';
+import 'services/safety_number_service.dart';
 import 'services/share_service.dart';
 import 'package:zarq_messenger/app_config.dart';
 import 'package:geolocator/geolocator.dart';
@@ -203,6 +205,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   // E2E encryption banner state
   bool _showEncryptionBanner = true;
 
+  // Safety number change detection
+  bool _isSafetyNumberChanged = false;
+  bool _safetyNumberBannerDismissed = false;
+  String? _recipientIdentityKey;
+
   // Cache for downloaded audio (stores file paths, not bytes)
   final Map<int, String> _audioCache = {};
 
@@ -275,6 +282,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     _loadWallpaper();
     _loadMutePreference();
     _loadEncryptionBannerPreference();
+    _checkSafetyNumberStatus();
     ChatSoundService.instance.initialize();
 
     // Load failed media IDs from persistent storage
@@ -610,6 +618,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
       if (!widget.conversationInfo.isGroup && widget.conversationInfo.partnerUid != null) {
         _recipientUid = widget.conversationInfo.partnerUid;
+        _checkSafetyNumberStatus();
       }
 
       // 🚀 SHOW MESSAGES IMMEDIATELY (don't wait for session/encryption)
@@ -3661,6 +3670,76 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
             body: SafeArea(
               child: Column(
                 children: [
+                  // Show safety number changed banner
+                  if (_isSafetyNumberChanged && !_safetyNumberBannerDismissed)
+                    Builder(
+                      builder: (context) {
+                        final dark = Theme.of(context).brightness == Brightness.dark;
+                        final bannerBg = dark ? const Color(0xFF261E10) : const Color(0xFFFFFBEB);
+                        final bannerBorder = dark ? const Color(0xFF78350F) : const Color(0xFFFDE68A);
+                        final textColor = dark ? const Color(0xFFFDE68A) : const Color(0xFF92400E);
+                        final iconColor = dark ? const Color(0xFFFBBF24) : const Color(0xFFD97706);
+
+                        return Material(
+                          color: bannerBg,
+                          child: InkWell(
+                            onTap: _openSafetyNumberVerification,
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                              decoration: BoxDecoration(
+                                border: Border(
+                                  bottom: BorderSide(color: bannerBorder, width: 1),
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(Icons.warning_amber_rounded, color: iconColor, size: 19),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      'Your safety number with ${widget.conversationInfo.chatTitle} has changed. Tap to verify.',
+                                      style: TextStyle(
+                                        color: textColor,
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+                                    decoration: BoxDecoration(
+                                      color: iconColor.withValues(alpha: 0.15),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Text(
+                                      'Verify',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                        color: textColor,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  GestureDetector(
+                                    onTap: () {
+                                      setState(() => _safetyNumberBannerDismissed = true);
+                                    },
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(4),
+                                      child: Icon(Icons.close_rounded, size: 16, color: textColor),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+
                   // Show blocked user banner
                   if (_isUserBlocked)
                     Container(
@@ -3933,6 +4012,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       leadingWidth: iconSize2 + padding2,
       titleSpacing: titleSpacing,
       title: GestureDetector(
+        behavior: HitTestBehavior.opaque,
         onTap: widget.conversationInfo.isGroup ? () async {
           await Navigator.push(
             context,
@@ -3943,7 +4023,42 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
             ),
           );
           if (mounted) _fetchGroupMemberCount();
-        } : null,
+        } : () async {
+          final partnerUid = _recipientUid ?? widget.conversationInfo.partnerUid;
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => ProfileInfoScreen(
+                conversationInfo: widget.conversationInfo,
+                recipientUid: partnerUid,
+                recipientAvatarUrl: _recipientAvatarUrl ?? widget.conversationInfo.avatarUrl,
+                recipientUsername: widget.conversationInfo.username,
+                recipientDisplayName: widget.conversationInfo.chatTitle,
+                isRecipientOnline: _isRecipientOnline,
+                recipientLastSeen: _recipientLastSeen,
+                isUserBlocked: _isUserBlocked,
+                isNotificationsMuted: _isNotificationsMuted,
+                channel: widget.channel,
+                recipientIdentityKey: _recipientIdentityKey,
+                onBlockChanged: (blocked) {
+                  if (mounted) setState(() => _isUserBlocked = blocked);
+                },
+                onMuteChanged: (muted) {
+                  if (mounted) setState(() => _isNotificationsMuted = muted);
+                },
+                onStartVoiceCall: _recipientUid != null ? _startVoiceCall : null,
+                onStartVideoCall: _recipientUid != null ? _startVideoCall : null,
+                onClearChat: _showClearChatDialog,
+                onSearchChat: () {
+                  if (mounted) setState(() => _isSearching = true);
+                },
+              ),
+            ),
+          );
+          if (mounted) {
+            _checkSafetyNumberStatus();
+          }
+        },
         child: Row(
           children: [
             // Show avatar for both 1-1 chats and groups
@@ -7625,6 +7740,94 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       await prefs.setBool('show_encryption_banner_$conversationId', show);
     } catch (e) {
       // print('[ChatScreen] Error saving encryption banner preference: $e');
+    }
+  }
+
+  /// Check whether the contact's Signal identity key has changed
+  Future<void> _checkSafetyNumberStatus() async {
+    if (widget.conversationInfo.isGroup) return;
+    final partnerUid = _recipientUid ?? widget.conversationInfo.partnerUid;
+    if (partnerUid == null || partnerUid.isEmpty) return;
+
+    try {
+      // 1. Fetch contact's active public identity key from server
+      String? activeRemoteKey;
+      try {
+        final user = FirebaseAuth.instance.currentUser;
+        if (user != null) {
+          final token = await user.getIdToken();
+          final uri = Uri.parse('${AppConfig.baseUrl}/profiles/user/$partnerUid');
+          final resp = await http.get(uri, headers: {'Authorization': 'Bearer $token'}).timeout(const Duration(seconds: 5));
+          if (resp.statusCode == 200) {
+            final data = json.decode(resp.body) as Map<String, dynamic>;
+            final key = data['identity_key_b64'] as String?;
+            if (key != null && key.isNotEmpty) {
+              activeRemoteKey = key;
+            }
+          }
+        }
+      } catch (_) {}
+
+      // 2. Fallback to local native store only if offline or server failed
+      if (activeRemoteKey == null || activeRemoteKey.isEmpty) {
+        activeRemoteKey = await SignalService.getRemoteIdentityKey(partnerUid);
+      }
+
+      if (activeRemoteKey != null && activeRemoteKey.isNotEmpty) {
+        _recipientIdentityKey = activeRemoteKey;
+        final status = await SafetyNumberService.checkStatus(
+          partnerUid: partnerUid,
+          currentRemoteKeyB64: activeRemoteKey,
+        );
+        if (mounted) {
+          setState(() {
+            _isSafetyNumberChanged = (status == SafetyNumberStatus.changed);
+            if (status != SafetyNumberStatus.changed) {
+              _safetyNumberBannerDismissed = false;
+            }
+          });
+        }
+      }
+    } catch (_) {
+      // Non-blocking security check
+    }
+  }
+
+  void _openSafetyNumberVerification() async {
+    final partnerUid = _recipientUid ?? widget.conversationInfo.partnerUid;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ProfileInfoScreen(
+          conversationInfo: widget.conversationInfo,
+          recipientUid: partnerUid,
+          recipientAvatarUrl: _recipientAvatarUrl ?? widget.conversationInfo.avatarUrl,
+          recipientUsername: widget.conversationInfo.username,
+          recipientDisplayName: widget.conversationInfo.chatTitle,
+          isRecipientOnline: _isRecipientOnline,
+          recipientLastSeen: _recipientLastSeen,
+          isUserBlocked: _isUserBlocked,
+          isNotificationsMuted: _isNotificationsMuted,
+          channel: widget.channel,
+          autoOpenSafetyNumberDialog: true,
+          recipientIdentityKey: _recipientIdentityKey,
+          onBlockChanged: (blocked) {
+            if (mounted) setState(() => _isUserBlocked = blocked);
+          },
+          onMuteChanged: (muted) {
+            if (mounted) setState(() => _isNotificationsMuted = muted);
+          },
+          onStartVoiceCall: _recipientUid != null ? _startVoiceCall : null,
+          onStartVideoCall: _recipientUid != null ? _startVideoCall : null,
+          onClearChat: _showClearChatDialog,
+          onSearchChat: () {
+            if (mounted) setState(() => _isSearching = true);
+          },
+        ),
+      ),
+    );
+    if (mounted) {
+      _checkSafetyNumberStatus();
     }
   }
 

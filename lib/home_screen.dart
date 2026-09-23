@@ -188,6 +188,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   StreamSubscription? _websocketSubscription;
   final ContactMatchService _contacts = ContactMatchService.instance;
+  Timer? _contactSearchDebounce;
+  List<ConversationInfo> _dynamicContactRows = [];
+  int _contactSearchGen = 0;
 
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -210,8 +213,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         homeProvider.fetchInitialConversations();
       }
 
-      // Ask for contacts (if needed) and show Opaque matches on home ASAP.
-      unawaited(_contacts.ensureSynced());
+      // Home: load cache, then rematch sample phones now that user is authenticated.
+      unawaited(() async {
+        await _contacts.loadCachedMatches();
+        await _contacts.rematchCachedAfterAuth();
+      }());
 
       final websocketService = Provider.of<WebSocketService>(
         context,
@@ -257,6 +263,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _contacts.removeListener(_onContactsChanged);
     _websocketSubscription?.cancel();
+    _contactSearchDebounce?.cancel();
     _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
     _searchFocusNode.dispose();
@@ -266,7 +273,77 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   // ─── Search ────────────────────────────────────────────────────────────────
 
   void _onSearchChanged() {
-    setState(() { _isSearching = _searchController.text.trim().isNotEmpty; _addMenuOpen = false; });
+    final query = _searchController.text.trim();
+    if (query.isEmpty) {
+      if (_isSearching || _dynamicContactRows.isNotEmpty) {
+        setState(() {
+          _isSearching = false;
+          _addMenuOpen = false;
+          _dynamicContactRows = [];
+        });
+      }
+      _contactSearchDebounce?.cancel();
+      return;
+    }
+
+    _contactSearchDebounce?.cancel();
+    _contactSearchDebounce = Timer(const Duration(milliseconds: 50), () {
+      if (!mounted) return;
+      final hits = _contacts.searchContacts(query);
+      final preferLocal =
+          context.read<UserSettingsProvider>().preferLocalContactNames;
+      var id = -20000;
+      final rows = <ConversationInfo>[];
+      for (final hit in hits) {
+        if (hit.isOnOpaque) {
+          final m = hit.opaque!;
+          final title = ContactMatchService.resolveName(
+            preferLocal: preferLocal,
+            localName: m.localName ?? hit.localName,
+            displayName: m.displayName,
+            username: m.username,
+          );
+          rows.add(
+            ConversationInfo(
+              conversationId: id--,
+              chatTitle: title,
+              isGroup: false,
+              avatarUrl: m.avatarUrl,
+              partnerUid: m.uid,
+              isContactSuggestion: true,
+              username: m.username,
+              localContactName: m.localName ?? hit.localName,
+              appDisplayName: m.displayName,
+              phoneNumber: m.phoneNumber ?? hit.phoneNumber,
+              lastMessage: m.displayName != null &&
+                      m.displayName!.isNotEmpty &&
+                      m.displayName != title
+                  ? m.displayName
+                  : '@${m.username}',
+            ),
+          );
+        } else {
+          rows.add(
+            ConversationInfo(
+              conversationId: id--,
+              chatTitle: hit.localName,
+              isGroup: false,
+              isInviteSuggestion: true,
+              localContactName: hit.localName,
+              phoneNumber: hit.phoneNumber,
+              lastMessage: hit.phoneNumber,
+            ),
+          );
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _isSearching = true;
+          _addMenuOpen = false;
+          _dynamicContactRows = rows;
+        });
+      }
+    });
   }
 
   // ─── Blocked users ─────────────────────────────────────────────────────────
@@ -944,7 +1021,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       } else {
         homeProv.refreshConversationPreviewFromDb(convo.conversationId);
       }
-      unawaited(_contacts.ensureSynced());
     });
 
     if (channel == null) {
@@ -1263,21 +1339,32 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final queryDigits = query.replaceAll(RegExp(r'[^0-9]'), '');
     final merged = _withContactSuggestions(conversations, preferLocal: preferLocal);
 
-    // Invite rows only appear while searching.
-    if (query.isNotEmpty) {
-      var inviteId = -10000;
-      for (final contact in _contacts.inviteCandidates(query: query)) {
-        merged.add(
-          ConversationInfo(
-            conversationId: inviteId--,
-            chatTitle: contact.localName,
-            isGroup: false,
-            isInviteSuggestion: true,
-            localContactName: contact.localName,
-            phoneNumber: contact.phoneNumber,
-            lastMessage: contact.phoneNumber,
-          ),
-        );
+    // Dynamic contact search rows (instant in-memory matches).
+    if (query.isNotEmpty && _dynamicContactRows.isNotEmpty) {
+      final existingKeys = <String>{
+        for (final c in merged)
+          if (c.username != null) 'u:${c.username!.toLowerCase()}',
+        for (final c in merged)
+          if (c.partnerUid != null) 'id:${c.partnerUid}',
+        for (final c in merged)
+          if (c.phoneNumber != null)
+            'p:${c.phoneNumber!.replaceAll(RegExp(r'[^0-9]'), '')}',
+      };
+      for (final row in _dynamicContactRows) {
+        final key = row.username != null
+            ? 'u:${row.username!.toLowerCase()}'
+            : row.partnerUid != null
+                ? 'id:${row.partnerUid}'
+                : 'p:${(row.phoneNumber ?? '').replaceAll(RegExp(r'[^0-9]'), '')}';
+        if (existingKeys.contains(key)) continue;
+        // Skip if a real chat with this partner already exists.
+        final alreadyChatting = conversations.any((c) =>
+            (row.partnerUid != null && c.partnerUid == row.partnerUid) ||
+            (row.username != null &&
+                c.chatTitle.toLowerCase() == row.username!.toLowerCase()));
+        if (alreadyChatting && row.isContactSuggestion) continue;
+        existingKeys.add(key);
+        merged.add(row);
       }
     }
 
@@ -1294,6 +1381,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           convo.lastMessageTimestamp,
           _hiddenChats['${convo.conversationId}'],
         );
+      }
+      // Dynamic rows already match the query; always keep them.
+      if (convo.isContactSuggestion || convo.isInviteSuggestion) {
+        return _dynamicContactRows.any((r) => r.conversationId == convo.conversationId) ||
+            convo.chatTitle.toLowerCase().contains(query) ||
+            (convo.localContactName ?? '').toLowerCase().contains(query);
       }
       final title = convo.chatTitle.toLowerCase();
       final phone = (convo.phoneNumber ?? '').toLowerCase();
@@ -1333,23 +1426,19 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       },
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         _buildSearchBar(isDark, cardColor, textColor, textGreyColor),
-        if (_contacts.permissionDenied)
+        if (_contacts.permissionDenied && !_contacts.hasCachedData)
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
-            child: InkWell(
-              onTap: () => unawaited(_contacts.ensureSynced(force: true)),
-              borderRadius: BorderRadius.circular(12),
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                decoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF283241) : const Color(0xFFF1F2F5),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  'Allow contacts access to see people you know on Opaque',
-                  style: GoogleFonts.inter(fontSize: 11, color: textGreyColor),
-                ),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF283241) : const Color(0xFFF1F2F5),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                'Contacts weren’t shared during signup, so people you know won’t appear here yet.',
+                style: GoogleFonts.inter(fontSize: 11, color: textGreyColor),
               ),
             ),
           ),

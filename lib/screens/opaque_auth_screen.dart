@@ -16,11 +16,12 @@ import 'package:uuid/uuid.dart';
 import '../main.dart';
 import '../services/google_auth_service.dart';
 import '../services/opaque_auth_service.dart';
+import '../services/contact_match_service.dart';
 import '../widgets/opaque_auth_design.dart';
 
 enum _Method { phone, email, google }
 
-enum _Step { choose, details, verify, profile, resume }
+enum _Step { choose, details, verify, profile, contacts, resume }
 
 class OpaqueAuthScreen extends StatefulWidget {
   const OpaqueAuthScreen({
@@ -55,7 +56,8 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
       _checking = false,
       _completingPhone = false,
       _emailSent = false,
-      _profileCreated = false;
+      _profileCreated = false,
+      _contactsPermissionPrompted = false;
   String _phone = '', _error = '', _countryIso = 'IN';
   String? _verificationId, _avatar, _registrationPassword, _pendingEmail;
   int? _resendToken;
@@ -159,6 +161,20 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
         const Duration(seconds: 5),
         (_) => _checkEmail(silent: true),
       );
+    // System contacts permission belongs on this dedicated step only (not Home).
+    if (step == _Step.contacts) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _step != _Step.contacts) return;
+        unawaited(_promptContactsPermissionOnStep());
+      });
+    }
+  }
+
+  Future<void> _promptContactsPermissionOnStep() async {
+    if (_contactsPermissionPrompted) return;
+    _contactsPermissionPrompted = true;
+    await ContactMatchService.instance.requestPermissionForDedicatedSetup();
+    if (mounted) setState(() {});
   }
 
   Future<void> _finish() async {
@@ -238,7 +254,7 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
       if (user.photoURL != null && user.photoURL!.isNotEmpty) {
         unawaited(OpaqueAuthService.saveAvatar(user, user.photoURL!).catchError((_) {}));
       }
-      await _finish();
+      await _continueToContactsOrFinish();
       return;
     }
     final pending = await OpaqueAuthService.pendingUsername(user);
@@ -588,9 +604,22 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
         rethrow;
       }
       _registrationPassword = null;
-      debugPrint('[AuthFlow] 🏁 _saveProfile success! Calling _finish()...');
-      await _finish();
+      debugPrint('[AuthFlow] 🏁 _saveProfile success! Going to contacts setup...');
+      if (!mounted) return;
+      await _continueToContactsOrFinish();
     });
+  }
+
+  /// Dedicated contacts step (Allow / Skip) before entering the app.
+  Future<void> _continueToContactsOrFinish() async {
+    final contacts = ContactMatchService.instance;
+    await contacts.loadCachedMatches();
+    if (!mounted) return;
+    if (contacts.needsDedicatedSetup) {
+      _go(_Step.contacts);
+    } else {
+      await _finish();
+    }
   }
 
   Future<void> _leave() async {
@@ -1397,6 +1426,7 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
           ),
         ),
       ];
+    if (_step == _Step.contacts) return _contactsStep(context);
     return [
       _heading(
         context,
@@ -1478,10 +1508,109 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
           context,
           'Your account is ready. Retry saving the photo or skip it below.',
         ),
-      _primary('Start chatting', () => _saveProfile()),
+      _primary('Continue', () => _saveProfile()),
       Center(
         child: TextButton(
           onPressed: _busy ? null : () => _saveProfile(skip: true),
+          child: const Text('Skip for now'),
+        ),
+      ),
+    ];
+  }
+
+  List<Widget> _contactsStep(BuildContext context) {
+    final c = AuthPalette(context);
+    final contacts = ContactMatchService.instance;
+    return [
+      _heading(
+        context,
+        'Find people you know',
+        'Opaque will ask for contacts access so it can show friends already on the app in your chat list.\nNumbers are checked privately and never uploaded as a raw list.',
+        kicker: 'OPTIONAL · CONTACTS',
+      ),
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: c.soft,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: c.line),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'What we use contacts for',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: c.ink,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Show a few people from your phone who are already on Opaque, and let you search contacts later.',
+              style: TextStyle(fontSize: 12, height: 1.55, color: c.muted),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 8),
+      _errorView(context),
+      if (_contactsPermissionPrompted && contacts.permissionDenied)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            'Contacts access was not granted. You can continue and enable it later in Friends.',
+            style: TextStyle(fontSize: 12, height: 1.45, color: c.muted),
+          ),
+        ),
+      if (_busy)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: c.ink,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Syncing contacts…',
+                  style: TextStyle(fontSize: 12, color: c.muted),
+                ),
+              ),
+            ],
+          ),
+        ),
+      _primary(
+        'Continue',
+        () => _run(() async {
+          if (!_contactsPermissionPrompted) {
+            await _promptContactsPermissionOnStep();
+          }
+          if (!ContactMatchService.instance.permissionDenied) {
+            await ContactMatchService.instance.prepareFromDedicatedSetupStep();
+          } else {
+            await ContactMatchService.instance.skipContactsSetup();
+          }
+          if (!mounted) return;
+          await _finish();
+        }),
+      ),
+      Center(
+        child: TextButton(
+          onPressed: _busy
+              ? null
+              : () => _run(() async {
+                    await ContactMatchService.instance.skipContactsSetup();
+                    await _finish();
+                  }),
           child: const Text('Skip for now'),
         ),
       ),
@@ -1668,8 +1797,8 @@ class _OpaqueAuthScreenState extends State<OpaqueAuthScreen>
         builder: (context) {
           final c = AuthPalette(context);
           final steps = _method == _Method.google
-              ? [_Step.details, _Step.profile]
-              : [_Step.details, _Step.verify, _Step.profile];
+              ? [_Step.details, _Step.profile, _Step.contacts]
+              : [_Step.details, _Step.verify, _Step.profile, _Step.contacts];
           return PopScope(
             canPop: _step == _Step.choose && !_busy && _user == null,
             onPopInvokedWithResult: (didPop, _) {

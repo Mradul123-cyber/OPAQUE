@@ -285,6 +285,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         }
 
         // --- Step 3: Signal that registration is complete ---
+        // Contacts setup happens in OpaqueAuthScreen's dedicated step.
         // print("[RegisterFlow] Profile creation complete. Calling onRegistrationComplete callback.");
         widget.onRegistrationComplete();
 

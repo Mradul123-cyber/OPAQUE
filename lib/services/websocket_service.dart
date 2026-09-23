@@ -117,7 +117,7 @@ class WebSocketService with ChangeNotifier {
       return;
     }
 
-    if (_isConnected && _channel != null && token == _lastToken) {
+    if (_isConnected && _channel != null) {
       return;
     }
 
@@ -126,7 +126,7 @@ class WebSocketService with ChangeNotifier {
     }
 
     if (_channel != null) {
-      await disconnect();
+      await disconnect(stopMonitoring: false);
     }
 
     _lastToken = token;
@@ -151,6 +151,9 @@ class WebSocketService with ChangeNotifier {
       print("Attempting to connect to WebSocket at: $uri");
       print("=======================");
       _channel = WebSocketChannel.connect(uri);
+
+      // Wait for socket handshake to complete before declaring success
+      await _channel!.ready;
 
       _isConnected = true;
       _isReconnecting = false;
@@ -196,6 +199,11 @@ class WebSocketService with ChangeNotifier {
     } catch (e, st) {
       // print("[WebSocketService] Failed to connect: $e");
       _isReconnecting = false;
+      _isConnected = false;
+      try {
+        _channel?.sink.close();
+      } catch (_) {}
+      _channel = null;
       if (!completer.isCompleted) completer.completeError(e);
       _handleDisconnection();
     }
@@ -1751,7 +1759,7 @@ class WebSocketService with ChangeNotifier {
 
   // ✅ CONNECTIVITY MONITORING
   void _startConnectivityMonitoring() {
-    _stopConnectivityMonitoring();
+    if (_connectivitySubscription != null) return;
 
     // print("[WebSocketService] 📡 Starting connectivity monitoring");
 
@@ -1795,22 +1803,32 @@ class WebSocketService with ChangeNotifier {
         notifyListeners();
       }
     } else {
-      // Network came back!
+      // 🛡️ GUARD 1: If socket is already active and healthy, ignore event
+      if (_isConnected && _channel != null) {
+        return;
+      }
+
+      // 🛡️ GUARD 2: Only trigger network restoration reconnect if we actually lost network
+      if (!_wasDisconnectedDueToNetwork) {
+        return;
+      }
+
+      // Network came back after being lost!
       debugPrint("[WebSocketService] [CONNECTIVITY] ✅ Network restored (results: $results) - preparing immediate reconnection");
       _wasDisconnectedDueToNetwork = false;
       _reconnectAttempts = 0;
       _reconnectTimer?.cancel();
       _reconnectTimer = null;
 
-      // Allow 600ms for OS network routing, DHCP, and DNS resolution to stabilize
-      await Future.delayed(const Duration(milliseconds: 600));
+      // Allow brief moment for OS network routing, DHCP, and DNS resolution to stabilize
+      await Future.delayed(const Duration(milliseconds: 300));
 
       try {
         final user = FirebaseAuth.instance.currentUser;
         if (user != null) {
           debugPrint("[WebSocketService] [CONNECTIVITY] 🔄 Reconnecting WebSocket after network restored...");
-          final freshToken = await user.getIdToken(true);
-          await connect(freshToken);
+          final token = await user.getIdToken();
+          await connect(token);
           debugPrint("[WebSocketService] [CONNECTIVITY] ✅ Reconnected successfully after network restoration");
         } else {
           debugPrint("[WebSocketService] [CONNECTIVITY] ℹ️ Network restored but currentUser is null");
@@ -1839,8 +1857,8 @@ class WebSocketService with ChangeNotifier {
           final user = FirebaseAuth.instance.currentUser;
           if (user != null) {
             debugPrint("[WebSocketService] [RECONNECT] 🔄 Executing scheduled reconnect attempt $_reconnectAttempts...");
-            final freshToken = await user.getIdToken(true);
-            await connect(freshToken);
+            final token = await user.getIdToken();
+            await connect(token);
             debugPrint("[WebSocketService] [RECONNECT] ✅ Scheduled reconnect attempt $_reconnectAttempts succeeded");
           }
         } catch (e) {
@@ -1885,8 +1903,11 @@ class WebSocketService with ChangeNotifier {
       final user = FirebaseAuth.instance.currentUser;
       if (user != null) {
         debugPrint("[WebSocketService] [RECONNECT] 🔄 Manual reconnect with fresh token...");
-        final freshToken = await user.getIdToken(true);
-        await connect(freshToken);
+        final token = await user.getIdToken();
+        if (_channel != null) {
+          await disconnect(stopMonitoring: false);
+        }
+        await connect(token);
         debugPrint("[WebSocketService] [RECONNECT] ✅ Manual reconnect succeeded");
       } else {
         debugPrint("[WebSocketService] [RECONNECT] ⚠️ No user logged in for manual reconnect");
@@ -1897,14 +1918,16 @@ class WebSocketService with ChangeNotifier {
     }
   }
 
-  Future<void> disconnect() async {
+  Future<void> disconnect({bool stopMonitoring = true}) async {
     _lastToken = null;
     _isReconnecting = false;
 
     // Stop all timers and monitoring
     _stopHeartbeat();
     _stopQueueProcessor();
-    _stopConnectivityMonitoring();
+    if (stopMonitoring) {
+      _stopConnectivityMonitoring();
+    }
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
 

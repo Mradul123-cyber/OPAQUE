@@ -6,6 +6,14 @@ import net.zetetic.database.sqlcipher.SQLiteDatabase
 import net.zetetic.database.sqlcipher.SQLiteDatabaseHook
 import net.zetetic.database.sqlcipher.SQLiteConnection
 
+data class UnreadNotificationMessage(
+    val id: Int,
+    val senderUid: String,
+    val username: String,
+    val content: String,
+    val timestampMs: Long
+)
+
 /**
  * Helper class to read data from SQLCipher encrypted database
  * Used for native backup without Flutter engine
@@ -241,6 +249,61 @@ class SQLCipherHelper(private val context: Context) {
             Log.e(TAG, "Failed to mark conversation $conversationId read locally: ${e.message}", e)
             0
         }
+    }
+
+    /**
+     * Get recent unread messages for a conversation from the local encrypted database
+     */
+    fun getRecentUnreadMessages(
+        userUid: String,
+        dbPassword: String,
+        conversationId: Int,
+        limit: Int = 7
+    ): List<UnreadNotificationMessage> {
+        val list = mutableListOf<UnreadNotificationMessage>()
+        try {
+            val db = openWritableDatabase(userUid, dbPassword)
+            db.use { database ->
+                val cursor = database.rawQuery(
+                    """
+                    SELECT id, senderUid, username, content, timestamp
+                    FROM (
+                        SELECT id, senderUid, username, content, timestamp
+                        FROM messages
+                        WHERE conversationId = ? AND status != 'read'
+                        ORDER BY id DESC
+                        LIMIT ?
+                    )
+                    ORDER BY id ASC
+                    """,
+                    arrayOf(conversationId.toString(), limit.toString())
+                )
+                cursor.use { c ->
+                    val isoFormat = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US).apply {
+                        timeZone = java.util.TimeZone.getTimeZone("UTC")
+                    }
+                    val isoFallback = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).apply {
+                        timeZone = java.util.TimeZone.getTimeZone("UTC")
+                    }
+                    while (c.moveToNext()) {
+                        val id = c.getInt(0)
+                        val senderUid = c.getString(1) ?: ""
+                        val username = c.getString(2) ?: ""
+                        val content = c.getString(3) ?: ""
+                        val timeStr = c.getString(4) ?: ""
+                        val timeMs = try {
+                            isoFormat.parse(timeStr)?.time ?: isoFallback.parse(timeStr)?.time ?: System.currentTimeMillis()
+                        } catch (_: Exception) {
+                            System.currentTimeMillis()
+                        }
+                        list.add(UnreadNotificationMessage(id, senderUid, username, content, timeMs))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get recent unread messages: ${e.message}", e)
+        }
+        return list
     }
 
     /**

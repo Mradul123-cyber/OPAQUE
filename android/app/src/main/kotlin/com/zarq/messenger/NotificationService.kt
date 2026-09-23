@@ -7,11 +7,20 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.Rect
 import android.os.Build
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.RemoteInput
+import androidx.core.graphics.drawable.IconCompat
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
@@ -21,12 +30,17 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 
 class ZarqNotificationService : FirebaseMessagingService() {
 
     companion object {
-        private const val CHANNEL_ID = "zarq_messages"
-        private const val CALL_CHANNEL_ID = "zarq_calls"
+        const val DIRECT_CHANNEL_ID = "zarq_direct_messages"
+        const val GROUP_CHANNEL_ID = "zarq_group_messages"
+        const val OLD_CHANNEL_ID = "zarq_messages"
+        const val CALL_CHANNEL_ID = "zarq_calls"
+        const val GROUP_KEY_MESSAGES = "com.zarq.messenger.MESSAGES"
+        const val SUMMARY_NOTIFICATION_ID = 1000
         const val NOTIFICATION_ID_BASE = 1001
         const val CALL_NOTIFICATION_ID = 9999
         private const val TAG = "ZarqNotifications"
@@ -135,6 +149,9 @@ class ZarqNotificationService : FirebaseMessagingService() {
         val contentB64 = remoteMessage.data["content_b64"]
         val senderDeviceId = remoteMessage.data["sender_device_id"]?.toIntOrNull() ?: 1
         val isGroup = remoteMessage.data["is_group"]?.toBoolean() ?: false
+        val groupName = remoteMessage.data["group_name"]?.takeIf { it.isNotBlank() }
+        val senderAvatarUrl = remoteMessage.data["sender_avatar"]?.takeIf { it.isNotBlank() }
+        val groupAvatarUrl = remoteMessage.data["group_avatar"]?.takeIf { it.isNotBlank() }
         val messageType = remoteMessage.data["msg_type"] ?: "chat"
 
         // Check if conversation is muted
@@ -278,6 +295,9 @@ class ZarqNotificationService : FirebaseMessagingService() {
             putExtra("sender_device_id", senderDeviceId)
             putExtra("is_group", isGroup)
             putExtra("sender_name", senderName)
+            if (groupName != null) {
+                putExtra("group_name", groupName)
+            }
         }
 
         val replyPendingIntent = PendingIntent.getBroadcast(
@@ -291,7 +311,31 @@ class ZarqNotificationService : FirebaseMessagingService() {
             .setLabel("Reply...")
             .build()
 
-        // 7. Build Modern MessagingStyle Notification
+        // 7. Load Circular Avatars & Target Channel
+        val targetChannelId = if (isGroup) GROUP_CHANNEL_ID else DIRECT_CHANNEL_ID
+        val senderAvatarBitmap = getCircularAvatar(applicationContext, senderAvatarUrl, senderName)
+        val senderAvatarIcon = IconCompat.createWithBitmap(senderAvatarBitmap)
+        val largeHeaderBitmap = if (isGroup) {
+            getCircularAvatar(applicationContext, groupAvatarUrl, groupName ?: "Group")
+        } else {
+            senderAvatarBitmap
+        }
+
+        // 8. Fetch Recent Unread Messages for Conversation (Multi-Message Stacking)
+        val sqlHelper = SQLCipherHelper(applicationContext)
+        val unreadHistory = try {
+            val dbKey = signalManager.getDatabaseEncryptionKey()
+            if (dbKey != null && myUid != null) {
+                sqlHelper.getRecentUnreadMessages(myUid, dbKey, conversationId, limit = 7)
+            } else {
+                emptyList()
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "Could not query unread messages for conversation $conversationId: ${e.message}")
+            emptyList()
+        }
+
+        // 9. Build Modern MessagingStyle Notification
         val userPerson = androidx.core.app.Person.Builder()
             .setName("Me")
             .setKey(myUid ?: "me")
@@ -300,26 +344,72 @@ class ZarqNotificationService : FirebaseMessagingService() {
         val senderPerson = androidx.core.app.Person.Builder()
             .setName(senderName)
             .setKey(senderUid ?: "sender")
+            .setIcon(senderAvatarIcon)
             .build()
 
+        val resolvedGroupTitle = if (isGroup) (groupName ?: "Group") else null
         val messagingStyle = NotificationCompat.MessagingStyle(userPerson)
-            .setConversationTitle(if (isGroup) senderName else null)
+            .setConversationTitle(resolvedGroupTitle)
             .setGroupConversation(isGroup)
-            .addMessage(
+
+        if (unreadHistory.isNotEmpty()) {
+            for (historyItem in unreadHistory) {
+                val isMe = (historyItem.senderUid == myUid)
+                val msgPerson = if (isMe) {
+                    userPerson
+                } else if (historyItem.senderUid == senderUid) {
+                    senderPerson
+                } else {
+                    val itemAvatar = getCircularAvatar(applicationContext, null, historyItem.username)
+                    androidx.core.app.Person.Builder()
+                        .setName(historyItem.username)
+                        .setKey(historyItem.senderUid)
+                        .setIcon(IconCompat.createWithBitmap(itemAvatar))
+                        .build()
+                }
+                val formattedHistoryText = formatMessagePreview(historyItem.content, "chat")
+                messagingStyle.addMessage(
+                    NotificationCompat.MessagingStyle.Message(
+                        formattedHistoryText,
+                        historyItem.timestampMs,
+                        msgPerson
+                    )
+                )
+            }
+        } else {
+            messagingStyle.addMessage(
                 NotificationCompat.MessagingStyle.Message(
                     displayMessageText,
                     System.currentTimeMillis(),
                     senderPerson
                 )
             )
+        }
 
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        // 10. Lock Screen Privacy Public Version
+        val publicTitle = if (isGroup) (groupName ?: "Group") else senderName
+        val publicText = if (isGroup) "New message in $publicTitle" else "New message"
+        val publicNotification = NotificationCompat.Builder(this, targetChannelId)
             .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(publicTitle)
+            .setContentText(publicText)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setContentIntent(mainPendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        // 11. Conversation Notification
+        val notification = NotificationCompat.Builder(this, targetChannelId)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setLargeIcon(largeHeaderBitmap)
             .setStyle(messagingStyle)
-            .setContentTitle(senderName)
-            .setContentText(displayMessageText)
+            .setContentTitle(if (isGroup) (groupName ?: "Group") else senderName)
+            .setContentText(if (isGroup) "$senderName: $displayMessageText" else displayMessageText)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicNotification)
+            .setGroup(GROUP_KEY_MESSAGES)
             .setAutoCancel(true)
             .setContentIntent(mainPendingIntent)
             .addAction(
@@ -335,11 +425,23 @@ class ZarqNotificationService : FirebaseMessagingService() {
                 ).addRemoteInput(remoteInput).build()
             )
             .setDefaults(NotificationCompat.DEFAULT_ALL)
-            .setVibrate(longArrayOf(0, 250, 250, 250))
+            .setVibrate(if (isGroup) longArrayOf(0, 200, 150, 200) else longArrayOf(0, 250, 250, 250))
             .build()
 
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(NOTIFICATION_ID_BASE + conversationId, notification)
+
+        // 12. Post / Update Group Summary Notification for Bundling
+        val summaryNotification = NotificationCompat.Builder(this, targetChannelId)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setStyle(NotificationCompat.InboxStyle().setSummaryText("Messages"))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setGroup(GROUP_KEY_MESSAGES)
+            .setGroupSummary(true)
+            .setAutoCancel(true)
+            .build()
+
+        notificationManager.notify(SUMMARY_NOTIFICATION_ID, summaryNotification)
 
         Log.d(TAG, "Notification posted with MessagingStyle for conversation: $conversationId")
     }
@@ -348,20 +450,33 @@ class ZarqNotificationService : FirebaseMessagingService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-            // Messages channel
-            val messageChannel = NotificationChannel(
-                CHANNEL_ID,
-                "Zarq Messages",
+            // 1. Direct Messages channel
+            val directChannel = NotificationChannel(
+                DIRECT_CHANNEL_ID,
+                "Direct Messages",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "New message notifications"
+                description = "1-on-1 personal message notifications"
                 enableLights(true)
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 250, 250, 250)
                 setShowBadge(true)
             }
 
-            // Calls channel (max importance for full-screen notifications)
+            // 2. Group Messages channel
+            val groupChannel = NotificationChannel(
+                GROUP_CHANNEL_ID,
+                "Group Messages",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Group conversation notifications"
+                enableLights(true)
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 200, 150, 200)
+                setShowBadge(true)
+            }
+
+            // 3. Calls channel (max importance for full-screen notifications)
             val callChannel = NotificationChannel(
                 CALL_CHANNEL_ID,
                 "Zarq Calls",
@@ -374,10 +489,118 @@ class ZarqNotificationService : FirebaseMessagingService() {
                 setShowBadge(true)
             }
 
-            notificationManager.createNotificationChannel(messageChannel)
+            notificationManager.createNotificationChannel(directChannel)
+            notificationManager.createNotificationChannel(groupChannel)
             notificationManager.createNotificationChannel(callChannel)
-            Log.d(TAG, "Notification channels created (messages + calls)")
+            Log.d(TAG, "Notification channels created (direct, group, calls)")
         }
+    }
+
+    /**
+     * Load or generate a circular avatar bitmap.
+     * Checks disk cache first, downloads with a 2-second timeout if missing, or generates initials circle.
+     */
+    private fun getCircularAvatar(context: Context, avatarUrl: String?, titleOrName: String): Bitmap {
+        val sizePx = (48 * context.resources.displayMetrics.density).toInt().coerceAtLeast(96)
+
+        if (!avatarUrl.isNullOrBlank()) {
+            try {
+                val cacheDir = java.io.File(context.cacheDir, "avatar_cache").apply { if (!exists()) mkdirs() }
+                val cacheKey = java.security.MessageDigest.getInstance("MD5")
+                    .digest(avatarUrl.toByteArray())
+                    .joinToString("") { "%02x".format(it) }
+                val cachedFile = java.io.File(cacheDir, "$cacheKey.png")
+
+                var bitmap: Bitmap? = null
+                if (cachedFile.exists() && cachedFile.length() > 0) {
+                    bitmap = BitmapFactory.decodeFile(cachedFile.absolutePath)
+                }
+
+                if (bitmap == null) {
+                    val conn = (URL(avatarUrl).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 2000
+                        readTimeout = 2000
+                        doInput = true
+                    }
+                    if (conn.responseCode in 200..299) {
+                        conn.inputStream.use { input ->
+                            val bytes = input.readBytes()
+                            bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            if (bitmap != null) {
+                                try {
+                                    java.io.FileOutputStream(cachedFile).use { fos ->
+                                        fos.write(bytes)
+                                    }
+                                } catch (_: Exception) {}
+                            }
+                        }
+                    }
+                    conn.disconnect()
+                }
+
+                if (bitmap != null) {
+                    return toCircularBitmap(bitmap, sizePx)
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "Avatar fetch skipped or timed out: ${e.message}")
+            }
+        }
+
+        // Fallback: Initials Avatar
+        return createInitialsAvatar(titleOrName, sizePx)
+    }
+
+    private fun toCircularBitmap(src: Bitmap, targetSize: Int): Bitmap {
+        val output = Bitmap.createBitmap(targetSize, targetSize, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(output)
+        val paint = Paint().apply {
+            isAntiAlias = true
+            isFilterBitmap = true
+        }
+
+        val minEdge = Math.min(src.width, src.height)
+        val srcRect = Rect(
+            (src.width - minEdge) / 2,
+            (src.height - minEdge) / 2,
+            (src.width + minEdge) / 2,
+            (src.height + minEdge) / 2
+        )
+        val dstRect = Rect(0, 0, targetSize, targetSize)
+
+        canvas.drawCircle(targetSize / 2f, targetSize / 2f, targetSize / 2f, paint)
+        paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
+        canvas.drawBitmap(src, srcRect, dstRect, paint)
+        return output
+    }
+
+    private fun createInitialsAvatar(name: String, size: Int): Bitmap {
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+
+        val colors = intArrayOf(
+            0xFF1E88E5.toInt(), 0xFF43A047.toInt(), 0xFFE53935.toInt(), 0xFF8E24AA.toInt(),
+            0xFFFB8C00.toInt(), 0xFF00ACC1.toInt(), 0xFF3949AB.toInt(), 0xFFD81B60.toInt()
+        )
+        val color = colors[Math.abs(name.hashCode()) % colors.size]
+
+        val bgPaint = Paint().apply {
+            isAntiAlias = true
+            this.color = color
+            style = Paint.Style.FILL
+        }
+        canvas.drawCircle(size / 2f, size / 2f, size / 2f, bgPaint)
+
+        val initials = name.trim().take(1).uppercase(Locale.US).ifEmpty { "Z" }
+        val textPaint = Paint().apply {
+            isAntiAlias = true
+            this.color = Color.WHITE
+            textSize = size * 0.45f
+            textAlign = Paint.Align.CENTER
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+        }
+        val yPos = (canvas.height / 2f) - ((textPaint.descent() + textPaint.ascent()) / 2f)
+        canvas.drawText(initials, size / 2f, yPos, textPaint)
+        return bitmap
     }
 
     private fun isAppInForeground(): Boolean {

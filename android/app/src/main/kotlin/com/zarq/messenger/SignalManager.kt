@@ -1860,4 +1860,18 @@ class SignalManager(private val context: Context) {
             Log.e(TAG, "Error clearing sender keys for group $groupId", e)
         }
     }
+
+    /**
+     * Get the remote recipient's stored Identity Key as a base64 string
+     */
+    fun getRemoteIdentityKey(recipientUid: String, deviceId: Int = 1): String? {
+        return try {
+            val address = SignalProtocolAddress(recipientUid, deviceId)
+            val identityKey = signalProtocolStore.getIdentity(address) ?: return null
+            Base64.encodeToString(identityKey.serialize(), Base64.NO_WRAP)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting remote identity key for $recipientUid", e)
+            null
+        }
+    }
 }

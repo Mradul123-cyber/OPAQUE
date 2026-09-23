@@ -104,7 +104,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
 
         // 1. Immediately dismiss notification
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.cancel(ZarqNotificationService.NOTIFICATION_ID_BASE + conversationId)
+        cancelNotificationAndCheckSummary(notificationManager, ZarqNotificationService.NOTIFICATION_ID_BASE + conversationId)
         fl("[MARK_READ] Notification dismissed for conversationId=$conversationId")
 
         // 2. Mark locally in SQLCipher DB and sync with backend
@@ -236,8 +236,9 @@ class NotificationActionReceiver : BroadcastReceiver() {
         val myUid = currentUser?.uid
         val senderName = intent.getStringExtra("sender_name") ?: "User"
         val isGroup = intent.getBooleanExtra("is_group", false)
+        val groupName = intent.getStringExtra("group_name")
 
-        fl("[QUICK_REPLY] Intent extras → recipientUid=$recipientUid senderUid=$senderUid myUid=$myUid isGroup=$isGroup senderName=$senderName")
+        fl("[QUICK_REPLY] Intent extras → recipientUid=$recipientUid senderUid=$senderUid myUid=$myUid isGroup=$isGroup senderName=$senderName groupName=$groupName")
 
         if (recipientUid.isNullOrEmpty() || senderUid.isNullOrEmpty() || myUid.isNullOrEmpty()) {
             fle("[QUICK_REPLY] ❌ Missing UIDs — recipientUid=$recipientUid senderUid=$senderUid myUid=$myUid")
@@ -361,7 +362,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
             }
 
             storeLocalSentMessage(context, conversationId, replyText, myUid, serverMessageId)
-            showReplySentNotification(context, conversationId, senderName, replyText)
+            showReplySentNotification(context, conversationId, senderName, replyText, isGroup, groupName)
             fl("[QUICK_REPLY] ✅ Quick reply complete — messageId=$serverMessageId")
 
             // Automatically mark conversation messages as read since user replied
@@ -591,11 +592,21 @@ class NotificationActionReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun showReplySentNotification(context: Context, conversationId: Int, senderName: String, replyText: String) {
+    private fun showReplySentNotification(
+        context: Context,
+        conversationId: Int,
+        senderName: String,
+        replyText: String,
+        isGroup: Boolean = false,
+        groupName: String? = null
+    ) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         val userPerson = Person.Builder().setName("You").build()
+        val resolvedGroupTitle = if (isGroup) (groupName ?: "Group") else null
         val messagingStyle = NotificationCompat.MessagingStyle(userPerson)
+            .setConversationTitle(resolvedGroupTitle)
+            .setGroupConversation(isGroup)
             .addMessage(
                 NotificationCompat.MessagingStyle.Message(
                     replyText,
@@ -604,12 +615,15 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 )
             )
 
-        val notification = NotificationCompat.Builder(context, "zarq_messages")
+        val targetChannelId = if (isGroup) ZarqNotificationService.GROUP_CHANNEL_ID else ZarqNotificationService.DIRECT_CHANNEL_ID
+        val resolvedContentTitle = if (isGroup) (groupName ?: "Group") else senderName
+        val notification = NotificationCompat.Builder(context, targetChannelId)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setStyle(messagingStyle)
-            .setContentTitle(senderName)
+            .setContentTitle(resolvedContentTitle)
             .setContentText("You: $replyText")
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setGroup(ZarqNotificationService.GROUP_KEY_MESSAGES)
             .setAutoCancel(true)
             .setTimeoutAfter(3000)
             .build()
@@ -617,8 +631,28 @@ class NotificationActionReceiver : BroadcastReceiver() {
         notificationManager.notify(ZarqNotificationService.NOTIFICATION_ID_BASE + conversationId, notification)
 
         Handler(Looper.getMainLooper()).postDelayed({
-            notificationManager.cancel(ZarqNotificationService.NOTIFICATION_ID_BASE + conversationId)
+            cancelNotificationAndCheckSummary(notificationManager, ZarqNotificationService.NOTIFICATION_ID_BASE + conversationId)
         }, 3000)
+    }
+
+    private fun cancelNotificationAndCheckSummary(notificationManager: NotificationManager, notificationId: Int) {
+        notificationManager.cancel(notificationId)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            try {
+                val active = notificationManager.activeNotifications
+                val hasOtherMessages = active.any {
+                    it.id != ZarqNotificationService.SUMMARY_NOTIFICATION_ID &&
+                    it.id != ZarqNotificationService.CALL_NOTIFICATION_ID &&
+                    it.id != notificationId &&
+                    it.notification.group == ZarqNotificationService.GROUP_KEY_MESSAGES
+                }
+                if (!hasOtherMessages) {
+                    notificationManager.cancel(ZarqNotificationService.SUMMARY_NOTIFICATION_ID)
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "Error checking active notifications for summary: ${e.message}")
+            }
+        }
     }
 
     private fun showErrorNotification(context: Context, conversationId: Int, errorMessage: String) {
@@ -635,7 +669,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val errorNotification = NotificationCompat.Builder(context, "zarq_messages")
+        val errorNotification = NotificationCompat.Builder(context, ZarqNotificationService.DIRECT_CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("Quick reply failed")
             .setContentText(errorMessage)

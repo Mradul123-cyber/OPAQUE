@@ -127,6 +127,30 @@ class SignalService {
     }
   }
 
+  /// Get our own Signal Identity Key (public key in base64)
+  static Future<String?> getIdentityKey() async {
+    try {
+      final result = await _channel.invokeMethod('getIdentityKey');
+      return result as String?;
+    } catch (e) {
+      debugPrint('[SignalService] getIdentityKey error: $e');
+      return null;
+    }
+  }
+
+  /// Get remote contact's stored Signal Identity Key (public key in base64)
+  static Future<String?> getRemoteIdentityKey(String recipientUid) async {
+    try {
+      final result = await _channel.invokeMethod('getRemoteIdentityKey', {
+        'recipientUid': recipientUid,
+      });
+      return result as String?;
+    } catch (e) {
+      debugPrint('[SignalService] getRemoteIdentityKey error: $e');
+      return null;
+    }
+  }
+
   /// Get the current registration ID
   static Future<int?> getRegistrationId() async {
     try {
